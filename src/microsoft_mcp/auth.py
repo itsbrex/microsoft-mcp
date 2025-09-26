@@ -71,6 +71,10 @@ SCOPES = [
     "TeamMember.ReadWrite.All",
     "Calendars.Read",
     "Files.Read",
+    "Chat.Read",
+    "ChannelMessage.Read.All",
+    "Sites.Read.All",
+    "Files.Read.All"
 ]
 
 # Scopes useful for full search:

@@ -22,7 +22,7 @@ mcp = FastMCP("microsoft-graph-mcp")
 
 auth = AzureAuthentication(
     auth_record_file=os.getenv("AZURE_CRED_CACHE_FILE"),
-    token_cache_file=os.getenv("AZURE_TOKEN_CACHE_FILE")
+    token_cache_file=os.getenv("AZURE_TOKEN_CACHE_FILE"),
 )
 
 # Set the auth instance for the graph module
@@ -109,6 +109,7 @@ def get_user_details(email: str | None = None) -> dict[str, Any]:
         )
         raise
 
+
 @mcp.prompt
 def prepare_work_day():
     return """
@@ -116,6 +117,7 @@ def prepare_work_day():
     You can use tools to get information about their calendar, emails, contacts and availability accessing the MS Graph API.
     
     """
+
 
 @mcp.tool
 def is_logged_in() -> bool:
@@ -230,8 +232,9 @@ def list_emails(
                             f"list_emails: body truncated from {len(content)} to {body_max_length} characters"
                         )
             if "conversationId" in email:
-                email["conversation_url"] = f"https://outlook.office.com/mail/deeplink/readconv/{quote(email['conversationId'], safe='')}"
-
+                email["conversation_url"] = (
+                    f"https://outlook.office.com/mail/deeplink/readconv/{quote(email['conversationId'], safe='')}"
+                )
 
         logger.info(
             f"list_emails successful: retrieved {len(emails)} emails from folder {folder}"
@@ -329,7 +332,9 @@ def get_email(
                 del result[key]
         # add a link to open the whole conversation as "conversation_url"
         if "conversationId" in result:
-            result["conversation_url"] = f"https://outlook.office.com/mail/deeplink/readconv/{quote(result['conversationId'], safe='')}"
+            result["conversation_url"] = (
+                f"https://outlook.office.com/mail/deeplink/readconv/{quote(result['conversationId'], safe='')}"
+            )
 
         # Remove attachment content bytes to reduce size
         if "attachments" in result and result["attachments"]:
@@ -404,8 +409,13 @@ def list_events(
         # truncate the body content if it exceeds max_body_length
         for event in events:
             if "body" in event:
-                if "content" in event["body"] and len(event["body"]["content"]) > max_body_length:
-                    event["body"]["content"] = event["body"]["content"][:max_body_length] + "..."
+                if (
+                    "content" in event["body"]
+                    and len(event["body"]["content"]) > max_body_length
+                ):
+                    event["body"]["content"] = (
+                        event["body"]["content"][:max_body_length] + "..."
+                    )
 
         logger.info(
             f"list_events successful: retrieved {len(events)} events from {start} to {end}"
@@ -478,7 +488,7 @@ def check_availability(
         - schedules: Array of availability data for each person checked
         - freeBusyViewType: Type of view (e.g., "freeBusy")
         - For each person: email, availability intervals showing free/busy/tentative status
-        - availabilityView: Numeric representation of availability (0=free, 1=tentative, 2=busy), 
+        - availabilityView: Numeric representation of availability (0=free, 1=tentative, 2=busy),
           each number represents a 30-minute interval within the specified time range, starting from the start time.
 
     Examples:
@@ -905,7 +915,9 @@ def search_emails(
             result = list(graph.request_paginated(endpoint, params=params, limit=limit))
             for email in result:
                 if "conversationId" in email:
-                    email["conversation_url"] = f"https://outlook.office.com/mail/deeplink/readconv/{quote(email['conversationId'], safe='')}"
+                    email["conversation_url"] = (
+                        f"https://outlook.office.com/mail/deeplink/readconv/{quote(email['conversationId'], safe='')}"
+                    )
                 # tidy up to save tokens
                 for key in [
                     "@odata.context",
@@ -927,7 +939,9 @@ def search_emails(
         result = list(graph.search_query(query, ["message"], limit))
         for email in result:
             if "conversationId" in email:
-                email["conversation_url"] = f"https://outlook.office.com/mail/deeplink/readconv/{quote(email['conversationId'], safe='')}"
+                email["conversation_url"] = (
+                    f"https://outlook.office.com/mail/deeplink/readconv/{quote(email['conversationId'], safe='')}"
+                )
             # tidy up to save tokens
             for key in [
                 "@odata.context",
@@ -940,7 +954,6 @@ def search_emails(
             ]:
                 if key in email:
                     del email[key]
-
 
         logger.info(
             f"search_emails successful: found {len(result)} emails matching '{query}'"
@@ -1045,5 +1058,622 @@ def search_contacts(
     except Exception as e:
         logger.error(
             f"search_contacts failed for query='{query}': {str(e)}", exc_info=True
+        )
+        raise
+
+
+@mcp.tool
+def list_chat_messages(
+    limit: int = 10,
+    body_max_length: int = 2000,
+    include_body: bool = True,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> list[dict[str, Any]]:
+    """List recent chat messages from all 1:1 and group chats.
+
+    Retrieves messages from Microsoft Teams chats, ordered by most recent first. This includes
+    both one-on-one chats and group chat conversations. Use this to get an overview of recent
+    chat activity across all conversations.
+
+    Args:
+        limit: Maximum number of messages to retrieve (1-100, defaults to 10)
+        body_max_length: Maximum characters for message body content (default 2000, will truncate if longer)
+        include_body: Whether to include message body content (affects response size)
+        start_date: Optional start date in ISO format (UTC timezone, e.g., "2024-09-01T00:00:00Z") to filter messages from this date onwards
+        end_date: Optional end date in ISO format (UTC timezone, e.g., "2024-09-30T23:59:59Z") to filter messages up to this date
+
+    Returns:
+        List of message objects containing:
+        - Basic info: id, chatId, messageType, createdDateTime, from (sender info)
+        - Content: body with text/html content and optionally attachments info
+        - Chat context: chat title, chat type (oneOnOne/group), participant count
+        - Web URL for opening the message in Teams client
+        - The most recent message will be first in the results
+
+    Examples:
+        - list_chat_messages() - Get 10 most recent chat messages
+        - list_chat_messages(limit=50) - Get more recent messages
+        - list_chat_messages(include_body=False) - Get messages without body content for faster response
+        - list_chat_messages(start_date="2024-09-01T00:00:00Z") - Get messages from September 1st onwards
+    """
+    logger.info(
+        f"list_chat_messages called: limit={limit}, include_body={include_body}, start_date={start_date}, end_date={end_date}"
+    )
+
+    try:
+        # First get all chats
+        chats = list(graph.request_paginated("/me/chats", params={"$top": 50}))
+
+        all_messages = []
+
+        for chat in chats:
+            chat_id = chat["id"]
+
+            # Build message query parameters
+            if include_body:
+                select_fields = "id,messageType,createdDateTime,from,body,attachments"
+            else:
+                select_fields = "id,messageType,createdDateTime,from"
+
+            params = {
+                "$top": min(limit, 100),
+                "$select": select_fields,
+                "$orderby": "createdDateTime desc",
+            }
+
+            # Add date filtering if provided
+            filter_conditions = []
+            if start_date:
+                filter_conditions.append(f"createdDateTime ge {start_date}")
+            if end_date:
+                filter_conditions.append(f"createdDateTime le {end_date}")
+
+            if filter_conditions:
+                params["$filter"] = " and ".join(filter_conditions)
+
+            try:
+                messages = list(
+                    graph.request_paginated(
+                        f"/me/chats/{chat_id}/messages",
+                        params=params,
+                        limit=min(
+                            limit, 20
+                        ),  # Limit per chat to avoid too many results
+                    )
+                )
+
+                for message in messages:
+                    # Add chat context to each message
+                    message["chatId"] = chat_id
+                    message["chatTopic"] = chat.get("topic", "")
+                    message["chatType"] = chat.get("chatType", "")
+                    message["webUrl"] = chat.get("webUrl", "")
+
+                    # Process message body
+                    if (
+                        include_body
+                        and "body" in message
+                        and "content" in message["body"]
+                    ):
+                        content = message["body"]["content"]
+                        if message["body"].get("contentType") == "html":
+                            content = convert_to_markdown(content)
+                            message["body"]["contentType"] = "text/markdown"
+                            message["body"]["content"] = content
+
+                        if len(content) > body_max_length:
+                            message["body"]["content"] = (
+                                content[:body_max_length]
+                                + f"\n\n[Content truncated - {len(content)} total characters]"
+                            )
+                            message["body"]["truncated"] = True
+                            message["body"]["total_length"] = len(content)
+
+                all_messages.extend(messages)
+
+            except Exception as chat_error:
+                logger.warning(
+                    f"Failed to get messages from chat {chat_id}: {str(chat_error)}"
+                )
+                continue
+
+        # Sort all messages by creation time (most recent first) and limit results
+        all_messages.sort(key=lambda x: x.get("createdDateTime", ""), reverse=True)
+        result = all_messages[:limit]
+
+        logger.info(
+            f"list_chat_messages successful: retrieved {len(result)} messages from {len(chats)} chats"
+        )
+        return result
+    except Exception as e:
+        logger.error(f"list_chat_messages failed: {str(e)}", exc_info=True)
+        raise
+
+
+@mcp.tool
+def list_channel_messages(
+    team_id: str | None = None,
+    channel_id: str | None = None,
+    limit: int = 10,
+    body_max_length: int = 2000,
+    include_body: bool = True,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> list[dict[str, Any]]:
+    """List recent messages from Microsoft Teams channels.
+
+    Retrieves messages from team channels, ordered by most recent first. If no team/channel is specified,
+    gets messages from all accessible channels. Use this to monitor channel activity and discussions.
+
+    Args:
+        team_id: Optional ID of specific team to get messages from
+        channel_id: Optional ID of specific channel (requires team_id)
+        limit: Maximum number of messages to retrieve (1-100, defaults to 10)
+        body_max_length: Maximum characters for message body content (default 2000, will truncate if longer)
+        include_body: Whether to include message body content (affects response size)
+        start_date: Optional start date in ISO format (UTC timezone, e.g., "2024-09-01T00:00:00Z") to filter messages from this date onwards
+        end_date: Optional end date in ISO format (UTC timezone, e.g., "2024-09-30T23:59:59Z") to filter messages up to this date
+
+    Returns:
+        List of message objects containing:
+        - Basic info: id, messageType, createdDateTime, from (sender info)
+        - Content: body with text/html content and optionally attachments info
+        - Channel context: team name, channel name, channel description
+        - Web URL for opening the message in Teams client
+        - The most recent message will be first in the results
+
+    Examples:
+        - list_channel_messages() - Get 10 most recent messages from all channels
+        - list_channel_messages(team_id="abc123") - Get messages from specific team's channels
+        - list_channel_messages(team_id="abc123", channel_id="def456") - Get messages from specific channel
+        - list_channel_messages(limit=50, include_body=False) - Get more messages without body content
+    """
+    logger.info(
+        f"list_channel_messages called: team_id={team_id}, channel_id={channel_id}, limit={limit}, include_body={include_body}"
+    )
+
+    try:
+        all_messages = []
+
+        if team_id and channel_id:
+            # Get messages from specific channel
+            teams_channels = [(team_id, channel_id)]
+        elif team_id:
+            # Get all channels from specific team
+            channels = list(graph.request_paginated(f"/teams/{team_id}/channels"))
+            teams_channels = [(team_id, ch["id"]) for ch in channels]
+        else:
+            # Get messages from all teams and channels user has access to
+            teams = list(graph.request_paginated("/me/joinedTeams"))
+            teams_channels = []
+            for team in teams:
+                try:
+                    channels = list(
+                        graph.request_paginated(f"/teams/{team['id']}/channels")
+                    )
+                    teams_channels.extend([(team["id"], ch["id"]) for ch in channels])
+                except Exception as team_error:
+                    logger.warning(
+                        f"Failed to get channels from team {team['id']}: {str(team_error)}"
+                    )
+                    continue
+
+        for t_id, c_id in teams_channels:
+            # Build message query parameters
+            if include_body:
+                select_fields = "id,messageType,createdDateTime,from,body,attachments"
+            else:
+                select_fields = "id,messageType,createdDateTime,from"
+
+            params = {
+                "$top": min(limit, 50),
+                "$select": select_fields,
+                "$orderby": "createdDateTime desc",
+            }
+
+            # Add date filtering if provided
+            filter_conditions = []
+            if start_date:
+                filter_conditions.append(f"createdDateTime ge {start_date}")
+            if end_date:
+                filter_conditions.append(f"createdDateTime le {end_date}")
+
+            if filter_conditions:
+                params["$filter"] = " and ".join(filter_conditions)
+
+            try:
+                # Get team and channel info for context
+                team_info = graph.request("GET", f"/teams/{t_id}")
+                channel_info = graph.request("GET", f"/teams/{t_id}/channels/{c_id}")
+
+                messages = list(
+                    graph.request_paginated(
+                        f"/teams/{t_id}/channels/{c_id}/messages",
+                        params=params,
+                        limit=min(limit, 20),  # Limit per channel
+                    )
+                )
+
+                for message in messages:
+                    # Add channel context to each message
+                    message["teamId"] = t_id
+                    message["channelId"] = c_id
+                    message["teamName"] = (
+                        team_info.get("displayName", "") if team_info else ""
+                    )
+                    message["channelName"] = (
+                        channel_info.get("displayName", "") if channel_info else ""
+                    )
+                    message["webUrl"] = (
+                        channel_info.get("webUrl", "") if channel_info else ""
+                    )
+
+                    # Process message body
+                    if (
+                        include_body
+                        and "body" in message
+                        and "content" in message["body"]
+                    ):
+                        content = message["body"]["content"]
+                        if message["body"].get("contentType") == "html":
+                            content = convert_to_markdown(content)
+                            message["body"]["contentType"] = "text/markdown"
+                            message["body"]["content"] = content
+
+                        if len(content) > body_max_length:
+                            message["body"]["content"] = (
+                                content[:body_max_length]
+                                + f"\n\n[Content truncated - {len(content)} total characters]"
+                            )
+                            message["body"]["truncated"] = True
+                            message["body"]["total_length"] = len(content)
+
+                all_messages.extend(messages)
+
+            except Exception as channel_error:
+                logger.warning(
+                    f"Failed to get messages from team {t_id}, channel {c_id}: {str(channel_error)}"
+                )
+                continue
+
+        # Sort all messages by creation time (most recent first) and limit results
+        all_messages.sort(key=lambda x: x.get("createdDateTime", ""), reverse=True)
+        result = all_messages[:limit]
+
+        logger.info(
+            f"list_channel_messages successful: retrieved {len(result)} messages from {len(teams_channels)} channels"
+        )
+        return result
+    except Exception as e:
+        logger.error(f"list_channel_messages failed: {str(e)}", exc_info=True)
+        raise
+
+
+@mcp.tool
+def get_chat_message(chat_id: str, message_id: str) -> dict[str, Any]:
+    """Get detailed information about a specific chat message by its ID.
+
+    Retrieves complete message details including content, attachments, reactions, and replies.
+    Use this when you need full message details after finding messages with list_chat_messages
+    or search_chat_messages.
+
+    Args:
+        chat_id: Unique identifier of the chat containing the message
+        message_id: Unique identifier of the specific message
+
+    Returns:
+        Complete message object containing:
+        - Basic info: id, messageType, createdDateTime, lastModifiedDateTime, from (sender)
+        - Content: body with full text/html content, contentType
+        - Attachments: list with attachment details if any
+        - Reactions: emoji reactions and who reacted
+        - Chat context: chat info, participants
+        - Web URL for opening in Teams client
+
+    Examples:
+        - get_chat_message(chat_id, message_id) - Get full message details
+        - Use after finding interesting messages with list_chat_messages()
+    """
+    logger.info(f"get_chat_message called: chat_id={chat_id}, message_id={message_id}")
+
+    try:
+        # Get the message details
+        message = graph.request("GET", f"/me/chats/{chat_id}/messages/{message_id}")
+        if not message:
+            logger.error(
+                f"get_chat_message failed: Message {message_id} not found in chat {chat_id}"
+            )
+            raise ValueError(f"Message {message_id} not found in chat {chat_id}")
+
+        # Get chat context
+        try:
+            chat_info = graph.request("GET", f"/me/chats/{chat_id}")
+            if chat_info:
+                message["chatContext"] = {
+                    "topic": chat_info.get("topic", ""),
+                    "chatType": chat_info.get("chatType", ""),
+                    "webUrl": chat_info.get("webUrl", ""),
+                }
+        except Exception as context_error:
+            logger.warning(f"Could not get chat context: {str(context_error)}")
+
+        # Convert HTML body to markdown if needed
+        if "body" in message and "content" in message["body"]:
+            if message["body"].get("contentType") == "html":
+                message["body"]["content"] = convert_to_markdown(
+                    message["body"]["content"]
+                )
+                message["body"]["contentType"] = "text/markdown"
+
+        # Get message replies if any
+        try:
+            replies = list(
+                graph.request_paginated(
+                    f"/me/chats/{chat_id}/messages/{message_id}/replies"
+                )
+            )
+            if replies:
+                message["replies"] = replies
+                message["replyCount"] = len(replies)
+        except Exception as replies_error:
+            logger.warning(f"Could not get message replies: {str(replies_error)}")
+
+        logger.info(f"get_chat_message successful: retrieved message {message_id}")
+        return message
+    except Exception as e:
+        logger.error(
+            f"get_chat_message failed for chat_id={chat_id}, message_id={message_id}: {str(e)}",
+            exc_info=True,
+        )
+        raise
+
+
+@mcp.tool
+def get_channel_message(
+    team_id: str, channel_id: str, message_id: str
+) -> dict[str, Any]:
+    """Get detailed information about a specific channel message by its ID.
+
+    Retrieves complete message details including content, attachments, reactions, and replies.
+    Use this when you need full message details after finding messages with list_channel_messages
+    or search_channel_messages.
+
+    Args:
+        team_id: Unique identifier of the team containing the channel
+        channel_id: Unique identifier of the channel containing the message
+        message_id: Unique identifier of the specific message
+
+    Returns:
+        Complete message object containing:
+        - Basic info: id, messageType, createdDateTime, lastModifiedDateTime, from (sender)
+        - Content: body with full text/html content, contentType
+        - Attachments: list with attachment details if any
+        - Reactions: emoji reactions and who reacted
+        - Channel context: team name, channel name, web URL
+        - Web URL for opening in Teams client
+
+    Examples:
+        - get_channel_message(team_id, channel_id, message_id) - Get full message details
+        - Use after finding interesting messages with list_channel_messages()
+    """
+    logger.info(
+        f"get_channel_message called: team_id={team_id}, channel_id={channel_id}, message_id={message_id}"
+    )
+
+    try:
+        # Get the message details
+        message = graph.request(
+            "GET", f"/teams/{team_id}/channels/{channel_id}/messages/{message_id}"
+        )
+        if not message:
+            logger.error(f"get_channel_message failed: Message {message_id} not found")
+            raise ValueError(f"Message {message_id} not found in channel {channel_id}")
+
+        # Get team and channel context
+        try:
+            team_info = graph.request("GET", f"/teams/{team_id}")
+            channel_info = graph.request(
+                "GET", f"/teams/{team_id}/channels/{channel_id}"
+            )
+
+            if team_info and channel_info:
+                message["channelContext"] = {
+                    "teamName": team_info.get("displayName", ""),
+                    "channelName": channel_info.get("displayName", ""),
+                    "channelDescription": channel_info.get("description", ""),
+                    "webUrl": channel_info.get("webUrl", ""),
+                }
+        except Exception as context_error:
+            logger.warning(f"Could not get channel context: {str(context_error)}")
+
+        # Convert HTML body to markdown if needed
+        if "body" in message and "content" in message["body"]:
+            if message["body"].get("contentType") == "html":
+                message["body"]["content"] = convert_to_markdown(
+                    message["body"]["content"]
+                )
+                message["body"]["contentType"] = "text/markdown"
+
+        # Get message replies if any
+        try:
+            replies = list(
+                graph.request_paginated(
+                    f"/teams/{team_id}/channels/{channel_id}/messages/{message_id}/replies"
+                )
+            )
+            if replies:
+                message["replies"] = replies
+                message["replyCount"] = len(replies)
+        except Exception as replies_error:
+            logger.warning(f"Could not get message replies: {str(replies_error)}")
+
+        logger.info(f"get_channel_message successful: retrieved message {message_id}")
+        return message
+    except Exception as e:
+        logger.error(
+            f"get_channel_message failed for team_id={team_id}, channel_id={channel_id}, message_id={message_id}: {str(e)}",
+            exc_info=True,
+        )
+        raise
+
+
+@mcp.tool
+def search_chat_messages(
+    query: str,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """Search for chat messages using text queries across message content and metadata.
+
+    Find chat messages by searching message content, sender names, and other metadata across
+    all accessible 1:1 and group chats. More powerful than browsing recent messages when looking
+    for specific content or conversations.
+
+    Args:
+        query: Search terms (e.g., "project update", "meeting notes", sender name, keywords)
+        limit: Maximum number of results to return (1-100, defaults to 50)
+
+    Returns:
+        List of matching message objects containing:
+        - Basic info: id, chatId, messageType, createdDateTime, from (sender)
+        - Content: body with text content matching the search query
+        - Chat context: chat topic, chat type, participant info
+        - Web URL for opening in Teams client
+        - Results ranked by relevance to search query
+
+    Examples:
+        - search_chat_messages("project alpha") - Find chat messages about "project alpha"
+        - search_chat_messages("john smith") - Find messages from/mentioning John Smith
+        - search_chat_messages("meeting tomorrow") - Find messages about upcoming meetings
+        - search_chat_messages("budget approval") - Find chat messages about budget approvals
+    """
+    logger.info(f"search_chat_messages called: query='{query}', limit={limit}")
+
+    try:
+        # Use Microsoft Graph search API to search across chat messages
+        result = list(graph.search_query(query, ["chatMessage"], limit))
+
+        # Process results to add chat context
+        for message in result:
+            # Extract chat ID from message if available
+            if "chatId" in message:
+                chat_id = message["chatId"]
+                try:
+                    chat_info = graph.request("GET", f"/me/chats/{chat_id}")
+                    if chat_info:
+                        message["chatTopic"] = chat_info.get("topic", "")
+                        message["chatType"] = chat_info.get("chatType", "")
+                        message["webUrl"] = chat_info.get("webUrl", "")
+                except Exception as context_error:
+                    logger.warning(
+                        f"Could not get chat context for chat {chat_id}: {str(context_error)}"
+                    )
+
+            # Convert HTML to markdown if needed
+            if "body" in message and "content" in message["body"]:
+                if message["body"].get("contentType") == "html":
+                    message["body"]["content"] = convert_to_markdown(
+                        message["body"]["content"]
+                    )
+                    message["body"]["contentType"] = "text/markdown"
+
+        logger.info(
+            f"search_chat_messages successful: found {len(result)} messages matching '{query}'"
+        )
+        return result
+    except Exception as e:
+        logger.error(
+            f"search_chat_messages failed for query='{query}': {str(e)}", exc_info=True
+        )
+        raise
+
+
+@mcp.tool
+def search_channel_messages(
+    query: str,
+    team_id: str | None = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """Search for channel messages using text queries across message content and metadata.
+
+    Find channel messages by searching message content, sender names, and other metadata across
+    all accessible team channels or within a specific team. More powerful than browsing recent
+    messages when looking for specific content or discussions.
+
+    Args:
+        query: Search terms (e.g., "project update", "announcement", sender name, keywords)
+        team_id: Optional ID of specific team to search within (searches all teams if not provided)
+        limit: Maximum number of results to return (1-100, defaults to 50)
+
+    Returns:
+        List of matching message objects containing:
+        - Basic info: id, teamId, channelId, messageType, createdDateTime, from (sender)
+        - Content: body with text content matching the search query
+        - Channel context: team name, channel name, web URL
+        - Results ranked by relevance to search query
+
+    Examples:
+        - search_channel_messages("project alpha") - Find channel messages about "project alpha"
+        - search_channel_messages("announcement", team_id="abc123") - Find announcements in specific team
+        - search_channel_messages("quarterly review") - Find messages about quarterly reviews
+        - search_channel_messages("john smith") - Find messages from/mentioning John Smith
+    """
+    logger.info(
+        f"search_channel_messages called: query='{query}', team_id={team_id}, limit={limit}"
+    )
+
+    try:
+        # Use Microsoft Graph search API to search across channel messages
+        # If team_id is provided, we could filter results, but Graph search doesn't directly support this
+        # So we'll search all and filter afterward if needed
+        result = list(graph.search_query(query, ["chatMessage"], limit))
+
+        # Filter for channel messages only (not chat messages) and optionally by team
+        channel_messages = []
+        for message in result:
+            # Channel messages have teamId and channelId, chat messages have chatId
+            if "teamId" in message and "channelId" in message:
+                if team_id is None or message.get("teamId") == team_id:
+                    try:
+                        # Get team and channel context
+                        t_id = message["teamId"]
+                        c_id = message["channelId"]
+
+                        team_info = graph.request("GET", f"/teams/{t_id}")
+                        channel_info = graph.request(
+                            "GET", f"/teams/{t_id}/channels/{c_id}"
+                        )
+
+                        if team_info and channel_info:
+                            message["teamName"] = team_info.get("displayName", "")
+                            message["channelName"] = channel_info.get("displayName", "")
+                            message["webUrl"] = channel_info.get("webUrl", "")
+                    except Exception as context_error:
+                        logger.warning(
+                            f"Could not get channel context: {str(context_error)}"
+                        )
+
+                    # Convert HTML to markdown if needed
+                    if "body" in message and "content" in message["body"]:
+                        if message["body"].get("contentType") == "html":
+                            message["body"]["content"] = convert_to_markdown(
+                                message["body"]["content"]
+                            )
+                            message["body"]["contentType"] = "text/markdown"
+
+                    channel_messages.append(message)
+
+        # Limit results
+        result = channel_messages[:limit]
+
+        logger.info(
+            f"search_channel_messages successful: found {len(result)} channel messages matching '{query}'"
+            + (f" in team {team_id}" if team_id else "")
+        )
+        return result
+    except Exception as e:
+        logger.error(
+            f"search_channel_messages failed for query='{query}', team_id={team_id}: {str(e)}",
+            exc_info=True,
         )
         raise

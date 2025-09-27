@@ -135,6 +135,11 @@ def request_paginated(path, params=None, limit=None):
 - **Search**: search_files
 - **Features**: Path-based navigation, download/upload, metadata management
 
+### Teams Message Tools (6 tools)
+- **Chat Messages**: list_chat_messages, get_chat_message, search_chat_messages
+- **Channel Messages**: list_channel_messages, get_channel_message, search_channel_messages
+- **Features**: Message content search, HTML-to-markdown conversion, date filtering, context information (chat/channel details), attachment support, reply handling
+
 ### Utility Tools (1 tool)
 - **unified_search**: Cross-service search across emails, events, files
 
@@ -151,6 +156,7 @@ SCOPES = [
     "User.Read",                    # Read user profile
     "User.ReadBasic.All",          # Read basic user info
     "Chat.Read",                   # Read chat messages
+    "ChannelMessage.Read.All",     # Read channel messages from all channels
     "Mail.Read",                   # Read emails
     "Team.ReadBasic.All",          # Read team info
     "TeamMember.ReadWrite.All",    # Manage team membership

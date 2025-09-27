@@ -913,7 +913,6 @@ def unified_search(
     kql_filters: str | None = None,
     include_body: bool = False,
     body_max_length: int = 1000,
-    minimal_response: bool = True,
 ) -> dict[str, Any]:
     """Universal search across Microsoft 365 content using the Microsoft Search API.
 
@@ -944,20 +943,17 @@ def unified_search(
             - "author:\"John Smith\"" - Content authored by John Smith
         include_body: Whether to include full body/content (increases response size)
         body_max_length: Maximum characters for body content when included (default 1000)
-        minimal_response: Strip unnecessary metadata to reduce token usage (default True)
 
     Returns:
         Search results containing:
         - summary: Search statistics (total results, entity type breakdown)
-        - results: Array of matching items, each with:
+        - results: Array of matching items containing all available fields from Microsoft Graph API:
+            - All original fields from the API resource
             - entity_type: Type of content (message, event, driveItem, etc.)
-            - id: Unique identifier for the item
-            - title/subject: Item title or email subject
-            - summary: Brief content preview
-            - relevance_rank: Search relevance score
-            - metadata: Key properties (sender, dates, size, etc.)
-            - body: Full content if include_body=True
-            - url: Deep link to open item (when available)
+            - search_rank: Search relevance score
+            - search_summary: Brief content preview from search
+            - conversation_url: Deep link for messages (when available)
+            - body: Full content if include_body=True (converted to markdown for HTML content)
 
     Examples:
         - unified_search("budget meeting") - Find all content about budget meetings
@@ -968,11 +964,11 @@ def unified_search(
         - unified_search("important", entity_types=["message"], kql_filters="IsMentioned:true") - Important emails mentioning you
 
     Note: KQL filters allow precise control over search scope and can significantly improve relevance.
-    Use minimal_response=True (default) for better performance and reduced token usage in conversations.
+    Results now include all available fields from the Microsoft Graph API for maximum information.
     """
     logger.info(
         f"unified_search called: query='{query}', entity_types={entity_types}, "
-        f"kql_filters='{kql_filters}', limit={limit}, include_body={include_body}, minimal_response={minimal_response}"
+        f"kql_filters='{kql_filters}', limit={limit}, include_body={include_body}"
     )
 
     try:
@@ -1037,27 +1033,27 @@ def unified_search(
         }
 
         # Add fields for better results
-        if include_body:
-            request_payload["requests"][0]["fields"] = [
-                "id",
-                "subject",
-                "title",
-                "name",
-                "body",
-                "content",
-                "summary",
-                "from",
-                "to",
-                "sender",
-                "author",
-                "createdDateTime",
-                "lastModifiedDateTime",
-                "receivedDateTime",
-                "sentDateTime",
-                "size",
-                "webUrl",
-                "webLink",
-            ]
+        # if include_body:
+        #     request_payload["requests"][0]["fields"] = [
+        #         "id",
+        #         "subject",
+        #         "title",
+        #         "name",
+        #         "body",
+        #         "content",
+        #         "summary",
+        #         "from",
+        #         "to",
+        #         "sender",
+        #         "author",
+        #         "createdDateTime",
+        #         "lastModifiedDateTime",
+        #         "receivedDateTime",
+        #         "sentDateTime",
+        #         "size",
+        #         "webUrl",
+        #         "webLink",
+        #     ]
 
         all_results = []
         entity_type_counts = {}
@@ -1122,7 +1118,6 @@ def unified_search(
                                         hit,
                                         include_body,
                                         body_max_length,
-                                        minimal_response,
                                     )
                                     if processed_item:
                                         all_results.append(processed_item)
@@ -1158,7 +1153,6 @@ def unified_search(
                 "entity_type_counts": entity_type_counts,
                 "limit_applied": limit,
                 "include_body": include_body,
-                "minimal_response": minimal_response,
             },
             "results": all_results[:limit],  # Apply final limit
         }
@@ -1188,15 +1182,22 @@ def _process_search_hit(
     hit: dict[str, Any],
     include_body: bool,
     body_max_length: int,
-    minimal_response: bool,
 ) -> dict[str, Any] | None:
-    """Process a single search hit from Microsoft Graph Search API."""
+    """Process a single search hit from Microsoft Graph Search API.
+
+    Returns the resource data directly from the API with minimal processing,
+    just adding entity type detection and body content handling.
+    """
     try:
         resource = hit.get("resource", {})
         if not resource:
             return None
 
-        # Determine entity type from @odata.type
+        # Make a copy of the resource to avoid modifying the original
+        result = dict(resource)
+        logger.info(f"Processing search hit resource: {result}")
+
+        # Add entity type detection from @odata.type
         odata_type = resource.get("@odata.type", "").lower()
         entity_type = "unknown"
 
@@ -1219,149 +1220,53 @@ def _process_search_hit(
         elif "drive" in odata_type:
             entity_type = "drive"
 
-        # Build processed item
-        processed = {
-            "entity_type": entity_type,
-            "id": resource.get("id"),
-            "rank": hit.get("rank", 0),
-            "summary": hit.get("summary", ""),
-        }
+        result["entity_type"] = entity_type
 
-        # Add title/subject
-        title = (
-            resource.get("subject")
-            or resource.get("title")
-            or resource.get("name")
-            or resource.get("displayName")
-            or "Untitled"
-        )
-        processed["title"] = title
+        # Add search metadata from the hit
+        result["search_rank"] = hit.get("rank", 0)
+        result["search_summary"] = hit.get("summary", "")
 
-        # Add key metadata based on entity type
-        metadata = {}
-
-        if entity_type == "message":
-            metadata.update(
-                {
-                    "from": resource.get("from"),
-                    "to": resource.get("toRecipients"),
-                    "receivedDateTime": resource.get("receivedDateTime"),
-                    "sentDateTime": resource.get("sentDateTime"),
-                    "hasAttachments": resource.get("hasAttachments"),
-                    "isRead": resource.get("isRead"),
-                    "conversationId": resource.get("conversationId"),
-                }
-            )
-            if resource.get("conversationId"):
-                processed["url"] = (
-                    f"https://outlook.office.com/mail/deeplink/readconv/{quote(resource['conversationId'], safe='')}"
-                )
-
-        elif entity_type == "event":
-            metadata.update(
-                {
-                    "start": resource.get("start"),
-                    "end": resource.get("end"),
-                    "location": resource.get("location"),
-                    "organizer": resource.get("organizer"),
-                    "attendees": (
-                        resource.get("attendees", [])
-                        if not minimal_response
-                        else len(resource.get("attendees", []))
-                    ),
-                    "isAllDay": resource.get("isAllDay"),
-                    "recurrence": resource.get("recurrence"),
-                }
+        # Add conversation URL for messages
+        if entity_type == "message" and resource.get("conversationId"):
+            result["conversation_url"] = (
+                f"https://outlook.office.com/mail/deeplink/readconv/{quote(resource['conversationId'], safe='')}"
             )
 
-        elif entity_type == "driveItem":
-            metadata.update(
-                {
-                    "size": resource.get("size"),
-                    "lastModifiedDateTime": resource.get("lastModifiedDateTime"),
-                    "createdDateTime": resource.get("createdDateTime"),
-                    "file": resource.get("file"),
-                    "folder": resource.get("folder"),
-                }
-            )
-            processed["type"] = "folder" if "folder" in resource else "file"
-            if resource.get("@microsoft.graph.downloadUrl"):
-                processed["download_url"] = resource["@microsoft.graph.downloadUrl"]
+        # Process body content if requested
+        if include_body and "body" in result:
+            if isinstance(result["body"], dict):
+                body_content = result["body"].get("content", "")
+                content_type = result["body"].get("contentType", "")
 
-        elif entity_type == "chatMessage":
-            metadata.update(
-                {
-                    "from": resource.get("from"),
-                    "createdDateTime": resource.get("createdDateTime"),
-                    "messageType": resource.get("messageType"),
-                    "chatId": resource.get("chatId"),
-                    "channelIdentity": resource.get("channelIdentity"),
-                }
-            )
-            if resource.get("webUrl"):
-                processed["url"] = resource["webUrl"]
+                # Convert HTML to markdown if needed
+                if content_type.lower() == "html" and body_content:
+                    body_content = convert_to_markdown(body_content)
+                    result["body"]["contentType"] = "text/markdown"
 
-        elif entity_type == "person":
-            metadata.update(
-                {
-                    "emailAddresses": (
-                        resource.get("emailAddresses", [])
-                        if not minimal_response
-                        else len(resource.get("emailAddresses", []))
-                    ),
-                    "jobTitle": resource.get("jobTitle"),
-                    "companyName": resource.get("companyName"),
-                    "department": resource.get("department"),
-                }
-            )
-
-        # Add web URLs
-        if resource.get("webUrl"):
-            processed["url"] = resource["webUrl"]
-        elif resource.get("webLink"):
-            processed["url"] = resource["webLink"]
-
-        # Add body content if requested
-        if include_body:
-            body_content = None
-
-            if "body" in resource:
-                if isinstance(resource["body"], dict):
-                    body_content = resource["body"].get("content", "")
-                    content_type = resource["body"].get("contentType", "")
-
-                    # Convert HTML to markdown if needed
-                    if content_type.lower() == "html" and body_content:
-                        body_content = convert_to_markdown(body_content)
+                # Truncate if necessary
+                if body_content and len(body_content) > body_max_length:
+                    result["body"]["content"] = (
+                        body_content[:body_max_length] + "...[truncated]"
+                    )
+                    result["body"]["truncated"] = True
+                    result["body"]["original_length"] = len(body_content)
                 else:
-                    body_content = str(resource["body"])
+                    result["body"]["content"] = body_content
+        elif not include_body and "body" in result:
+            # Remove body if not requested
+            del result["body"]
 
-            elif "content" in resource:
-                body_content = resource.get("content", "")
+        # Handle content field for files/documents
+        if include_body and "content" in result:
+            content = result["content"]
+            if content and len(content) > body_max_length:
+                result["content"] = content[:body_max_length] + "...[truncated]"
+                result["content_truncated"] = True
+                result["original_content_length"] = len(content)
+        elif not include_body and "content" in result:
+            del result["content"]
 
-            if body_content and len(body_content) > body_max_length:
-                body_content = body_content[:body_max_length] + "...[truncated]"
-
-            if body_content:
-                processed["body"] = body_content
-
-        # Add metadata (filter out None values and empty collections if minimal_response)
-        if minimal_response:
-            metadata = {
-                k: v
-                for k, v in metadata.items()
-                if v is not None and (not isinstance(v, (list, dict)) or v)
-            }
-        else:
-            metadata = {k: v for k, v in metadata.items() if v is not None}
-
-        if metadata:
-            processed["metadata"] = metadata
-
-        # Remove None values from top level
-        processed = {k: v for k, v in processed.items() if v is not None}
-
-        return processed
+        return result
 
     except Exception as e:
         logger.warning(f"Failed to process search hit: {str(e)}")

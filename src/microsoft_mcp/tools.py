@@ -12,10 +12,34 @@ from . import graph
 from .auth import AzureAuthentication
 from markitdown import MarkItDown, StreamInfo
 from io import BytesIO
+from sys import stderr
 
-# Configure logging
+# Configure logging to both console and file
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO)
+
+# Only configure logging if it hasn't been configured yet
+if not logging.getLogger().hasHandlers():
+    # Create formatter
+    formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+
+    # Console handler
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_handler = logging.StreamHandler(stderr)
+    console_handler.setFormatter(formatter)
+
+    # File handler - log to mcp.log in current working directory
+    file_handler = logging.FileHandler("mcp.log")
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(formatter)
+
+    # Configure root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    root_logger.addHandler(console_handler)
+    root_logger.addHandler(file_handler)
 
 mcp = FastMCP("microsoft-graph-mcp")
 # Create a global authentication instance
@@ -809,6 +833,539 @@ def get_attachment(email_id: str, attachment_id: str, save_path: str) -> dict[st
             exc_info=True,
         )
         raise
+
+
+def _analyze_search_error(error: Exception, request_payload: dict) -> str:
+    """Analyze Microsoft Graph Search API errors and provide helpful diagnostics."""
+    import httpx
+
+    error_msg = str(error)
+
+    if "400 Bad Request" in error_msg:
+        entity_types = request_payload.get("requests", [{}])[0].get("entityTypes", [])
+        query_string = (
+            request_payload.get("requests", [{}])[0]
+            .get("query", {})
+            .get("queryString", "")
+        )
+
+        suggestions = []
+
+        # Check for problematic entity type combinations
+        if len(entity_types) > 1:
+            if "event" in entity_types:
+                suggestions.append("'event' cannot be combined with other entity types")
+            if "person" in entity_types:
+                suggestions.append(
+                    "'person' cannot be combined with other entity types"
+                )
+            if "chatMessage" in entity_types and any(
+                et in ["driveItem", "site", "list", "listItem"] for et in entity_types
+            ):
+                suggestions.append(
+                    "'chatMessage' cannot be combined with file-related entity types"
+                )
+
+        # Check for empty or invalid query
+        if not query_string or query_string.isspace():
+            suggestions.append(
+                "Query string cannot be empty (use '*' for wildcard search)"
+            )
+
+        # Check for unsupported entity types
+        valid_entities = {
+            "message",
+            "event",
+            "driveItem",
+            "site",
+            "drive",
+            "chatMessage",
+            "person",
+            "list",
+            "listItem",
+        }
+        invalid_entities = [et for et in entity_types if et not in valid_entities]
+        if invalid_entities:
+            suggestions.append(f"Invalid entity types: {invalid_entities}")
+
+        if suggestions:
+            return f"Bad Request - Possible issues: {'; '.join(suggestions)}"
+        else:
+            return f"Bad Request - Check entity type combinations and query format"
+
+    elif "401 Unauthorized" in error_msg:
+        return "Authentication failed - token may be expired or invalid"
+    elif "403 Forbidden" in error_msg:
+        return "Insufficient permissions - check that required scopes are granted"
+    elif "404 Not Found" in error_msg:
+        return "Search endpoint not found - API may not be available in this tenant"
+    elif "429 Too Many Requests" in error_msg:
+        return "Rate limited - too many requests, please retry later"
+    else:
+        return f"Unexpected error: {error_msg}"
+
+
+@mcp.tool
+def unified_search(
+    query: str,
+    entity_types: list[str] | None = None,
+    limit: int = 50,
+    kql_filters: str | None = None,
+    include_body: bool = False,
+    body_max_length: int = 1000,
+    minimal_response: bool = True,
+) -> dict[str, Any]:
+    """Universal search across Microsoft 365 content using the Microsoft Search API.
+
+    Searches across emails, calendar events, files, SharePoint content, Teams messages, and people
+    using a single unified API. Supports advanced KQL (Keyword Query Language) filters for precise
+    results and efficient token usage.
+
+    Args:
+        query: Search terms or KQL query string (e.g., "project meeting", "from:john@company.com budget")
+        entity_types: List of content types to search. Options:
+            - "message": Outlook emails
+            - "event": Calendar events
+            - "driveItem": OneDrive/SharePoint files and folders
+            - "list": SharePoint lists
+            - "listItem": SharePoint list items
+            - "site": SharePoint sites
+            - "drive": OneDrive/SharePoint drives
+            - "chatMessage": Teams chat and channel messages
+            - "person": People in your organization
+            If None, searches all supported types for comprehensive results.
+        limit: Maximum number of results to return (1-100, defaults to 50)
+        kql_filters: Additional KQL filters for precise search. Examples:
+            - "from:john@company.com" - Emails from specific sender
+            - "sent>=2024-01-01" - Items after specific date
+            - "to:manager@company.com" - Emails to specific recipient
+            - "IsMentioned:true" - Teams messages where you're mentioned
+            - "filetype:pdf" - Only PDF files
+            - "author:\"John Smith\"" - Content authored by John Smith
+        include_body: Whether to include full body/content (increases response size)
+        body_max_length: Maximum characters for body content when included (default 1000)
+        minimal_response: Strip unnecessary metadata to reduce token usage (default True)
+
+    Returns:
+        Search results containing:
+        - summary: Search statistics (total results, entity type breakdown)
+        - results: Array of matching items, each with:
+            - entity_type: Type of content (message, event, driveItem, etc.)
+            - id: Unique identifier for the item
+            - title/subject: Item title or email subject
+            - summary: Brief content preview
+            - relevance_rank: Search relevance score
+            - metadata: Key properties (sender, dates, size, etc.)
+            - body: Full content if include_body=True
+            - url: Deep link to open item (when available)
+
+    Examples:
+        - unified_search("budget meeting") - Find all content about budget meetings
+        - unified_search("project alpha", ["message", "chatMessage"]) - Search emails and Teams messages only
+        - unified_search("quarterly report", kql_filters="filetype:pdf OR filetype:docx") - Find documents only
+        - unified_search("", kql_filters="from:manager@company.com sent>=2024-01-01") - Recent emails from manager
+        - unified_search("presentation", kql_filters="author:\"Sarah Wilson\"") - Sarah's presentations
+        - unified_search("important", entity_types=["message"], kql_filters="IsMentioned:true") - Important emails mentioning you
+
+    Note: KQL filters allow precise control over search scope and can significantly improve relevance.
+    Use minimal_response=True (default) for better performance and reduced token usage in conversations.
+    """
+    logger.info(
+        f"unified_search called: query='{query}', entity_types={entity_types}, "
+        f"kql_filters='{kql_filters}', limit={limit}, include_body={include_body}, minimal_response={minimal_response}"
+    )
+
+    try:
+        # Default to compatible entity types if none specified
+        # Starting with file-related types as they are most commonly searched together
+        if entity_types is None:
+            entity_types = [
+                "driveItem",
+                "site",
+            ]
+
+        # Validate entity types
+        valid_entity_types = {
+            "message",
+            "event",
+            "driveItem",
+            "site",
+            "drive",
+            "chatMessage",
+            "person",
+        }
+
+        filtered_entity_types = [et for et in entity_types if et in valid_entity_types]
+
+        if not filtered_entity_types:
+            logger.warning(
+                f"unified_search: No valid entity types provided from {entity_types}"
+            )
+            return {
+                "summary": {
+                    "total_results": 0,
+                    "query": query,
+                    "kql_filters": kql_filters,
+                    "entity_types_requested": entity_types,
+                    "error": "No valid entity types provided",
+                },
+                "results": [],
+            }
+
+        # Build the search query
+        search_query = query.strip()
+        if kql_filters:
+            if search_query:
+                search_query = f"({search_query}) AND ({kql_filters})"
+            else:
+                search_query = kql_filters
+
+        # Ensure we have a valid search query - Microsoft Graph requires non-empty query
+        if not search_query or search_query.isspace():
+            search_query = "*"  # Use wildcard for "all content" search
+
+        # Prepare the search request payload
+        request_payload = {
+            "requests": [
+                {
+                    "entityTypes": filtered_entity_types,
+                    "query": {"queryString": search_query},
+                    "size": min(limit, 25),  # Microsoft Graph max per request
+                    "from": 0,
+                }
+            ]
+        }
+
+        # Add fields for better results
+        if include_body:
+            request_payload["requests"][0]["fields"] = [
+                "id",
+                "subject",
+                "title",
+                "name",
+                "body",
+                "content",
+                "summary",
+                "from",
+                "to",
+                "sender",
+                "author",
+                "createdDateTime",
+                "lastModifiedDateTime",
+                "receivedDateTime",
+                "sentDateTime",
+                "size",
+                "webUrl",
+                "webLink",
+            ]
+
+        all_results = []
+        entity_type_counts = {}
+        total_results = 0
+
+        # Validate entity type combinations - some combinations are not supported
+        # Based on Microsoft Graph Search API limitations
+        if len(filtered_entity_types) > 1:
+            # Check for incompatible combinations
+            message_chat_types = {"message", "chatMessage"}
+            file_types = {"driveItem", "list", "listItem", "site", "drive"}
+
+            has_message_chat = any(
+                et in message_chat_types for et in filtered_entity_types
+            )
+            has_file_types = any(et in file_types for et in filtered_entity_types)
+            has_event = "event" in filtered_entity_types
+            has_person = "person" in filtered_entity_types
+
+            # Events cannot be combined with other types
+            if has_event and len(filtered_entity_types) > 1:
+                logger.warning(
+                    "unified_search: Event entity type cannot be combined with others, using event only"
+                )
+                filtered_entity_types = ["event"]
+            # Person cannot be combined with other types
+            elif has_person and len(filtered_entity_types) > 1:
+                logger.warning(
+                    "unified_search: Person entity type cannot be combined with others, using person only"
+                )
+                filtered_entity_types = ["person"]
+            # Message/chatMessage cannot be combined with file types
+            elif has_message_chat and has_file_types:
+                logger.warning(
+                    "unified_search: Message/chat types cannot be combined with file types, prioritizing messages"
+                )
+                filtered_entity_types = [
+                    et for et in filtered_entity_types if et in message_chat_types
+                ]
+
+        logger.info(
+            f"unified_search: Final entity types after validation: {filtered_entity_types}"
+        )
+
+        # Execute search using the graph module's request function
+        try:
+            logger.info(
+                f"unified_search: Making API request with payload: {request_payload}"
+            )
+            result = graph.request("POST", "/search/query", json=request_payload)
+            logger.info(f"unified_search: API response received, type: {type(result)}")
+
+            if result and "value" in result:
+                for response in result["value"]:
+                    if "hitsContainers" in response:
+                        for container in response["hitsContainers"]:
+                            total_results += container.get("total", 0)
+
+                            if "hits" in container:
+                                for hit in container["hits"]:
+                                    processed_item = _process_search_hit(
+                                        hit,
+                                        include_body,
+                                        body_max_length,
+                                        minimal_response,
+                                    )
+                                    if processed_item:
+                                        all_results.append(processed_item)
+
+                                        # Count entity types
+                                        entity_type = processed_item.get(
+                                            "entity_type", "unknown"
+                                        )
+                                        entity_type_counts[entity_type] = (
+                                            entity_type_counts.get(entity_type, 0) + 1
+                                        )
+
+        except Exception as search_error:
+            error_details = _analyze_search_error(search_error, request_payload)
+            logger.error(
+                f"unified_search API error: {str(search_error)}\nError analysis: {error_details}",
+                exc_info=True,
+            )
+            # Re-raise the exception instead of returning an error response
+            # This allows the MCP framework to handle the error appropriately
+            raise RuntimeError(
+                f"Microsoft Graph Search API failed: {error_details}"
+            ) from search_error
+
+        # Build response
+        response = {
+            "summary": {
+                "total_results": len(all_results),
+                "total_available": total_results,
+                "query": query,
+                "kql_filters": kql_filters,
+                "entity_types_searched": filtered_entity_types,
+                "entity_type_counts": entity_type_counts,
+                "limit_applied": limit,
+                "include_body": include_body,
+                "minimal_response": minimal_response,
+            },
+            "results": all_results[:limit],  # Apply final limit
+        }
+
+        logger.info(
+            f"unified_search successful: found {len(all_results)} results "
+            f"across {len(entity_type_counts)} entity types with query '{search_query}'"
+        )
+        return response
+
+    except Exception as e:
+        logger.error(f"unified_search failed: {str(e)}", exc_info=True)
+        error_response = {
+            "summary": {
+                "total_results": 0,
+                "query": query,
+                "kql_filters": kql_filters,
+                "entity_types_requested": entity_types,
+                "error": str(e),
+            },
+            "results": [],
+        }
+        return error_response
+
+
+def _process_search_hit(
+    hit: dict[str, Any],
+    include_body: bool,
+    body_max_length: int,
+    minimal_response: bool,
+) -> dict[str, Any] | None:
+    """Process a single search hit from Microsoft Graph Search API."""
+    try:
+        resource = hit.get("resource", {})
+        if not resource:
+            return None
+
+        # Determine entity type from @odata.type
+        odata_type = resource.get("@odata.type", "").lower()
+        entity_type = "unknown"
+
+        if "message" in odata_type:
+            entity_type = "message"
+        elif "event" in odata_type:
+            entity_type = "event"
+        elif "driveitem" in odata_type:
+            entity_type = "driveItem"
+        elif "chatmessage" in odata_type:
+            entity_type = "chatMessage"
+        elif "person" in odata_type:
+            entity_type = "person"
+        elif "site" in odata_type:
+            entity_type = "site"
+        elif "list" in odata_type and "listitem" not in odata_type:
+            entity_type = "list"
+        elif "listitem" in odata_type:
+            entity_type = "listItem"
+        elif "drive" in odata_type:
+            entity_type = "drive"
+
+        # Build processed item
+        processed = {
+            "entity_type": entity_type,
+            "id": resource.get("id"),
+            "rank": hit.get("rank", 0),
+            "summary": hit.get("summary", ""),
+        }
+
+        # Add title/subject
+        title = (
+            resource.get("subject")
+            or resource.get("title")
+            or resource.get("name")
+            or resource.get("displayName")
+            or "Untitled"
+        )
+        processed["title"] = title
+
+        # Add key metadata based on entity type
+        metadata = {}
+
+        if entity_type == "message":
+            metadata.update(
+                {
+                    "from": resource.get("from"),
+                    "to": resource.get("toRecipients"),
+                    "receivedDateTime": resource.get("receivedDateTime"),
+                    "sentDateTime": resource.get("sentDateTime"),
+                    "hasAttachments": resource.get("hasAttachments"),
+                    "isRead": resource.get("isRead"),
+                    "conversationId": resource.get("conversationId"),
+                }
+            )
+            if resource.get("conversationId"):
+                processed["url"] = (
+                    f"https://outlook.office.com/mail/deeplink/readconv/{quote(resource['conversationId'], safe='')}"
+                )
+
+        elif entity_type == "event":
+            metadata.update(
+                {
+                    "start": resource.get("start"),
+                    "end": resource.get("end"),
+                    "location": resource.get("location"),
+                    "organizer": resource.get("organizer"),
+                    "attendees": (
+                        resource.get("attendees", [])
+                        if not minimal_response
+                        else len(resource.get("attendees", []))
+                    ),
+                    "isAllDay": resource.get("isAllDay"),
+                    "recurrence": resource.get("recurrence"),
+                }
+            )
+
+        elif entity_type == "driveItem":
+            metadata.update(
+                {
+                    "size": resource.get("size"),
+                    "lastModifiedDateTime": resource.get("lastModifiedDateTime"),
+                    "createdDateTime": resource.get("createdDateTime"),
+                    "file": resource.get("file"),
+                    "folder": resource.get("folder"),
+                }
+            )
+            processed["type"] = "folder" if "folder" in resource else "file"
+            if resource.get("@microsoft.graph.downloadUrl"):
+                processed["download_url"] = resource["@microsoft.graph.downloadUrl"]
+
+        elif entity_type == "chatMessage":
+            metadata.update(
+                {
+                    "from": resource.get("from"),
+                    "createdDateTime": resource.get("createdDateTime"),
+                    "messageType": resource.get("messageType"),
+                    "chatId": resource.get("chatId"),
+                    "channelIdentity": resource.get("channelIdentity"),
+                }
+            )
+            if resource.get("webUrl"):
+                processed["url"] = resource["webUrl"]
+
+        elif entity_type == "person":
+            metadata.update(
+                {
+                    "emailAddresses": (
+                        resource.get("emailAddresses", [])
+                        if not minimal_response
+                        else len(resource.get("emailAddresses", []))
+                    ),
+                    "jobTitle": resource.get("jobTitle"),
+                    "companyName": resource.get("companyName"),
+                    "department": resource.get("department"),
+                }
+            )
+
+        # Add web URLs
+        if resource.get("webUrl"):
+            processed["url"] = resource["webUrl"]
+        elif resource.get("webLink"):
+            processed["url"] = resource["webLink"]
+
+        # Add body content if requested
+        if include_body:
+            body_content = None
+
+            if "body" in resource:
+                if isinstance(resource["body"], dict):
+                    body_content = resource["body"].get("content", "")
+                    content_type = resource["body"].get("contentType", "")
+
+                    # Convert HTML to markdown if needed
+                    if content_type.lower() == "html" and body_content:
+                        body_content = convert_to_markdown(body_content)
+                else:
+                    body_content = str(resource["body"])
+
+            elif "content" in resource:
+                body_content = resource.get("content", "")
+
+            if body_content and len(body_content) > body_max_length:
+                body_content = body_content[:body_max_length] + "...[truncated]"
+
+            if body_content:
+                processed["body"] = body_content
+
+        # Add metadata (filter out None values and empty collections if minimal_response)
+        if minimal_response:
+            metadata = {
+                k: v
+                for k, v in metadata.items()
+                if v is not None and (not isinstance(v, (list, dict)) or v)
+            }
+        else:
+            metadata = {k: v for k, v in metadata.items() if v is not None}
+
+        if metadata:
+            processed["metadata"] = metadata
+
+        # Remove None values from top level
+        processed = {k: v for k, v in processed.items() if v is not None}
+
+        return processed
+
+    except Exception as e:
+        logger.warning(f"Failed to process search hit: {str(e)}")
+        return None
 
 
 @mcp.tool

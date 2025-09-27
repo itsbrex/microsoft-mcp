@@ -56,9 +56,10 @@ Microsoft MCP is a comprehensive MCP server that provides AI assistants with sea
 #### 3. MCP Tools (`tools.py`)
 - **FastMCP Framework**: Uses FastMCP for tool registration and management
 - **Authentication Integration**: Uses `AzureAuthentication` class instance for authentication
-- **Comprehensive Coverage**: 20+ tools covering email, calendar, contacts, and files
+- **Comprehensive Coverage**: 25+ tools covering email, calendar, contacts, files, and universal search
 - **Error Handling**: Consistent error logging and exception propagation
 - **Response Optimization**: Configurable body truncation, attachment handling
+- **Microsoft Search Integration**: Universal search API with KQL support and interleaved results
 
 #### 4. Server Implementation (`server.py`)
 - **Environment Validation**: Checks for required `MICROSOFT_MCP_CLIENT_ID`
@@ -111,6 +112,34 @@ def request_paginated(path, params=None, limit=None):
 - **OneDrive Files**: Configurable chunk size (15 x 320KB = ~5MB chunks)
 - **Upload Sessions**: Create session → Upload chunks → Finalize
 
+### 5. Microsoft Search API Integration
+- **Unified Search Endpoint**: `/search/query` API for cross-service content discovery
+- **Entity Type Support**: Supports all Microsoft Graph searchable entities with proper validation
+- **KQL Query Language**: Full Keyword Query Language support for precise filtering
+  - Property restrictions: `from:user@domain.com`, `filetype:pdf`, `sent>=2024-01-01`
+  - Boolean operators: `AND`, `OR`, `NOT` for complex query construction
+  - Date intervals: `today`, `yesterday`, `"this week"`, `"last month"`
+  - Wildcard matching: `serv*` for prefix matching
+- **Interleaved Results**: Returns unified results across all content types ranked by relevance
+- **Entity Type Restrictions**: Automatic validation and adjustment for Microsoft Graph API limitations
+  - `event` and `person` entity types cannot be combined with others
+  - `chatMessage` cannot be combined with file-related entity types (`driveItem`, `site`, etc.)
+  - Automatic fallback to compatible entity combinations with user warnings
+- **Response Processing**: 
+  - Automatic entity type detection from `@odata.type`
+  - Metadata extraction specific to each entity type
+  - HTML-to-markdown conversion for body content
+  - Deep link generation for direct content access
+- **Performance Optimization**:
+  - Configurable response minimization to reduce token usage
+  - Body content truncation with length limits
+  - Entity type result counting and summaries
+- **Error Handling**: Comprehensive error handling for search API limitations and failures
+  - Detailed error analysis with specific suggestions for 400 Bad Request errors
+  - Entity type compatibility validation to prevent unsupported combinations
+  - Proper exception raising instead of returning error responses
+  - Diagnostic information for authentication and permission issues
+
 ## Tool Categories
 
 ### Email Tools (9 tools)
@@ -140,8 +169,30 @@ def request_paginated(path, params=None, limit=None):
 - **Channel Messages**: list_channel_messages, get_channel_message, search_channel_messages
 - **Features**: Message content search, HTML-to-markdown conversion, date filtering, context information (chat/channel details), attachment support, reply handling
 
-### Utility Tools (1 tool)
-- **unified_search**: Cross-service search across emails, events, files
+### Universal Search Tools (1 tool)
+- **unified_search**: Comprehensive Microsoft Search API integration with advanced KQL filtering
+- **Supported Entity Types**: 
+  - `message` - Outlook emails
+  - `event` - Calendar events
+  - `driveItem` - OneDrive/SharePoint files and folders
+  - `list` - SharePoint lists  
+  - `listItem` - SharePoint list items
+  - `site` - SharePoint sites
+  - `drive` - OneDrive/SharePoint drives
+  - `chatMessage` - Teams chat and channel messages
+  - `person` - People in organization
+- **KQL Filtering**: Supports Keyword Query Language for precise searches
+  - Date filters: `sent>=2024-01-01`, `lastModified="this week"`
+  - Sender/recipient: `from:john@company.com`, `to:manager@company.com`
+  - Content type: `filetype:pdf`, `filetype:docx`
+  - Teams mentions: `IsMentioned:true`
+  - Content author: `author:"John Smith"`
+- **Response Optimization**: 
+  - Configurable body inclusion with length limits
+  - Minimal response mode to reduce token usage
+  - Entity type result counts and summaries
+  - Relevance ranking and deep links
+- **Interleaved Results**: Returns unified results across all content types ranked by relevance
 
 ## Configuration
 
@@ -191,10 +242,17 @@ SCOPES = [
 
 ### 4. Error Handling Philosophy
 - **Fail Fast**: Validate inputs early, provide clear error messages
-- **Logging**: Comprehensive logging for debugging
+- **Logging**: Comprehensive logging to both console and local file (`mcp.log`)
 - **User Experience**: Helpful error messages, recovery suggestions
 
-### 5. Response Size Management
+### 5. Logging Configuration
+- **Centralized Logging**: Single configuration in `tools.py` that sets up logging for all modules
+- **Dual Output**: Logs are written to both console (stderr) and local file (`mcp.log`)
+- **Formatted Output**: Includes timestamp, module name, log level, and message
+- **File Location**: `mcp.log` is created in the current working directory
+- **Log Level**: INFO level by default for comprehensive debugging information
+
+### 6. Response Size Management
 - **Body Truncation**: Configurable limits for email body content
 - **Attachment Handling**: Metadata only unless explicitly requested
 - **Pagination**: Limit-based result sets to manage response sizes

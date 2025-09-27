@@ -57,7 +57,6 @@ from msgraph import GraphServiceClient
 
 # Configure logging
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO)
 
 load_dotenv()
 
@@ -74,7 +73,7 @@ SCOPES = [
     "Chat.Read",
     "ChannelMessage.Read.All",
     "Sites.Read.All",
-    "Files.Read.All"
+    "Files.Read.All",
 ]
 
 # Scopes useful for full search:
@@ -113,12 +112,16 @@ class AzureAuthentication:
         if auth_record_file:
             self.auth_record_file = Path(auth_record_file).resolve()
         else:
-            self.auth_record_file = (Path.home() / ".ms-graph-mcp-azure-auth-record.json").resolve()
+            self.auth_record_file = (
+                Path.home() / ".ms-graph-mcp-azure-auth-record.json"
+            ).resolve()
 
         if token_cache_file:
             self.token_cache_file = Path(token_cache_file).resolve()
         else:
-            self.token_cache_file = (Path.home() / ".ms-graph-mcp-azure-token-cache").resolve()
+            self.token_cache_file = (
+                Path.home() / ".ms-graph-mcp-azure-token-cache"
+            ).resolve()
             # the actual name will have a `nocache` suffix
         self._credential_instance = None
 
@@ -337,8 +340,8 @@ class AzureAuthentication:
         This doesn't guarantee the token is valid, but indicates if silent auth is possible.
         """
         try:
-            if not self.auth_record_file.exists():
-                return False
+            # if not self.auth_record_file.exists():
+            #    return False
 
             credential = self.get_credential()
             # Try to get a token silently

@@ -13,14 +13,28 @@ Powerful MCP server for Microsoft Graph API - a complete AI assistant toolkit fo
 - **🗂️ Flexible Storage**: Configurable credential and token cache locations
 - **🛡️ Secure Token Management**: Platform-specific secure storage via Azure SDK
 
-## Quick Start with Claude Desktop
+## Quick Start
+
+### One-Line Interactive Installer (Recommended)
 
 ```bash
-# Add Microsoft MCP server (replace with your Azure app ID)
-claude mcp add microsoft-mcp -e MICROSOFT_MCP_CLIENT_ID=your-app-id-here -- uvx --from git+https://github.com/marc-hanheide/microsoft-mcp.git microsoft-mcp
+curl -fsSL https://raw.githubusercontent.com/marc-hanheide/microsoft-mcp/main/scripts/install.sh | bash
+```
 
-# Start Claude Desktop
-claude
+This interactive installer:
+- Lets you choose targets: **Claude Code**, **Cursor**, and/or **Claude Desktop**
+- Lets you choose auth: **MSAL device code** (no setup) or **Azure SDK** (browser)
+- Handles config merging with existing MCP servers
+- Runs initial authentication
+
+### Manual Quick Start (Claude Code)
+
+```bash
+# Using MSAL (no Azure app registration needed)
+claude mcp add microsoft-mcp -e MICROSOFT_MCP_AUTH_METHOD=msal -- uvx --from git+https://github.com/marc-hanheide/microsoft-mcp.git microsoft-mcp
+
+# Or with Azure SDK (requires app registration)
+claude mcp add microsoft-mcp -e MICROSOFT_MCP_CLIENT_ID=your-app-id-here -- uvx --from git+https://github.com/marc-hanheide/microsoft-mcp.git microsoft-mcp
 ```
 
 ### Usage Examples

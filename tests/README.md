@@ -6,31 +6,41 @@ This directory contains unit tests for the Microsoft Graph MCP (Model Context Pr
 
 ### Core Test Files
 
-- **`test_auth.py`** - Tests for Azure authentication module
+- **`test_auth.py`** (17 tests) - Tests for Azure SDK authentication module
   - Authentication credential creation and configuration
   - Token management and caching
   - AuthenticationRecord persistence
+  - Scopes configuration (including extended search scopes)
   - Graph client creation
   - Environment variable handling
 
-- **`test_graph.py`** - Tests for Microsoft Graph API interaction module
+- **`test_auth_msal.py`** (27 tests) - Tests for MSAL device code flow authentication
+  - Token file management (access, refresh tokens)
+  - Token validation and expiration handling
+  - Device code flow authentication
+  - Protocol compliance with AuthProvider
+  - Cache clearing and token refresh
+
+- **`test_graph.py`** (17 tests) - Tests for Microsoft Graph API interaction module
   - HTTP request handling and retries
   - Pagination support
   - Search query functionality
   - Error handling for various HTTP status codes
   - Rate limiting and exponential backoff
 
-- **`test_tools_simple.py`** - Tests for MCP tools core functionality
+- **`test_tools_simple.py`** (9 tests) - Tests for MCP tools core functionality
   - Folder mapping configuration
   - Parameter validation logic
   - Search and pagination parameter construction
   - Endpoint URL construction logic
 
-- **`test_integration.py`** - Integration tests between modules
+- **`test_integration.py`** (12 tests) - Integration tests between modules
   - Module imports and dependencies
   - Auth and graph module interaction
   - Configuration validation
   - Logging setup verification
+  - Unified search tool verification
+  - Search hit processing
 
 ### Test Configuration
 
@@ -55,19 +65,32 @@ pytest tests/test_auth.py -v
 pytest tests/ --cov=src/microsoft_mcp
 ```
 
-## Test Coverage
+## Test Coverage (81 tests)
 
 The tests cover the following key areas:
 
-### Authentication (`test_auth.py`)
+### Azure Authentication (`test_auth.py`) - 17 tests
 - ✅ Azure credential creation with various configurations
 - ✅ Token acquisition and caching mechanisms
 - ✅ AuthenticationRecord serialization/deserialization
+- ✅ Default and custom auth file paths
+- ✅ Scopes configuration (base + search scopes)
 - ✅ Environment variable validation
 - ✅ Error handling for missing credentials
 - ✅ Graph client instantiation
 
-### Graph API (`test_graph.py`)
+### MSAL Authentication (`test_auth_msal.py`) - 27 tests
+- ✅ Initialization with default and custom values
+- ✅ Environment variable configuration
+- ✅ Token file path generation
+- ✅ Token saving and loading
+- ✅ Token expiration validation
+- ✅ Token refresh mechanism
+- ✅ Device code flow authentication
+- ✅ AuthProvider protocol compliance
+- ✅ Cache clearing operations
+
+### Graph API (`test_graph.py`) - 17 tests
 - ✅ HTTP request construction and execution
 - ✅ Authentication header injection
 - ✅ Search request special headers (consistency level, prefer)
@@ -75,8 +98,9 @@ The tests cover the following key areas:
 - ✅ Pagination handling with @odata.nextLink
 - ✅ Search query with entity type filtering
 - ✅ Various HTTP error code handling
+- ✅ Network error handling
 
-### Tools Logic (`test_tools_simple.py`)
+### Tools Logic (`test_tools_simple.py`) - 9 tests
 - ✅ Folder name mapping and case-insensitive lookup
 - ✅ Email parameter validation and limits
 - ✅ Search parameter construction
@@ -84,11 +108,14 @@ The tests cover the following key areas:
 - ✅ Availability check payload creation
 - ✅ Dependency injection verification
 
-### Integration (`test_integration.py`)
+### Integration (`test_integration.py`) - 12 tests
 - ✅ Module import verification
 - ✅ Cross-module communication (auth ↔ graph)
 - ✅ Configuration constants
 - ✅ Base URL and endpoint validation
+- ✅ Unified search tool definition
+- ✅ Search entity type validation
+- ✅ Search hit processing helper function
 
 ## Test Strategy
 

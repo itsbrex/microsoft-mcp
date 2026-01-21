@@ -316,22 +316,37 @@ SCOPES = [
 src/microsoft_mcp/
 ├── __init__.py          # Package initialization
 ├── server.py            # MCP server entry point
-├── auth.py              # Authentication and token management
+├── auth.py              # Azure SDK authentication (browser-based)
+├── auth_msal.py         # MSAL device code flow authentication (CLI/headless)
+├── auth_base.py         # AuthProvider protocol definition
 ├── graph.py             # Microsoft Graph API client
-├── tools.py             # MCP tool implementations
-└── tools_old.py         # Legacy tools (reference)
+└── tools.py             # MCP tool implementations (30+ tools)
 
 tests/
-└── test_integration.py  # Comprehensive integration tests
+├── conftest.py          # Shared test fixtures
+├── test_auth.py         # Azure authentication tests
+├── test_auth_msal.py    # MSAL authentication tests
+├── test_graph.py        # Graph API client tests
+├── test_integration.py  # Module integration tests
+├── test_tools_simple.py # Tools logic tests
+└── README.md            # Test documentation
 
 authenticate.py          # Standalone authentication script
 ```
 
 ### Testing Strategy
-- **Integration Tests**: Full end-to-end testing with real Microsoft Graph API
-- **Authentication Testing**: Multi-account scenarios
-- **Tool Coverage**: All tools tested with real data
+- **Unit Tests**: Individual functions and classes with mocked dependencies
+- **Integration Tests**: Module interactions and dependency injection
+- **Authentication Testing**: Both Azure SDK and MSAL auth providers
+- **Tool Coverage**: Logic and parameter validation tests
 - **Error Scenarios**: Network failures, invalid inputs, permission issues
+
+### Test Coverage (81 tests)
+- **`test_auth.py`** (17 tests): Azure authentication class tests
+- **`test_auth_msal.py`** (27 tests): MSAL device code flow tests
+- **`test_graph.py`** (17 tests): Graph API client and search tests
+- **`test_integration.py`** (12 tests): Module integration tests
+- **`test_tools_simple.py`** (9 tests): Tools logic tests
 
 ### Development Workflow
 1. Environment setup with Azure app registration

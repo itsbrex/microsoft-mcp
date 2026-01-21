@@ -43,25 +43,36 @@ uvx ruff check --fix --unsafe-fixes .
   - Persists `AuthenticationRecord` to `~/.ms-graph-mcp-azure-auth-record.json`
   - Azure SDK handles all token caching/refresh automatically
 
+- **`auth_msal.py`** - MSAL device code flow authentication with `MSALRefreshTokenAuth` class
+  - Alternative for CLI/headless environments without browser access
+  - File-based token storage, compatible with outlook-creds tokens
+  - Uses Microsoft Office client ID by default (works out of box)
+
+- **`auth_base.py`** - Protocol definition for authentication providers
+  - `AuthProvider` protocol defining `get_token()`, `exists_valid_token()`, `authenticate()`, `clear_cache()`
+
 - **`graph.py`** - HTTP client for Microsoft Graph API
   - Uses `httpx` with retry logic (429 rate limiting, 5xx errors)
   - Handles pagination via `@odata.nextLink`
   - Supports large file uploads via chunked sessions
   - Global auth instance via `set_auth_instance()`/`get_auth_instance()`
 
-- **`tools.py`** - FastMCP tool implementations (25+ tools)
+- **`tools.py`** - FastMCP tool implementations (30+ tools)
   - Email (9 tools): list, get, send, reply, move, delete, attachments
   - Calendar (7 tools): events, availability, responses
   - Contacts (6 tools): CRUD + search
   - Files (6 tools): OneDrive operations
+  - Teams (6 tools): chat and channel messages
   - Search: unified search across all services with KQL support
-  - Initializes global `AzureAuthentication` instance and sets it on graph module
+  - Initializes global auth instance based on `MICROSOFT_MCP_AUTH_METHOD`
 
 - **`server.py`** - MCP server entry point, validates `MICROSOFT_MCP_CLIENT_ID`
 
 ### Key Patterns
 
-**Authentication Flow**: `tools.py` creates `AzureAuthentication` → sets on `graph` module → all Graph API calls use global instance
+**Authentication Flow**: `tools.py` creates auth instance based on `MICROSOFT_MCP_AUTH_METHOD` → sets on `graph` module → all Graph API calls use global instance
+
+**Dual Auth Support**: Azure SDK (browser) or MSAL (device code) via `MICROSOFT_MCP_AUTH_METHOD=azure|msal`
 
 **Dependency Injection**: Graph module uses global `_global_auth` instance; tests mock via `set_auth_instance()`
 
@@ -69,11 +80,18 @@ uvx ruff check --fix --unsafe-fixes .
 
 ### Environment Variables
 
+**Azure SDK Auth (default):**
 - `MICROSOFT_MCP_CLIENT_ID` (required) - Azure AD application ID
 - `MICROSOFT_MCP_TENANT_ID` (optional) - defaults to "common"
 - `MICROSOFT_MCP_REDIRECT_URI` (optional) - for non-localhost deployments
 - `AZURE_CRED_CACHE_FILE` (optional) - custom AuthenticationRecord path
 - `AZURE_TOKEN_CACHE_FILE` (optional) - custom token cache path
+
+**MSAL Auth:**
+- `MICROSOFT_MCP_AUTH_METHOD=msal` - enable MSAL device code flow
+- `MICROSOFT_MCP_CLIENT_ID` (optional) - defaults to Microsoft Office client ID
+- `MICROSOFT_MCP_TENANT_ID` (optional) - defaults to "common"
+- `MICROSOFT_MCP_TOKENS_DIR` (optional) - token storage directory (defaults to `~/.config/microsoft-mcp/tokens/`)
 
 ## Testing
 

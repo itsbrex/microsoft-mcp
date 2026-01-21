@@ -31,7 +31,7 @@ class TestGraphModule:
         retrieved_auth = get_auth_instance()
         assert retrieved_auth == self.mock_auth
 
-    @patch("src.microsoft_mcp.graph.AzureAuthentication")
+    @patch("src.microsoft_mcp.auth.AzureAuthentication")
     def test_get_auth_instance_creates_default(self, mock_auth_class):
         """Test that get_auth_instance creates a default instance when none exists."""
         # Reset global auth instance

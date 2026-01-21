@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """
 Authenticate Microsoft account for use with Microsoft MCP.
-Run this script to sign in to your Microsoft account using delegated access.
+
+Supports two authentication methods:
+1. Azure SDK (default) - Interactive browser flow
+2. MSAL - Device code flow (for CLI/headless environments)
+
+Set MICROSOFT_MCP_AUTH_METHOD=msal to use device code flow.
 """
 
 import os
@@ -12,46 +17,86 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from dotenv import load_dotenv
-from microsoft_mcp.auth import AzureAuthentication
 from microsoft_mcp import graph
+from microsoft_mcp.auth_base import AuthProvider
 
 # Load environment variables before anything else
 load_dotenv()
 
 
-def main():
-    if not os.getenv("MICROSOFT_MCP_CLIENT_ID"):
-        print("Error: MICROSOFT_MCP_CLIENT_ID environment variable is required")
-        print("\nPlease set it in your .env file or environment:")
-        print("export MICROSOFT_MCP_CLIENT_ID='your-app-id'")
-        print("\nNote: This should be the Application (client) ID from your")
-        print("Azure AD app registration configured for delegated access.")
-        print("\nOptional environment variables:")
-        print("- MICROSOFT_MCP_TENANT_ID: Tenant ID (defaults to 'common')")
-        print(
-            "- MICROSOFT_MCP_REDIRECT_URI: Custom redirect URI for non-localhost deployments"
+def get_auth_provider() -> AuthProvider:
+    """Create the appropriate auth provider based on environment configuration."""
+    auth_method = os.getenv("MICROSOFT_MCP_AUTH_METHOD", "azure").lower()
+
+    if auth_method == "msal":
+        from microsoft_mcp.auth_msal import MSALRefreshTokenAuth
+
+        return MSALRefreshTokenAuth(
+            tokens_dir=os.getenv("MICROSOFT_MCP_TOKENS_DIR"),
+            client_id=os.getenv("MICROSOFT_MCP_CLIENT_ID"),
+            tenant_id=os.getenv("MICROSOFT_MCP_TENANT_ID"),
         )
-        sys.exit(1)
-
-    print("Microsoft MCP Delegated Access Authentication")
-    print("============================================")
-    print("This tool will authenticate using delegated access, allowing")
-    print("the app to access Microsoft Graph on behalf of the signed-in user.")
-    print("Authentication will open a browser window for sign-in.")
-
-    # Show configuration info
-    redirect_uri = os.getenv("MICROSOFT_MCP_REDIRECT_URI")
-    if redirect_uri:
-        print(f"Using custom redirect URI: {redirect_uri}")
     else:
-        print("Using default localhost redirect URI")
+        from microsoft_mcp.auth import AzureAuthentication
+
+        return AzureAuthentication(
+            auth_record_file=os.getenv("AZURE_CRED_CACHE_FILE"),
+            token_cache_file=os.getenv("AZURE_TOKEN_CACHE_FILE"),
+        )
+
+
+def main():
+    auth_method = os.getenv("MICROSOFT_MCP_AUTH_METHOD", "azure").lower()
+
+    # Validate configuration based on auth method
+    if auth_method == "azure":
+        if not os.getenv("MICROSOFT_MCP_CLIENT_ID"):
+            print("Error: MICROSOFT_MCP_CLIENT_ID environment variable is required")
+            print("\nPlease set it in your .env file or environment:")
+            print("export MICROSOFT_MCP_CLIENT_ID='your-app-id'")
+            print("\nNote: This should be the Application (client) ID from your")
+            print("Azure AD app registration configured for delegated access.")
+            print("\nOptional environment variables:")
+            print("- MICROSOFT_MCP_TENANT_ID: Tenant ID (defaults to 'common')")
+            print(
+                "- MICROSOFT_MCP_REDIRECT_URI: Custom redirect URI for non-localhost deployments"
+            )
+            print("\nAlternatively, use MSAL auth (device code flow):")
+            print("export MICROSOFT_MCP_AUTH_METHOD=msal")
+            sys.exit(1)
+
+    print("Microsoft MCP Authentication")
+    print("=" * 50)
+
+    if auth_method == "msal":
+        print("Authentication Method: MSAL (Device Code Flow)")
+        print()
+        print("This method uses device code flow, which:")
+        print("• Works in CLI/headless environments")
+        print("• Displays a code to enter in a browser")
+        print("• Uses file-based token storage")
+        print()
+        client_id = os.getenv("MICROSOFT_MCP_CLIENT_ID")
+        if client_id:
+            print(f"Using custom client ID: {client_id[:8]}...")
+        else:
+            print("Using default Microsoft Office client ID")
+        tokens_dir = os.getenv("MICROSOFT_MCP_TOKENS_DIR", "~/.config/microsoft-mcp/tokens/")
+        print(f"Token storage: {tokens_dir}")
+    else:
+        print("Authentication Method: Azure SDK (Browser Flow)")
+        print()
+        print("This method opens a browser window for sign-in.")
+        redirect_uri = os.getenv("MICROSOFT_MCP_REDIRECT_URI")
+        if redirect_uri:
+            print(f"Using custom redirect URI: {redirect_uri}")
+        else:
+            print("Using default localhost redirect URI")
+
     print()
 
     # Get auth instance
-    auth = AzureAuthentication(
-        auth_record_file=os.getenv("AZURE_CRED_CACHE_FILE"),
-        token_cache_file=os.getenv("AZURE_TOKEN_CACHE_FILE")
-    )
+    auth = get_auth_provider()
 
     # Set the auth instance for the graph module
     graph.set_auth_instance(auth)
@@ -60,7 +105,7 @@ def main():
     try:
         print("Checking current authentication status...")
 
-        # Check if we have an AuthenticationRecord and can get a token
+        # Check if we have valid authentication
         if auth.exists_valid_token():
             # Try to get user info to verify authentication works
             user_info = graph.request(
@@ -108,18 +153,37 @@ def main():
 
     try:
         print("Starting authentication process...")
-        print("This will open a browser window for Microsoft sign-in.")
-        print("\nRequested permissions:")
-        from microsoft_mcp.auth import SCOPES
 
-        for scope in SCOPES:
+        if auth_method == "msal":
+            print("Device code flow will display authentication instructions.")
+            from microsoft_mcp.auth_msal import DEFAULT_SCOPES
+
+            scopes = DEFAULT_SCOPES
+        else:
+            print("This will open a browser window for Microsoft sign-in.")
+            from microsoft_mcp.auth import SCOPES
+
+            scopes = SCOPES
+
+        print("\nRequested permissions:")
+        for scope in scopes:
             print(f"   - {scope}")
         print("\nStarting authentication...")
 
-        # Perform interactive authentication
-        auth_record = auth.authenticate()
+        # Perform authentication
+        auth_result = auth.authenticate()
         print(f"\n✓ Authentication successful!")
-        print(f"AuthenticationRecord saved to: {auth.auth_record_file}")
+
+        if auth_method == "msal":
+            from microsoft_mcp.auth_msal import MSALRefreshTokenAuth
+
+            if isinstance(auth, MSALRefreshTokenAuth):
+                print(f"Tokens saved to: {auth.tokens_dir}")
+        else:
+            from microsoft_mcp.auth import AzureAuthentication
+
+            if isinstance(auth, AzureAuthentication):
+                print(f"AuthenticationRecord saved to: {auth.auth_record_file}")
 
         # Verify authentication by getting user info
         user_info = graph.request(
@@ -129,7 +193,7 @@ def main():
         print(f"Signed in as: {user_info['displayName']}")
         print(f"Email: {user_info.get('mail') or user_info.get('userPrincipalName')}")
         print(f"User ID: {user_info['id']}")
-        print("✓ Delegated access verified")
+        print("✓ Authentication verified")
 
         # Get and display token information
         try:
@@ -149,22 +213,15 @@ def main():
         print(f"\n✗ Authentication failed: {e}")
         sys.exit(1)
 
-    print("\nDelegated Access Permissions:")
-    print("The authenticated account has consented to the following permissions:")
-    print("• User.Read - Read user profile")
-    print("• User.ReadBasic.All - Read basic info of all users")
-    print("• Chat.Read - Read chat messages")
-    print("• Mail.Read - Read emails")
-    print("• Team.ReadBasic.All - Read basic team information")
-    print("• TeamMember.ReadWrite.All - Read and write team membership")
-    print("• Calendars.Read - Access calendars")
-    print("• Files.Read - Access OneDrive files")
-
-    print("\n✓ Delegated Access Authentication complete!")
+    print("\n✓ Authentication complete!")
     print("You can now use the Microsoft MCP tools.")
-    print(
-        "Future runs will authenticate silently using the saved AuthenticationRecord."
-    )
+
+    if auth_method == "msal":
+        print("Future runs will use cached tokens, refreshing automatically when needed.")
+    else:
+        print(
+            "Future runs will authenticate silently using the saved AuthenticationRecord."
+        )
 
 
 if __name__ == "__main__":

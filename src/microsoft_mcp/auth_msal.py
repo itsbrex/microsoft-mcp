@@ -1,0 +1,557 @@
+"""
+MSAL-based Authentication Module for Microsoft Graph MCP Server.
+
+This module implements authentication using MSAL's device code flow with
+file-based token storage. This is an alternative to the Azure SDK-based
+authentication in auth.py, useful for:
+- CLI/headless environments without browser access
+- Servers and automated systems
+- Compatibility with outlook-creds tokens
+
+Authentication Flow:
+1. Device code flow prompts user to visit URL and enter code
+2. Access token and refresh token are saved to files
+3. Subsequent calls use cached tokens, refreshing automatically when expired
+
+Token Storage (compatible with outlook-creds format):
+- {account}_access_token.json - Structured access token with metadata
+- {account}_refresh_only.txt - Raw refresh token
+- {account}_access_only.txt - Raw access token for easy extraction
+
+Environment Variables:
+- MICROSOFT_MCP_CLIENT_ID: Override default client ID
+- MICROSOFT_MCP_TENANT_ID: Azure AD tenant (default: "common")
+- MICROSOFT_MCP_TOKENS_DIR: Custom token storage directory
+"""
+
+import json
+import logging
+import os
+import stat
+import subprocess
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any, Optional
+
+from msal import PublicClientApplication
+
+logger = logging.getLogger(__name__)
+
+# Microsoft Office client ID (same as outlook-creds)
+# This client ID works out of the box for device code flow
+MICROSOFT_OFFICE_CLIENT_ID = "d3590ed6-52b3-4102-aeff-aad2292ab01c"
+
+# Token endpoint template
+TOKEN_ENDPOINT_TEMPLATE = "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
+
+# Default scopes for Microsoft Graph
+DEFAULT_SCOPES = ["https://graph.microsoft.com/.default"]
+
+# File permissions for sensitive data (owner read/write only)
+TOKEN_FILE_MODE = stat.S_IRUSR | stat.S_IWUSR  # 0o600
+CONFIG_DIR_MODE = stat.S_IRWXU  # 0o700
+
+# Token expiry buffer (refresh if less than this many seconds remaining)
+TOKEN_EXPIRY_BUFFER_SECONDS = 60
+
+
+class MSALRefreshTokenAuth:
+    """MSAL-based authentication with device code flow and file-based token storage.
+
+    This class provides an alternative authentication method using MSAL's
+    device code flow instead of Azure SDK's browser-based authentication.
+    Tokens are stored in files, making it suitable for headless environments
+    and compatible with the outlook-creds token format.
+
+    Implements the AuthProvider protocol from auth_base.py.
+    """
+
+    def __init__(
+        self,
+        tokens_dir: Optional[Path] = None,
+        client_id: Optional[str] = None,
+        tenant_id: Optional[str] = None,
+        account_identifier: Optional[str] = None,
+    ):
+        """Initialize MSAL authentication.
+
+        Args:
+            tokens_dir: Directory for token storage. Defaults to
+                ~/.config/microsoft-mcp/tokens/ or MICROSOFT_MCP_TOKENS_DIR env var.
+            client_id: Azure AD client ID. Defaults to Microsoft Office client ID
+                or MICROSOFT_MCP_CLIENT_ID env var.
+            tenant_id: Azure AD tenant ID. Defaults to "common" or
+                MICROSOFT_MCP_TENANT_ID env var.
+            account_identifier: Identifier for token files (e.g., email address).
+                If not provided, uses "default" as identifier.
+        """
+        # Token storage directory
+        if tokens_dir:
+            self.tokens_dir = Path(tokens_dir)
+        else:
+            default_dir = Path.home() / ".config" / "microsoft-mcp" / "tokens"
+            self.tokens_dir = Path(
+                os.getenv("MICROSOFT_MCP_TOKENS_DIR", str(default_dir))
+            )
+
+        # Client and tenant configuration
+        self.client_id = client_id or os.getenv(
+            "MICROSOFT_MCP_CLIENT_ID", MICROSOFT_OFFICE_CLIENT_ID
+        )
+        self.tenant_id = tenant_id or os.getenv("MICROSOFT_MCP_TENANT_ID", "common")
+
+        # Account identifier for file naming
+        self.account_identifier = account_identifier or "default"
+
+        # MSAL app instance (lazy initialized)
+        self._msal_app: Optional[PublicClientApplication] = None
+
+        # Ensure token directory exists with secure permissions
+        self._ensure_token_dir()
+
+        logger.info(
+            f"MSALRefreshTokenAuth initialized with client_id={self.client_id[:8]}..."
+        )
+        logger.info(f"Token storage: {self.tokens_dir}")
+
+    def _ensure_token_dir(self) -> None:
+        """Create token directory with secure permissions if it doesn't exist."""
+        self.tokens_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            self.tokens_dir.chmod(CONFIG_DIR_MODE)
+        except Exception as e:
+            logger.warning(f"Could not set directory permissions: {e}")
+
+    def _get_msal_app(self) -> PublicClientApplication:
+        """Get or create MSAL PublicClientApplication instance."""
+        if self._msal_app is None:
+            authority = f"https://login.microsoftonline.com/{self.tenant_id}"
+            self._msal_app = PublicClientApplication(
+                client_id=self.client_id,
+                authority=authority,
+            )
+            logger.info(f"Created MSAL app with authority: {authority}")
+        return self._msal_app
+
+    # Token file paths
+    def _access_token_json_path(self) -> Path:
+        """Path to structured access token JSON file."""
+        return self.tokens_dir / f"{self.account_identifier}_access_token.json"
+
+    def _refresh_token_path(self) -> Path:
+        """Path to refresh token file."""
+        return self.tokens_dir / f"{self.account_identifier}_refresh_only.txt"
+
+    def _access_token_raw_path(self) -> Path:
+        """Path to raw access token file."""
+        return self.tokens_dir / f"{self.account_identifier}_access_only.txt"
+
+    def _secure_write_file(self, path: Path, content: str) -> None:
+        """Write file with secure permissions (0o600)."""
+        path.write_text(content)
+        try:
+            path.chmod(TOKEN_FILE_MODE)
+        except Exception as e:
+            logger.warning(f"Could not set file permissions for {path}: {e}")
+
+    def _load_access_token_data(self) -> Optional[dict[str, Any]]:
+        """Load structured access token data from JSON file."""
+        path = self._access_token_json_path()
+        if not path.exists():
+            return None
+        try:
+            with open(path) as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning(f"Failed to load access token data: {e}")
+            return None
+
+    def _load_refresh_token(self) -> Optional[str]:
+        """Load refresh token from file."""
+        path = self._refresh_token_path()
+        if not path.exists():
+            return None
+        try:
+            return path.read_text().strip()
+        except Exception as e:
+            logger.warning(f"Failed to load refresh token: {e}")
+            return None
+
+    def _save_tokens(
+        self,
+        access_token: str,
+        refresh_token: Optional[str],
+        expires_in: int,
+        scopes: str,
+        email: Optional[str] = None,
+    ) -> None:
+        """Save tokens to files in outlook-creds compatible format.
+
+        Args:
+            access_token: The access token string.
+            refresh_token: The refresh token string (may be None).
+            expires_in: Token lifetime in seconds.
+            scopes: Space-separated scope string.
+            email: Optional email address for metadata.
+        """
+        now = datetime.now(timezone.utc)
+        expires_at = now + timedelta(seconds=expires_in)
+
+        # Update account identifier if email provided
+        if email and self.account_identifier == "default":
+            self.account_identifier = email
+
+        # 1. Save structured access token JSON
+        access_token_data = {
+            "email": email or self.account_identifier,
+            "access_token": access_token,
+            "token_type": "Bearer",
+            "expires_in": expires_in,
+            "expires_at": expires_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "refreshed_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "scopes": scopes,
+            "api_type": "graph",
+        }
+
+        with open(self._access_token_json_path(), "w") as f:
+            json.dump(access_token_data, f, indent=2)
+        try:
+            self._access_token_json_path().chmod(TOKEN_FILE_MODE)
+        except Exception:
+            pass
+
+        logger.info(f"Access token saved, expires at: {expires_at}")
+
+        # 2. Save refresh token if provided
+        if refresh_token:
+            self._secure_write_file(self._refresh_token_path(), refresh_token)
+            logger.info("Refresh token saved")
+
+        # 3. Save raw access token for easy extraction
+        self._secure_write_file(self._access_token_raw_path(), access_token)
+
+    def _is_token_valid(self) -> bool:
+        """Check if the cached access token is still valid.
+
+        Returns:
+            True if token exists and is not expired (with buffer), False otherwise.
+        """
+        token_data = self._load_access_token_data()
+        if not token_data:
+            return False
+
+        expires_at_str = token_data.get("expires_at")
+        if not expires_at_str:
+            return False
+
+        try:
+            expires_at = datetime.strptime(expires_at_str, "%Y-%m-%dT%H:%M:%SZ")
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+            now = datetime.now(timezone.utc)
+
+            # Check with buffer
+            remaining = (expires_at - now).total_seconds()
+            if remaining > TOKEN_EXPIRY_BUFFER_SECONDS:
+                logger.info(f"Token valid for {remaining:.0f} more seconds")
+                return True
+            else:
+                logger.info(
+                    f"Token expired or expiring soon ({remaining:.0f}s remaining)"
+                )
+                return False
+        except Exception as e:
+            logger.warning(f"Error parsing token expiration: {e}")
+            return False
+
+    def _refresh_access_token(self, refresh_token: str) -> dict[str, Any]:
+        """Refresh access token using refresh token via HTTP POST.
+
+        Adapted from outlook-creds/helpers/refresh_access_token.sh
+
+        Args:
+            refresh_token: Valid refresh token.
+
+        Returns:
+            Token response dictionary with access_token, refresh_token, etc.
+
+        Raises:
+            Exception: If token refresh fails.
+        """
+        logger.info("Refreshing access token using refresh token")
+
+        token_endpoint = TOKEN_ENDPOINT_TEMPLATE.format(tenant=self.tenant_id)
+        scopes = "https://graph.microsoft.com/.default offline_access"
+
+        # Prepare POST data
+        data = urllib.parse.urlencode(
+            {
+                "client_id": self.client_id,
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+                "scope": scopes,
+            }
+        ).encode("utf-8")
+
+        headers = {
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json",
+        }
+
+        try:
+            req = urllib.request.Request(token_endpoint, data=data, headers=headers)
+            with urllib.request.urlopen(req, timeout=30) as response:
+                result = json.loads(response.read().decode("utf-8"))
+
+                if "access_token" not in result:
+                    raise Exception("No access_token in refresh response")
+
+                logger.info("Access token refreshed successfully")
+                return result
+
+        except urllib.error.HTTPError as e:
+            error_body = e.read().decode("utf-8")
+            logger.error(f"Token refresh failed (HTTP {e.code}): {error_body}")
+            try:
+                error_json = json.loads(error_body)
+                error_desc = error_json.get(
+                    "error_description", error_json.get("error", "Unknown")
+                )
+                raise Exception(f"Token refresh failed: {error_desc}")
+            except json.JSONDecodeError:
+                raise Exception(
+                    f"Token refresh failed (HTTP {e.code}): {error_body[:200]}"
+                )
+
+    def authenticate(self) -> dict[str, Any]:
+        """Perform device code flow authentication.
+
+        Initiates MSAL device code flow, which displays a URL and code
+        for the user to enter in a browser. On macOS, automatically
+        copies the code to clipboard and opens the browser.
+
+        Returns:
+            Authentication result dictionary with tokens and metadata.
+
+        Raises:
+            Exception: If authentication fails.
+        """
+        logger.info("Starting device code flow authentication")
+
+        app = self._get_msal_app()
+
+        # Check for cached accounts first
+        accounts = app.get_accounts()
+        if accounts:
+            logger.info("Found cached account, attempting silent authentication")
+            result = app.acquire_token_silent(
+                scopes=DEFAULT_SCOPES, account=accounts[0]
+            )
+            if result and "access_token" in result:
+                logger.info("Silent authentication successful")
+                self._save_tokens(
+                    access_token=result["access_token"],
+                    refresh_token=result.get("refresh_token"),
+                    expires_in=result.get("expires_in", 3600),
+                    scopes=result.get("scope", " ".join(DEFAULT_SCOPES)),
+                    email=accounts[0].get("username"),
+                )
+                return result
+
+        # Initiate device code flow
+        flow = app.initiate_device_flow(scopes=DEFAULT_SCOPES)
+
+        if "user_code" not in flow:
+            error_msg = flow.get(
+                "error_description", flow.get("error", "Unknown error")
+            )
+            raise Exception(f"Failed to create device flow: {error_msg}")
+
+        # Display authentication instructions
+        print()
+        print("=" * 70)
+        print("  MICROSOFT AUTHENTICATION REQUIRED")
+        print("=" * 70)
+        print()
+        print(flow["message"])
+        print()
+        print("=" * 70)
+
+        # Auto-copy code to clipboard and open browser (macOS)
+        user_code = flow.get("user_code", "")
+        verification_uri = flow.get("verification_uri", "")
+
+        if user_code:
+            try:
+                subprocess.run(
+                    ["/usr/bin/pbcopy"],
+                    input=user_code.encode(),
+                    check=True,
+                    capture_output=True,
+                )
+                print(f"\n  Code '{user_code}' copied to clipboard")
+            except Exception:
+                pass  # Silently ignore if pbcopy not available
+
+        if verification_uri:
+            try:
+                subprocess.run(
+                    ["/usr/bin/open", verification_uri],
+                    check=True,
+                    capture_output=True,
+                )
+                print(f"  Opened {verification_uri} in browser")
+            except Exception:
+                pass  # Silently ignore if open not available
+
+        print()
+        print("Waiting for authentication...")
+        print()
+
+        # Wait for user to complete authentication
+        result = app.acquire_token_by_device_flow(flow)
+
+        if "error" in result:
+            error_desc = result.get("error_description", result.get("error", "Unknown"))
+            raise Exception(f"Authentication failed: {error_desc}")
+
+        if "access_token" not in result:
+            raise Exception("No access_token in authentication response")
+
+        # Extract email from ID token claims if available
+        email = None
+        id_token_claims = result.get("id_token_claims", {})
+        email = id_token_claims.get("preferred_username") or id_token_claims.get(
+            "email"
+        )
+
+        # Save tokens
+        self._save_tokens(
+            access_token=result["access_token"],
+            refresh_token=result.get("refresh_token"),
+            expires_in=result.get("expires_in", 3600),
+            scopes=result.get("scope", " ".join(DEFAULT_SCOPES)),
+            email=email,
+        )
+
+        logger.info("Authentication completed successfully")
+        print("\n  Authentication successful!")
+
+        return result
+
+    def get_token(self) -> str:
+        """Get a valid access token, refreshing if needed.
+
+        Returns:
+            Valid access token string.
+
+        Raises:
+            Exception: If token acquisition fails.
+        """
+        logger.info("Getting access token")
+
+        # Check if cached token is valid
+        if self._is_token_valid():
+            token_data = self._load_access_token_data()
+            if token_data and token_data.get("access_token"):
+                return token_data["access_token"]
+
+        # Need to refresh - get refresh token
+        refresh_token = self._load_refresh_token()
+        if not refresh_token:
+            logger.error("No refresh token found. Authentication required.")
+            raise Exception(
+                "No refresh token found. Run authentication first: "
+                "MICROSOFT_MCP_AUTH_METHOD=msal uv run authenticate.py"
+            )
+
+        # Refresh the token
+        try:
+            result = self._refresh_access_token(refresh_token)
+
+            # Save new tokens
+            self._save_tokens(
+                access_token=result["access_token"],
+                refresh_token=result.get("refresh_token", refresh_token),
+                expires_in=result.get("expires_in", 3600),
+                scopes=result.get("scope", "https://graph.microsoft.com/.default"),
+            )
+
+            return result["access_token"]
+
+        except Exception as e:
+            logger.error(f"Token refresh failed: {e}")
+            # Clear cache and prompt for re-authentication
+            self.clear_cache()
+            raise Exception(
+                f"Token refresh failed: {e}. Please re-authenticate: "
+                "MICROSOFT_MCP_AUTH_METHOD=msal uv run authenticate.py"
+            )
+
+    def get_token_with_details(self) -> tuple[str, int]:
+        """Get access token with expiration timestamp.
+
+        Returns:
+            Tuple of (token_string, expires_on_unix_timestamp).
+
+        Raises:
+            Exception: If token acquisition fails.
+        """
+        # Ensure we have a valid token
+        token = self.get_token()
+
+        # Get expiration from saved data
+        token_data = self._load_access_token_data()
+        if token_data and token_data.get("expires_at"):
+            try:
+                expires_at = datetime.strptime(
+                    token_data["expires_at"], "%Y-%m-%dT%H:%M:%SZ"
+                )
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+                expires_on = int(expires_at.timestamp())
+                return token, expires_on
+            except Exception:
+                pass
+
+        # Fallback: assume 1 hour from now
+        expires_on = int((datetime.now(timezone.utc) + timedelta(hours=1)).timestamp())
+        return token, expires_on
+
+    def exists_valid_token(self) -> bool:
+        """Check if a valid token exists or can be obtained.
+
+        Returns:
+            True if valid token exists, False otherwise.
+        """
+        # First check if access token is still valid
+        if self._is_token_valid():
+            return True
+
+        # Check if we have a refresh token we could use
+        refresh_token = self._load_refresh_token()
+        return refresh_token is not None
+
+    def clear_cache(self) -> None:
+        """Clear all cached tokens and credentials."""
+        logger.info("Clearing authentication cache")
+
+        files_to_remove = [
+            self._access_token_json_path(),
+            self._refresh_token_path(),
+            self._access_token_raw_path(),
+        ]
+
+        for path in files_to_remove:
+            try:
+                if path.exists():
+                    path.unlink()
+                    logger.info(f"Removed: {path}")
+            except Exception as e:
+                logger.warning(f"Failed to remove {path}: {e}")
+
+        # Clear MSAL app instance
+        self._msal_app = None
+
+        logger.info("Authentication cache cleared")

@@ -9,7 +9,7 @@ from unittest import result
 from urllib.parse import quote
 from fastmcp import FastMCP
 from . import graph
-from .auth import AzureAuthentication
+from .auth_base import AuthProvider
 from markitdown import MarkItDown, StreamInfo
 from io import BytesIO
 from sys import stderr
@@ -42,12 +42,30 @@ if not logging.getLogger().hasHandlers():
     root_logger.addHandler(file_handler)
 
 mcp = FastMCP("microsoft-graph-mcp")
-# Create a global authentication instance
 
-auth = AzureAuthentication(
-    auth_record_file=os.getenv("AZURE_CRED_CACHE_FILE"),
-    token_cache_file=os.getenv("AZURE_TOKEN_CACHE_FILE"),
-)
+# Create authentication instance based on MICROSOFT_MCP_AUTH_METHOD environment variable
+# Supported methods: "azure" (default), "msal"
+auth_method = os.getenv("MICROSOFT_MCP_AUTH_METHOD", "azure").lower()
+
+if auth_method == "msal":
+    # MSAL-based authentication with device code flow and file-based tokens
+    from .auth_msal import MSALRefreshTokenAuth
+
+    logger.info("Using MSAL authentication method (device code flow)")
+    auth: AuthProvider = MSALRefreshTokenAuth(
+        tokens_dir=os.getenv("MICROSOFT_MCP_TOKENS_DIR"),
+        client_id=os.getenv("MICROSOFT_MCP_CLIENT_ID"),
+        tenant_id=os.getenv("MICROSOFT_MCP_TENANT_ID"),
+    )
+else:
+    # Default: Azure SDK-based authentication with browser flow
+    from .auth import AzureAuthentication
+
+    logger.info("Using Azure SDK authentication method (browser flow)")
+    auth: AuthProvider = AzureAuthentication(
+        auth_record_file=os.getenv("AZURE_CRED_CACHE_FILE"),
+        token_cache_file=os.getenv("AZURE_TOKEN_CACHE_FILE"),
+    )
 
 # Set the auth instance for the graph module
 graph.set_auth_instance(auth)

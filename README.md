@@ -4,7 +4,7 @@ Powerful MCP server for Microsoft Graph API - a complete AI assistant toolkit fo
 
 ## Features
 
-- **🔐 Modern Authentication**: Azure SDK-based delegated access with automatic token management
+- **🔐 Dual Authentication**: Azure SDK browser flow OR MSAL device code flow (for CLI/headless)
 - **📧 Email Management**: Read, send, reply, manage attachments, organize folders, date filtering
 - **📅 Calendar Intelligence**: Create, update, check availability, respond to invitations
 - **📁 OneDrive Files**: Upload, download, browse with pagination, large file support
@@ -154,6 +154,38 @@ This allows you to:
 - Keep authentication data organized
 - Facilitate team sharing of configuration (credentials only, not tokens)
 
+#### Alternative: MSAL Device Code Flow Authentication
+
+For CLI/headless environments without browser access, use MSAL device code flow:
+
+```bash
+# Use MSAL authentication (no Azure app registration required!)
+export MICROSOFT_MCP_AUTH_METHOD=msal
+
+# Run authentication - displays a code to enter at microsoft.com/devicelogin
+uv run authenticate.py
+```
+
+**MSAL Authentication Benefits:**
+- Works in CLI and headless environments
+- Uses Microsoft Office client ID by default (works out of box)
+- File-based token storage (easy to inspect/manage)
+- Compatible with outlook-creds tokens
+
+**MSAL Environment Variables:**
+- `MICROSOFT_MCP_AUTH_METHOD`: Set to `msal` to use device code flow (default: `azure`)
+- `MICROSOFT_MCP_CLIENT_ID`: Optional custom client ID (defaults to Microsoft Office ID)
+- `MICROSOFT_MCP_TENANT_ID`: Azure AD tenant ID (defaults to `common`)
+- `MICROSOFT_MCP_TOKENS_DIR`: Token storage directory (defaults to `~/.config/microsoft-mcp/tokens/`)
+
+**Use existing outlook-creds tokens:**
+```bash
+# Point to outlook-creds token directory
+export MICROSOFT_MCP_AUTH_METHOD=msal
+export MICROSOFT_MCP_TOKENS_DIR=~/.config/outlook-creds/tokens/
+uv run microsoft-mcp
+```
+
 ### 4. Claude Desktop Configuration
 
 Add to your Claude Desktop configuration:
@@ -206,6 +238,22 @@ Add to your Claude Desktop configuration:
         "MICROSOFT_MCP_CLIENT_ID": "your-app-id-here",
         "AZURE_CRED_CACHE_FILE": "./creds/azure-credentials.json",
         "AZURE_TOKEN_CACHE_FILE": "./creds/azure-token"
+      }
+    }
+  }
+}
+```
+
+#### MSAL Device Code Flow Configuration
+```json
+{
+  "mcpServers": {
+    "microsoft": {
+      "command": "uv",
+      "args": ["--directory", "/path/to/microsoft-mcp", "run", "microsoft-mcp"],
+      "env": {
+        "MICROSOFT_MCP_AUTH_METHOD": "msal",
+        "MICROSOFT_MCP_TOKENS_DIR": "/path/to/tokens"
       }
     }
   }

@@ -10,16 +10,19 @@ Microsoft MCP is a comprehensive MCP server that provides AI assistants with sea
 
 ### Core Components
 
-#### 1. Authentication System (`auth.py`)
-- **Simplified Design**: `AzureAuthentication` class leverages Azure SDK's built-in capabilities
+#### 1. Authentication System (Dual Provider Architecture)
+
+The authentication system supports two pluggable providers via the `AuthProvider` protocol:
+
+##### 1a. Azure SDK Authentication (`auth.py`) - Default
+- **AzureAuthentication** class leverages Azure SDK's built-in capabilities
 - **Azure SDK Integration**: Uses Azure Identity's automatic token caching and refresh token handling
-- **AuthenticationRecord**: Persistent authentication across sessions using `~/.azure-graph-auth.json`
+- **AuthenticationRecord**: Persistent authentication across sessions using `~/.ms-graph-mcp-azure-auth-record.json`
 - **Delegated Access**: Uses Azure Identity's `InteractiveBrowserCredential` for user authentication
 - **Modern Authentication Flow**: Implements authorization code flow with PKCE (Proof Key for Code Exchange)
 - **No Manual Token Management**: Eliminates custom token caching, refresh services, and background threads
-- **Scope Management**: Requests specific delegated permissions rather than broad access
-- **Browser-based Auth**: Opens browser for user sign-in, no device codes required
-- **Backward Compatibility**: Provides module-level functions for existing code
+- **Browser-based Auth**: Opens browser for user sign-in
+- **Requires Azure App Registration**: User must register their own Azure AD app
 
 **Key Features:**
 - Simplified object-oriented design with minimal state management
@@ -29,16 +32,45 @@ Microsoft MCP is a comprehensive MCP server that provides AI assistants with sea
 - Platform-specific secure token storage (Windows Data Protection API, macOS Keychain, etc.)
 - Support for multiple tenants (common, consumers, organization-specific)
 - Robust error handling with automatic fallback to interactive authentication
-- Clear separation between first-time authentication and subsequent silent authentication
 
-**Architecture Changes:**
-- **Major Simplification**: Removed all manual token caching, refresh token handling, and background services
-- **AuthenticationRecord**: First authentication saves record to `~/.azure-graph-auth.json` for future silent auth
-- **Azure SDK Delegation**: All token management delegated to Azure Identity library
-- **Removed Complex Features**: No more background refresh threads, manual HTTP token requests, or custom cache validation
-- **Streamlined Interface**: Simple methods: `authenticate()`, `get_token()`, `get_credential()`, `clear_cache()`
-- **Persistent Authentication**: Uses Azure's TokenCachePersistenceOptions for cross-session token persistence
-- **Eliminated Global State**: No global variables, minimal instance state
+##### 1b. MSAL Device Code Authentication (`auth_msal.py`) - Alternative
+- **MSALRefreshTokenAuth** class uses MSAL's device code flow
+- **CLI/Headless Support**: Works in environments without browser access
+- **File-based Token Storage**: Tokens stored in JSON/TXT files (compatible with outlook-creds)
+- **Default Client ID**: Uses Microsoft Office client ID (`d3590ed6-52b3-4102-aeff-aad2292ab01c`) - works out of box
+- **Manual Token Refresh**: Uses HTTP POST to refresh tokens when expired
+- **Configurable Storage**: Tokens stored in `~/.config/microsoft-mcp/tokens/` by default
+
+**Token File Format:**
+```json
+{
+  "email": "user@example.com",
+  "access_token": "eyJ0...",
+  "expires_at": "2026-01-21T15:30:00Z",
+  "scopes": "https://graph.microsoft.com/.default",
+  "api_type": "graph"
+}
+```
+
+##### Authentication Provider Protocol (`auth_base.py`)
+```python
+class AuthProvider(Protocol):
+    def get_token(self) -> str: ...
+    def get_token_with_details(self) -> tuple[str, int]: ...
+    def exists_valid_token(self) -> bool: ...
+    def authenticate(self) -> dict: ...
+    def clear_cache(self) -> None: ...
+```
+
+##### Provider Selection (`tools.py`)
+```python
+auth_method = os.getenv("MICROSOFT_MCP_AUTH_METHOD", "azure").lower()
+if auth_method == "msal":
+    auth = MSALRefreshTokenAuth(...)
+else:
+    auth = AzureAuthentication(...)
+graph.set_auth_instance(auth)
+```
 
 #### 2. Graph API Client (`graph.py`)
 - **HTTP Client**: Uses `httpx` for robust HTTP communication

@@ -99,60 +99,65 @@ class TestModuleIntegration:
     def test_unified_search_tool_exists(self):
         """Test that unified_search tool is properly defined."""
         from src.microsoft_mcp.tools import unified_search
-        
-        # Test tool exists and is a FastMCP FunctionTool
-        assert hasattr(unified_search, 'name')
-        assert unified_search.name == 'unified_search'
-        assert hasattr(unified_search, 'description')
-        assert 'Microsoft Search API' in unified_search.description
-        
-        # Test that the underlying function exists
-        assert hasattr(unified_search, 'func')
-        assert callable(unified_search.func)
-        
-        # Test function has proper signature
+
+        # The @mcp.tool decorator wraps the function in a FunctionTool
+        # Test that the tool has expected attributes
+        assert hasattr(unified_search, "name")
+        assert unified_search.name == "unified_search"
+        assert hasattr(unified_search, "description")
+        assert "Microsoft Search API" in unified_search.description
+
+        # Test that the underlying function is accessible and has proper signature
+        assert hasattr(unified_search, "fn")
+        assert callable(unified_search.fn)
+
         import inspect
-        sig = inspect.signature(unified_search.func)
+
+        sig = inspect.signature(unified_search.fn)
         expected_params = [
-            "query", "entity_types", "limit", "kql_filters", 
-            "include_body", "body_max_length", "minimal_response"
+            "query",
+            "entity_types",
+            "limit",
+            "kql_filters",
+            "include_body",
+            "body_max_length",
         ]
-        
+
         actual_params = list(sig.parameters.keys())
         for param in expected_params:
-            assert param in actual_params, f"Parameter '{param}' missing from unified_search signature"
+            assert (
+                param in actual_params
+            ), f"Parameter '{param}' missing from unified_search signature"
 
     def test_unified_search_entity_validation(self):
         """Test that unified_search validates entity types correctly."""
         from src.microsoft_mcp.tools import unified_search
-        
+
         # Mock the graph request to avoid actual API calls
         with patch("src.microsoft_mcp.graph.request") as mock_request:
             mock_request.return_value = {
-                "value": [{
-                    "hitsContainers": [{
-                        "total": 0,
-                        "hits": []
-                    }]
-                }]
+                "value": [{"hitsContainers": [{"total": 0, "hits": []}]}]
             }
-            
-            # Test with invalid entity types
-            result = unified_search(
-                query="test",
-                entity_types=["invalid_type", "another_invalid"]
+
+            # Access the underlying function through .fn attribute
+            # Test with invalid entity types - should return error without API call
+            result = unified_search.fn(
+                query="test", entity_types=["invalid_type", "another_invalid"]
             )
-            
+
             # Should return error response for invalid entity types
             assert "summary" in result
             assert result["summary"]["total_results"] == 0
             assert "error" in result["summary"]
             assert "No valid entity types" in result["summary"]["error"]
 
+            # Verify no API call was made since entity types are invalid
+            mock_request.assert_not_called()
+
     def test_unified_search_helper_function(self):
         """Test the _process_search_hit helper function."""
         from src.microsoft_mcp.tools import _process_search_hit
-        
+
         # Test with a mock message hit
         mock_hit = {
             "rank": 1,
@@ -161,19 +166,29 @@ class TestModuleIntegration:
                 "@odata.type": "#microsoft.graph.message",
                 "id": "test-id",
                 "subject": "Test Subject",
-                "from": {"emailAddress": {"name": "John Doe", "address": "john@test.com"}},
+                "from": {
+                    "emailAddress": {"name": "John Doe", "address": "john@test.com"}
+                },
                 "receivedDateTime": "2024-01-01T10:00:00Z",
-                "conversationId": "test-conversation-id"
-            }
+                "conversationId": "test-conversation-id",
+            },
         }
-        
-        result = _process_search_hit(mock_hit, include_body=False, body_max_length=1000, minimal_response=True)
-        
+
+        # Updated function signature: no minimal_response parameter
+        result = _process_search_hit(
+            mock_hit, include_body=False, body_max_length=1000
+        )
+
         assert result is not None
         assert result["entity_type"] == "message"
         assert result["id"] == "test-id"
-        assert result["title"] == "Test Subject"
-        assert result["rank"] == 1
-        assert "metadata" in result
-        assert result["metadata"]["from"] == {"emailAddress": {"name": "John Doe", "address": "john@test.com"}}
-        assert "url" in result  # Should generate conversation URL
+        # The function preserves original resource fields, so "subject" not "title"
+        assert result["subject"] == "Test Subject"
+        assert result["search_rank"] == 1
+        # Resource fields are at top level, not nested in "metadata"
+        assert result["from"] == {
+            "emailAddress": {"name": "John Doe", "address": "john@test.com"}
+        }
+        # Should generate conversation URL
+        assert "conversation_url" in result
+        assert "test-conversation-id" in result["conversation_url"]

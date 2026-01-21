@@ -32,7 +32,7 @@ class TestAzureAuthentication:
     def test_init_with_default_auth_file(self):
         """Test initialization with default auth record file path."""
         auth = AzureAuthentication()
-        expected_path = Path.home() / ".azure-graph-auth.json"
+        expected_path = Path.home() / ".ms-graph-mcp-azure-auth-record.json"
         assert auth.auth_record_file == expected_path
 
     def test_init_with_custom_auth_file(self):
@@ -43,7 +43,8 @@ class TestAzureAuthentication:
 
     def test_scopes_configuration(self):
         """Test that required scopes are properly configured."""
-        expected_scopes = [
+        # Test that essential scopes are present (the list has been expanded)
+        essential_scopes = [
             "User.Read",
             "User.ReadBasic.All",
             "Chat.Read",
@@ -53,7 +54,13 @@ class TestAzureAuthentication:
             "Calendars.Read",
             "Files.Read",
         ]
-        assert SCOPES == expected_scopes
+        for scope in essential_scopes:
+            assert scope in SCOPES, f"Essential scope '{scope}' missing from SCOPES"
+
+        # Test that additional search-related scopes are present
+        search_scopes = ["ChannelMessage.Read.All", "Sites.Read.All", "Files.Read.All"]
+        for scope in search_scopes:
+            assert scope in SCOPES, f"Search scope '{scope}' missing from SCOPES"
 
     @patch.dict(os.environ, {}, clear=True)
     def test_get_credential_missing_client_id(self):

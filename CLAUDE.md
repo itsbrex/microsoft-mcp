@@ -58,6 +58,7 @@ uvx ruff check --fix --unsafe-fixes .
   - Global auth instance via `set_auth_instance()`/`get_auth_instance()`
 
 - **`tools.py`** - FastMCP tool implementations (30+ tools)
+  - Account Management (3 tools): `list_accounts`, `set_active_account`, `get_active_account`
   - Email (9 tools): list, get, send, reply, move, delete, attachments
   - Calendar (7 tools): events, availability, responses
   - Contacts (6 tools): CRUD + search
@@ -74,6 +75,8 @@ uvx ruff check --fix --unsafe-fixes .
 
 **Dual Auth Support**: Azure SDK (browser) or MSAL (device code) via `MICROSOFT_MCP_AUTH_METHOD=azure|msal`
 
+**Multi-Account Support** (MSAL only): Install multiple accounts during setup, switch at runtime via `set_active_account()`. Tokens stored per-account as `{email}_access_token.json`.
+
 **Dependency Injection**: Graph module uses global `_global_auth` instance; tests mock via `set_auth_instance()`
 
 **Error Handling**: All tools log errors with `exc_info=True` and re-raise; HTTP retries use exponential backoff
@@ -89,9 +92,83 @@ uvx ruff check --fix --unsafe-fixes .
 
 **MSAL Auth:**
 - `MICROSOFT_MCP_AUTH_METHOD=msal` - enable MSAL device code flow
-- `MICROSOFT_MCP_CLIENT_ID` (optional) - defaults to Microsoft Office client ID
+- `MICROSOFT_MCP_CLIENT_ID` (required) - Microsoft Office client ID: `d3590ed6-52b3-4102-aeff-aad2292ab01c`
 - `MICROSOFT_MCP_TENANT_ID` (optional) - defaults to "common"
 - `MICROSOFT_MCP_TOKENS_DIR` (optional) - token storage directory (defaults to `~/.config/microsoft-mcp/tokens/`)
+- `MICROSOFT_MCP_ACCOUNT_ID` (optional) - account identifier for token file naming (defaults to "default", typically set to user's email)
+
+## MCP Configuration Format
+
+For manual MCP server configuration (Cursor, Claude Desktop, etc.), use the following formats:
+
+### MSAL Auth (Recommended)
+
+```json
+{
+  "mcpServers": {
+    "microsoft-mcp": {
+      "command": "/path/to/uv",
+      "args": ["run", "--python", "3.13", "--project", "/path/to/microsoft-mcp", "microsoft-mcp"],
+      "env": {
+        "MICROSOFT_MCP_AUTH_METHOD": "msal",
+        "MICROSOFT_MCP_ACCOUNT_ID": "your-email@example.com",
+        "MICROSOFT_MCP_CLIENT_ID": "d3590ed6-52b3-4102-aeff-aad2292ab01c"
+      }
+    }
+  }
+}
+```
+
+**Important:**
+- Use `microsoft-mcp` entry point (NOT `src/microsoft_mcp/server.py` directly - causes ImportError)
+- Use full path to `uv` executable (find with `which uv`)
+- `MICROSOFT_MCP_CLIENT_ID` must be set to `d3590ed6-52b3-4102-aeff-aad2292ab01c` (Microsoft Office client ID)
+- `MICROSOFT_MCP_ACCOUNT_ID` identifies which account's tokens to use
+
+### Multiple Accounts
+
+For multiple Microsoft accounts, create separate server entries:
+
+```json
+{
+  "mcpServers": {
+    "microsoft-mcp": {
+      "command": "/path/to/uv",
+      "args": ["run", "--python", "3.13", "--project", "/path/to/microsoft-mcp", "microsoft-mcp"],
+      "env": {
+        "MICROSOFT_MCP_AUTH_METHOD": "msal",
+        "MICROSOFT_MCP_ACCOUNT_ID": "work@company.com",
+        "MICROSOFT_MCP_CLIENT_ID": "d3590ed6-52b3-4102-aeff-aad2292ab01c"
+      }
+    },
+    "microsoft-mcp-personal_outlook_com": {
+      "command": "/path/to/uv",
+      "args": ["run", "--python", "3.13", "--project", "/path/to/microsoft-mcp", "microsoft-mcp"],
+      "env": {
+        "MICROSOFT_MCP_AUTH_METHOD": "msal",
+        "MICROSOFT_MCP_ACCOUNT_ID": "personal@outlook.com",
+        "MICROSOFT_MCP_CLIENT_ID": "d3590ed6-52b3-4102-aeff-aad2292ab01c"
+      }
+    }
+  }
+}
+```
+
+### Azure SDK Auth
+
+```json
+{
+  "mcpServers": {
+    "microsoft-mcp": {
+      "command": "/path/to/uv",
+      "args": ["run", "--python", "3.13", "--project", "/path/to/microsoft-mcp", "microsoft-mcp"],
+      "env": {
+        "MICROSOFT_MCP_CLIENT_ID": "your-azure-app-id-uuid"
+      }
+    }
+  }
+}
+```
 
 ## Testing
 
@@ -102,4 +179,4 @@ Tests use `unittest.mock` for mocking Azure auth and HTTP responses. The `confte
 - Keep `IMPLEMENTATION.md` updated with any architectural changes
 - Use virtual environment in `.venv` for all Python execution
 - Run `black` or `ruff format` on edited files
-- Logging goes to both stderr and `mcp.log` in the working directory
+- Logging goes to stderr only (MCP protocol uses stdout for JSON-RPC)

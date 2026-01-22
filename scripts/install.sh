@@ -435,9 +435,9 @@ build_server_config() {
     local install_source
     install_source=$(get_install_source)
 
-    # Log the installation source for visibility
+    # Log the installation source for visibility (to stderr to not pollute JSON output)
     if [[ "$install_source" != git+* ]]; then
-        log_info "Using local installation source: $install_source"
+        log_info "Using local installation source: $install_source" >&2
     fi
 
     if [ "$AUTH_METHOD" == "msal" ]; then

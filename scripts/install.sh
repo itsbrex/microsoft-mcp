@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Microsoft MCP Server - Interactive Installer
 # Version: 1.0.0
 # Repository: https://github.com/marc-hanheide/microsoft-mcp
@@ -188,6 +188,21 @@ create_temp_file() {
     }
     TEMP_FILES+=("$temp_file")
     echo "$temp_file"
+}
+
+# Detect installation source (local clone vs remote)
+# Returns local path if running from a git repo, otherwise GitHub URL
+get_install_source() {
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local repo_root="${script_dir%/scripts}"
+
+    # Check if we're in a git repo with pyproject.toml (local development)
+    if [[ -f "$repo_root/pyproject.toml" ]] && [[ -d "$repo_root/.git" ]]; then
+        echo "$repo_root"
+    else
+        echo "git+https://github.com/marc-hanheide/microsoft-mcp.git"
+    fi
 }
 
 # Detect OS
@@ -417,12 +432,19 @@ backup_config() {
 # Build the MCP server JSON config
 build_server_config() {
     local config=""
+    local install_source
+    install_source=$(get_install_source)
+
+    # Log the installation source for visibility
+    if [[ "$install_source" != git+* ]]; then
+        log_info "Using local installation source: $install_source"
+    fi
 
     if [ "$AUTH_METHOD" == "msal" ]; then
         config=$(cat <<EOF
 {
     "command": "uvx",
-    "args": ["--from", "git+https://github.com/marc-hanheide/microsoft-mcp.git", "microsoft-mcp"],
+    "args": ["--python", "3.13", "--from", "$install_source", "microsoft-mcp"],
     "env": {
         "MICROSOFT_MCP_AUTH_METHOD": "msal"
     }
@@ -433,7 +455,7 @@ EOF
         config=$(cat <<EOF
 {
     "command": "uvx",
-    "args": ["--from", "git+https://github.com/marc-hanheide/microsoft-mcp.git", "microsoft-mcp"],
+    "args": ["--python", "3.13", "--from", "$install_source", "microsoft-mcp"],
     "env": {
         "MICROSOFT_MCP_CLIENT_ID": "$MICROSOFT_MCP_CLIENT_ID"
     }
@@ -477,7 +499,7 @@ install_claude_code() {
         return 0
     fi
 
-    if echo "$server_config" | claude mcp add-json microsoft-mcp --stdin -s user; then
+    if claude mcp add-json microsoft-mcp "$server_config" -s user; then
         log_success "Claude Code configured successfully"
     else
         log_error "Failed to configure Claude Code"
@@ -664,6 +686,9 @@ EOF
 run_authentication() {
     log_header "Initial Authentication"
 
+    local install_source
+    install_source=$(get_install_source)
+
     echo "Would you like to authenticate now?"
     echo "This will allow you to verify the setup is working."
     echo ""
@@ -673,9 +698,9 @@ run_authentication() {
         [nN]*)
             log_info "Skipping authentication. You can run it later with:"
             if [ "$AUTH_METHOD" == "msal" ]; then
-                echo "  MICROSOFT_MCP_AUTH_METHOD=msal uvx --from git+https://github.com/marc-hanheide/microsoft-mcp.git python -c 'from microsoft_mcp.auth_msal import MSALRefreshTokenAuth; a = MSALRefreshTokenAuth(); a.authenticate()'"
+                echo "  MICROSOFT_MCP_AUTH_METHOD=msal uvx --python 3.13 --from $install_source python -c 'from microsoft_mcp.auth_msal import MSALRefreshTokenAuth; a = MSALRefreshTokenAuth(); a.authenticate()'"
             else
-                echo "  MICROSOFT_MCP_CLIENT_ID=$MICROSOFT_MCP_CLIENT_ID uvx --from git+https://github.com/marc-hanheide/microsoft-mcp.git python -c 'from microsoft_mcp.auth import AzureAuthentication; a = AzureAuthentication(); a.authenticate()'"
+                echo "  MICROSOFT_MCP_CLIENT_ID=$MICROSOFT_MCP_CLIENT_ID uvx --python 3.13 --from $install_source python -c 'from microsoft_mcp.auth import AzureAuthentication; a = AzureAuthentication(); a.authenticate()'"
             fi
             return
             ;;
@@ -687,7 +712,7 @@ run_authentication() {
     if [ "$AUTH_METHOD" == "msal" ]; then
         log_info "MSAL Device Code Flow: You'll see a code to enter at microsoft.com/devicelogin"
         echo ""
-        MICROSOFT_MCP_AUTH_METHOD=msal uvx --from git+https://github.com/marc-hanheide/microsoft-mcp.git python -c "
+        MICROSOFT_MCP_AUTH_METHOD=msal uvx --python 3.13 --from "$install_source" python -c "
 from microsoft_mcp.auth_msal import MSALRefreshTokenAuth
 auth = MSALRefreshTokenAuth()
 result = auth.authenticate()
@@ -700,7 +725,7 @@ print(f'Logged in as: {result.get(\"username\", \"unknown\")}')
     else
         log_info "Azure SDK: A browser window will open for sign-in"
         echo ""
-        MICROSOFT_MCP_CLIENT_ID="$MICROSOFT_MCP_CLIENT_ID" uvx --from git+https://github.com/marc-hanheide/microsoft-mcp.git python -c "
+        MICROSOFT_MCP_CLIENT_ID="$MICROSOFT_MCP_CLIENT_ID" uvx --python 3.13 --from "$install_source" python -c "
 from microsoft_mcp.auth import AzureAuthentication
 auth = AzureAuthentication()
 auth.authenticate()

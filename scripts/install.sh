@@ -1,14 +1,101 @@
 #!/bin/bash
-set -e
-
 # Microsoft MCP Server - Interactive Installer
+# Version: 1.0.0
+# Repository: https://github.com/marc-hanheide/microsoft-mcp
+# License: MIT
+# Requires: Bash 4.0+, Python 3.10+, uv or pip, jq (optional)
+#
 # Usage: curl -fsSL https://raw.githubusercontent.com/marc-hanheide/microsoft-mcp/main/scripts/install.sh | bash
-#    or: ./scripts/install.sh
+#    or: ./scripts/install.sh [OPTIONS]
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+# Temporary files tracking for cleanup
+declare -a TEMP_FILES=()
+
+# Cleanup trap for temporary files
+cleanup() {
+    for f in "${TEMP_FILES[@]:-}"; do
+        rm -f -- "$f" 2>/dev/null || true
+    done
+}
+trap cleanup EXIT
+
+# Error trap for debugging
+trap 'echo "Error at line $LINENO: exit code $?" >&2' ERR
+
+# Check Bash version (requires 4.0+)
+if ((BASH_VERSINFO[0] < 4)); then
+    echo "Error: This script requires Bash 4.0 or higher" >&2
+    echo "Current version: $BASH_VERSION" >&2
+    exit 1
+fi
+
+# Show usage information
+show_usage() {
+    cat <<-'USAGE'
+	Microsoft MCP Server - Interactive Installer
+
+	USAGE:
+	    ./scripts/install.sh [OPTIONS]
+
+	OPTIONS:
+	    -h, --help       Show this help message
+	    -n, --dry-run    Show what would be done without making changes
+	    --version        Show script version
+
+	EXAMPLES:
+	    # Interactive installation
+	    ./scripts/install.sh
+
+	    # Dry run to see what would happen
+	    ./scripts/install.sh --dry-run
+
+	    # Piped installation
+	    curl -fsSL https://raw.githubusercontent.com/.../install.sh | bash
+
+	REQUIREMENTS:
+	    - Bash 4.0+
+	    - Python 3.10+
+	    - uv or pip
+	    - jq (optional, for config merging)
+	USAGE
+}
+
+# Parse command line arguments
+DRY_RUN=false
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -h|--help)
+            show_usage
+            exit 0
+            ;;
+        -n|--dry-run)
+            DRY_RUN=true
+            shift
+            ;;
+        --version)
+            echo "Microsoft MCP Server Installer v1.0.0"
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1" >&2
+            show_usage
+            exit 1
+            ;;
+    esac
+done
 
 echo "======================================="
 echo "  Microsoft MCP Server Installer"
 echo "======================================="
 echo ""
+
+if $DRY_RUN; then
+    echo "[DRY RUN MODE - No changes will be made]"
+    echo ""
+fi
 
 # Colors for output
 RED='\033[0;31m'
@@ -52,6 +139,55 @@ log_header() {
 # Check if command exists
 command_exists() {
     command -v "$1" >/dev/null 2>&1
+}
+
+# Validate Azure client ID format (UUID)
+validate_client_id() {
+    local id="$1"
+    if [[ ! "$id" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+        return 1
+    fi
+    return 0
+}
+
+# Safe directory creation with symlink check
+create_config_dir() {
+    local dir="$1"
+
+    if [[ -L "$dir" ]]; then
+        log_error "Config directory is a symlink: $dir"
+        return 1
+    fi
+
+    if [[ -e "$dir" && ! -d "$dir" ]]; then
+        log_error "Config path exists but is not a directory: $dir"
+        return 1
+    fi
+
+    if $DRY_RUN; then
+        log_info "[DRY RUN] Would create directory: $dir"
+        return 0
+    fi
+
+    if ! mkdir -p -- "$dir"; then
+        log_error "Failed to create directory: $dir"
+        return 1
+    fi
+
+    # Set restrictive permissions
+    chmod 700 -- "$dir" 2>/dev/null || true
+    return 0
+}
+
+# Create tracked temporary file
+create_temp_file() {
+    local temp_file
+    temp_file=$(mktemp) || {
+        log_error "Failed to create temporary file"
+        return 1
+    }
+    TEMP_FILES+=("$temp_file")
+    echo "$temp_file"
 }
 
 # Detect OS
@@ -160,7 +296,7 @@ select_install_targets() {
     echo "  q) Quit"
     echo ""
 
-    read -p "Your selection: " selection
+    read -r -p "Your selection: " selection
 
     case "$selection" in
         *q*|*Q*)
@@ -210,7 +346,7 @@ select_auth_method() {
     echo "     - Platform-specific secure token storage"
     echo ""
 
-    read -p "Your selection [1]: " auth_selection
+    read -r -p "Your selection [1]: " auth_selection
 
     case "$auth_selection" in
         2)
@@ -222,10 +358,14 @@ select_auth_method() {
             log_info "Azure SDK requires an Azure AD Application ID."
             echo -e "${YELLOW}Get yours from: https://portal.azure.com → Microsoft Entra ID → App registrations${NC}"
             echo ""
-            read -p "Enter your Azure Application (Client) ID: " client_id
+            read -r -p "Enter your Azure Application (Client) ID: " client_id
 
             if [ -z "$client_id" ]; then
                 log_error "Azure Application ID is required for Azure SDK auth."
+                log_info "Falling back to MSAL authentication."
+                AUTH_METHOD="msal"
+            elif ! validate_client_id "$client_id"; then
+                log_error "Invalid Azure Application ID format (expected UUID like xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)"
                 log_info "Falling back to MSAL authentication."
                 AUTH_METHOD="msal"
             else
@@ -244,10 +384,33 @@ select_auth_method() {
 backup_config() {
     local config_file="$1"
 
-    if [ -f "$config_file" ]; then
+    if [[ -f "$config_file" ]]; then
+        # Check read permission
+        if [[ ! -r "$config_file" ]]; then
+            log_warning "Cannot read $config_file (permission denied), skipping backup"
+            return 0
+        fi
+
+        local backup_dir
+        backup_dir=$(dirname -- "$config_file")
+
+        # Check write permission for backup
+        if [[ ! -w "$backup_dir" ]]; then
+            log_warning "Cannot write to $backup_dir, skipping backup"
+            return 0
+        fi
+
+        if $DRY_RUN; then
+            log_info "[DRY RUN] Would backup $config_file"
+            return 0
+        fi
+
         local backup_file="${config_file}.backup.$(date +%Y%m%d_%H%M%S)"
-        cp "$config_file" "$backup_file"
-        log_success "Backed up existing config to: $(basename "$backup_file")"
+        if cp -- "$config_file" "$backup_file"; then
+            log_success "Backed up existing config to: $(basename -- "$backup_file")"
+        else
+            log_warning "Failed to create backup, continuing anyway"
+        fi
     fi
 }
 
@@ -291,19 +454,30 @@ install_claude_code() {
         return 1
     fi
 
-    local server_config=$(build_server_config)
+    local server_config
+    server_config=$(build_server_config) || {
+        log_error "Failed to build server config"
+        return 1
+    }
 
     # Check if already configured
     if claude mcp list 2>/dev/null | grep -q "microsoft-mcp"; then
         log_info "microsoft-mcp already configured. Updating..."
-        claude mcp remove microsoft-mcp -s user 2>/dev/null || true
+        if ! $DRY_RUN; then
+            claude mcp remove microsoft-mcp -s user 2>/dev/null || true
+        fi
     fi
 
     # Add the MCP server
     log_info "Adding microsoft-mcp to Claude Code..."
-    echo "$server_config" | claude mcp add-json microsoft-mcp --stdin -s user
 
-    if [ $? -eq 0 ]; then
+    if $DRY_RUN; then
+        log_info "[DRY RUN] Would add microsoft-mcp server config"
+        log_success "Claude Code configured successfully (dry run)"
+        return 0
+    fi
+
+    if echo "$server_config" | claude mcp add-json microsoft-mcp --stdin -s user; then
         log_success "Claude Code configured successfully"
     else
         log_error "Failed to configure Claude Code"
@@ -318,39 +492,77 @@ install_cursor() {
     local config_dir="$HOME/.cursor"
     local config_file="$config_dir/mcp.json"
 
-    # Create directory if needed
-    mkdir -p "$config_dir"
+    # Create directory if needed (with symlink check)
+    if ! create_config_dir "$config_dir"; then
+        return 1
+    fi
 
     # Backup existing config
     backup_config "$config_file"
 
-    local server_config=$(build_server_config)
+    local server_config
+    server_config=$(build_server_config) || {
+        log_error "Failed to build server config"
+        return 1
+    }
+
+    if $DRY_RUN; then
+        log_info "[DRY RUN] Would configure Cursor at: $config_file"
+        log_success "Cursor configured (dry run)"
+        return 0
+    fi
 
     if [ -f "$config_file" ] && command_exists jq; then
         # Merge with existing config using jq
         log_info "Merging with existing Cursor config..."
 
-        local temp_file=$(mktemp)
+        local temp_file
+        temp_file=$(create_temp_file) || return 1
 
         if jq -e '.mcpServers' "$config_file" >/dev/null 2>&1; then
-            jq --argjson microsoft "$server_config" '.mcpServers["microsoft-mcp"] = $microsoft' "$config_file" > "$temp_file"
+            if ! jq --argjson microsoft "$server_config" \
+                '.mcpServers["microsoft-mcp"] = $microsoft' \
+                "$config_file" > "$temp_file"; then
+                log_error "Failed to merge config with jq"
+                return 1
+            fi
         else
-            jq --argjson microsoft "$server_config" '. + {"mcpServers": {"microsoft-mcp": $microsoft}}' "$config_file" > "$temp_file"
+            if ! jq --argjson microsoft "$server_config" \
+                '. + {"mcpServers": {"microsoft-mcp": $microsoft}}' \
+                "$config_file" > "$temp_file"; then
+                log_error "Failed to create config with jq"
+                return 1
+            fi
         fi
 
-        mv "$temp_file" "$config_file"
+        # Validate output is valid JSON
+        if ! jq empty "$temp_file" 2>/dev/null; then
+            log_error "Generated invalid JSON"
+            return 1
+        fi
+
+        mv -- "$temp_file" "$config_file"
         log_success "Cursor configuration merged"
     else
         # Create new config
         log_info "Creating new Cursor config..."
 
-        cat > "$config_file" << EOF
+        # Build config with jq if available for proper escaping
+        if command_exists jq; then
+            jq -n --argjson microsoft "$server_config" \
+                '{"mcpServers": {"microsoft-mcp": $microsoft}}' > "$config_file" || {
+                log_error "Failed to create config file"
+                return 1
+            }
+        else
+            cat > "$config_file" << EOF
 {
   "mcpServers": {
-    "microsoft-mcp": $(build_server_config)
+    "microsoft-mcp": $server_config
   }
 }
 EOF
+        fi
         log_success "Cursor configuration created"
     fi
 
@@ -361,7 +573,8 @@ EOF
 install_claude_desktop() {
     log_header "Configuring Claude Desktop"
 
-    local config_dir=$(get_claude_desktop_config_dir)
+    local config_dir
+    config_dir=$(get_claude_desktop_config_dir)
 
     if [ -z "$config_dir" ]; then
         log_error "Could not determine Claude Desktop config directory for this OS."
@@ -370,39 +583,77 @@ install_claude_desktop() {
 
     local config_file="$config_dir/claude_desktop_config.json"
 
-    # Create directory if needed
-    mkdir -p "$config_dir"
+    # Create directory if needed (with symlink check)
+    if ! create_config_dir "$config_dir"; then
+        return 1
+    fi
 
     # Backup existing config
     backup_config "$config_file"
 
-    local server_config=$(build_server_config)
+    local server_config
+    server_config=$(build_server_config) || {
+        log_error "Failed to build server config"
+        return 1
+    }
+
+    if $DRY_RUN; then
+        log_info "[DRY RUN] Would configure Claude Desktop at: $config_file"
+        log_success "Claude Desktop configured (dry run)"
+        return 0
+    fi
 
     if [ -f "$config_file" ] && command_exists jq; then
         # Merge with existing config using jq
         log_info "Merging with existing Claude Desktop config..."
 
-        local temp_file=$(mktemp)
+        local temp_file
+        temp_file=$(create_temp_file) || return 1
 
         if jq -e '.mcpServers' "$config_file" >/dev/null 2>&1; then
-            jq --argjson microsoft "$server_config" '.mcpServers["microsoft-mcp"] = $microsoft' "$config_file" > "$temp_file"
+            if ! jq --argjson microsoft "$server_config" \
+                '.mcpServers["microsoft-mcp"] = $microsoft' \
+                "$config_file" > "$temp_file"; then
+                log_error "Failed to merge config with jq"
+                return 1
+            fi
         else
-            jq --argjson microsoft "$server_config" '. + {"mcpServers": {"microsoft-mcp": $microsoft}}' "$config_file" > "$temp_file"
+            if ! jq --argjson microsoft "$server_config" \
+                '. + {"mcpServers": {"microsoft-mcp": $microsoft}}' \
+                "$config_file" > "$temp_file"; then
+                log_error "Failed to create config with jq"
+                return 1
+            fi
         fi
 
-        mv "$temp_file" "$config_file"
+        # Validate output is valid JSON
+        if ! jq empty "$temp_file" 2>/dev/null; then
+            log_error "Generated invalid JSON"
+            return 1
+        fi
+
+        mv -- "$temp_file" "$config_file"
         log_success "Claude Desktop configuration merged"
     else
         # Create new config
         log_info "Creating new Claude Desktop config..."
 
-        cat > "$config_file" << EOF
+        # Build config with jq if available for proper escaping
+        if command_exists jq; then
+            jq -n --argjson microsoft "$server_config" \
+                '{"mcpServers": {"microsoft-mcp": $microsoft}}' > "$config_file" || {
+                log_error "Failed to create config file"
+                return 1
+            }
+        else
+            cat > "$config_file" << EOF
 {
   "mcpServers": {
-    "microsoft-mcp": $(build_server_config)
+    "microsoft-mcp": $server_config
   }
 }
 EOF
+        fi
         log_success "Claude Desktop configuration created"
     fi
 
@@ -416,7 +667,7 @@ run_authentication() {
     echo "Would you like to authenticate now?"
     echo "This will allow you to verify the setup is working."
     echo ""
-    read -p "Run authentication? [Y/n]: " run_auth
+    read -r -p "Run authentication? [Y/n]: " run_auth
 
     case "$run_auth" in
         [nN]*)
@@ -515,13 +766,37 @@ main() {
     echo ""
     log_header "Installing Microsoft MCP Server"
 
-    # Run installations
-    $INSTALL_CLAUDE_CODE && install_claude_code
-    $INSTALL_CURSOR && install_cursor
-    $INSTALL_CLAUDE_DESKTOP && install_claude_desktop
+    # Run installations with error tracking
+    local install_failed=false
 
-    # Offer to run authentication
-    run_authentication
+    if $INSTALL_CLAUDE_CODE; then
+        if ! install_claude_code; then
+            install_failed=true
+        fi
+    fi
+
+    if $INSTALL_CURSOR; then
+        if ! install_cursor; then
+            install_failed=true
+        fi
+    fi
+
+    if $INSTALL_CLAUDE_DESKTOP; then
+        if ! install_claude_desktop; then
+            install_failed=true
+        fi
+    fi
+
+    if $install_failed; then
+        log_warning "Some installations failed. Check messages above."
+    fi
+
+    # Offer to run authentication (skip in dry run mode)
+    if ! $DRY_RUN; then
+        run_authentication
+    else
+        log_info "[DRY RUN] Skipping authentication"
+    fi
 
     # Show completion
     show_completion

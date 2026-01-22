@@ -112,6 +112,8 @@ INSTALL_CURSOR=false
 INSTALL_CLAUDE_DESKTOP=false
 AUTH_METHOD="msal"  # Default to MSAL (easier, no Azure app registration)
 MICROSOFT_MCP_CLIENT_ID=""
+declare -a USER_ACCOUNTS=()  # Email addresses for MSAL account identification (multi-account support)
+UV_PATH=""  # Full path to uv executable
 
 # Helper functions
 log_info() {
@@ -205,6 +207,17 @@ get_install_source() {
     fi
 }
 
+# Check if install source is local (path starts with /)
+is_local_install() {
+    local source="$1"
+    [[ "$source" == /* ]]
+}
+
+# Get full path to uv executable
+get_uv_path() {
+    command -v uv 2>/dev/null || which uv 2>/dev/null
+}
+
 # Detect OS
 detect_os() {
     if [[ "$OSTYPE" == "darwin"* ]]; then
@@ -257,16 +270,12 @@ check_prerequisites() {
         exit 1
     fi
 
-    # Check uv (preferred) or pip
-    if command_exists uv; then
-        log_success "uv found (recommended)"
-    elif command_exists uvx; then
-        log_success "uvx found"
-    elif command_exists pip; then
-        log_warning "pip found, but uv is recommended for better performance"
-        log_info "Install uv: curl -LsSf https://astral.sh/uv/install.sh | sh"
+    # Check uv (required)
+    UV_PATH=$(get_uv_path)
+    if [ -n "$UV_PATH" ]; then
+        log_success "uv found at: $UV_PATH"
     else
-        log_error "Neither uv nor pip found. Please install uv first."
+        log_error "uv not found. Please install uv first."
         log_info "Install uv: curl -LsSf https://astral.sh/uv/install.sh | sh"
         exit 1
     fi
@@ -324,9 +333,9 @@ select_install_targets() {
             INSTALL_CLAUDE_DESKTOP=true
             ;;
         *)
-            [[ "$selection" == *"1"* ]] && $has_claude_cli && INSTALL_CLAUDE_CODE=true
-            [[ "$selection" == *"2"* ]] && INSTALL_CURSOR=true
-            [[ "$selection" == *"3"* ]] && INSTALL_CLAUDE_DESKTOP=true
+            [[ "$selection" == *"1"* ]] && $has_claude_cli && INSTALL_CLAUDE_CODE=true || true
+            [[ "$selection" == *"2"* ]] && INSTALL_CURSOR=true || true
+            [[ "$selection" == *"3"* ]] && INSTALL_CLAUDE_DESKTOP=true || true
             ;;
     esac
 
@@ -338,9 +347,9 @@ select_install_targets() {
 
     echo ""
     log_info "Selected targets:"
-    $INSTALL_CLAUDE_CODE && echo "  - Claude Code (CLI)"
-    $INSTALL_CURSOR && echo "  - Cursor IDE"
-    $INSTALL_CLAUDE_DESKTOP && echo "  - Claude Desktop"
+    $INSTALL_CLAUDE_CODE && echo "  - Claude Code (CLI)" || true
+    $INSTALL_CURSOR && echo "  - Cursor IDE" || true
+    $INSTALL_CLAUDE_DESKTOP && echo "  - Claude Desktop" || true
 }
 
 # Interactive auth method selection
@@ -395,6 +404,44 @@ select_auth_method() {
     esac
 }
 
+# Prompt for user accounts (for MSAL multi-account identification)
+prompt_user_accounts() {
+    if [ "$AUTH_METHOD" != "msal" ]; then
+        return  # Only needed for MSAL
+    fi
+
+    log_header "Microsoft Account Setup"
+
+    echo "You can add multiple Microsoft accounts."
+    echo "Enter each email address, then press Enter."
+    echo "Press Enter without typing to finish adding accounts."
+    echo ""
+
+    while true; do
+        local count=${#USER_ACCOUNTS[@]}
+        local prompt="Email address"
+        if [ $count -gt 0 ]; then
+            prompt="Add another account (Enter to finish)"
+        fi
+
+        read -r -p "$prompt: " email
+
+        if [ -z "$email" ]; then
+            if [ $count -eq 0 ]; then
+                log_warning "No email provided. Using 'default' as identifier."
+                USER_ACCOUNTS+=("default")
+            fi
+            break
+        fi
+
+        USER_ACCOUNTS+=("$email")
+        log_success "Added account: $email (${#USER_ACCOUNTS[@]} total)"
+    done
+
+    echo ""
+    log_info "Accounts to authenticate: ${USER_ACCOUNTS[*]}"
+}
+
 # Backup existing config file
 backup_config() {
     local config_file="$1"
@@ -429,24 +476,63 @@ backup_config() {
     fi
 }
 
+# Normalize email address for use in server names (replace @ and . with _)
+normalize_email() {
+    local email="$1"
+    echo "$email" | tr '@.' '__'
+}
+
+# Get MCP server name for an account
+get_server_name() {
+    local account_id="$1"
+    local index="$2"
+
+    if [ "$index" -eq 0 ]; then
+        # First account gets the base name
+        echo "microsoft-mcp"
+    else
+        # Additional accounts get normalized email suffix
+        local normalized
+        normalized=$(normalize_email "$account_id")
+        echo "microsoft-mcp-${normalized}"
+    fi
+}
+
 # Build the MCP server JSON config
+# Usage: build_server_config [account_id]
 build_server_config() {
+    local account_id="${1:-default}"
     local config=""
     local install_source
     install_source=$(get_install_source)
 
     # Log the installation source for visibility (to stderr to not pollute JSON output)
-    if [[ "$install_source" != git+* ]]; then
+    if is_local_install "$install_source"; then
         log_info "Using local installation source: $install_source" >&2
     fi
 
+    # Build args based on local vs remote install
+    # Always specify --python 3.13 to ensure compatibility (onnxruntime doesn't have 3.14 wheels yet)
+    local args_json
+    if is_local_install "$install_source"; then
+        # Local install: use "uv run --python 3.13 --project /path/to/repo microsoft-mcp"
+        args_json="[\"run\", \"--python\", \"3.13\", \"--project\", \"$install_source\", \"microsoft-mcp\"]"
+    else
+        # Remote install: use "uv tool run --python 3.13 --from git+https://... microsoft-mcp"
+        args_json="[\"tool\", \"run\", \"--python\", \"3.13\", \"--from\", \"$install_source\", \"microsoft-mcp\"]"
+    fi
+
     if [ "$AUTH_METHOD" == "msal" ]; then
+        # Microsoft Office client ID - required for MSAL auth to work reliably
+        local msal_client_id="d3590ed6-52b3-4102-aeff-aad2292ab01c"
         config=$(cat <<EOF
 {
-    "command": "uvx",
-    "args": ["--python", "3.13", "--from", "$install_source", "microsoft-mcp"],
+    "command": "$UV_PATH",
+    "args": $args_json,
     "env": {
-        "MICROSOFT_MCP_AUTH_METHOD": "msal"
+        "MICROSOFT_MCP_AUTH_METHOD": "msal",
+        "MICROSOFT_MCP_ACCOUNT_ID": "$account_id",
+        "MICROSOFT_MCP_CLIENT_ID": "$msal_client_id"
     }
 }
 EOF
@@ -454,8 +540,8 @@ EOF
     else
         config=$(cat <<EOF
 {
-    "command": "uvx",
-    "args": ["--python", "3.13", "--from", "$install_source", "microsoft-mcp"],
+    "command": "$UV_PATH",
+    "args": $args_json,
     "env": {
         "MICROSOFT_MCP_CLIENT_ID": "$MICROSOFT_MCP_CLIENT_ID"
     }
@@ -476,34 +562,75 @@ install_claude_code() {
         return 1
     fi
 
-    local server_config
-    server_config=$(build_server_config) || {
-        log_error "Failed to build server config"
-        return 1
-    }
+    local account_count=${#USER_ACCOUNTS[@]}
+    local index=0
 
-    # Check if already configured
-    if claude mcp list 2>/dev/null | grep -q "microsoft-mcp"; then
-        log_info "microsoft-mcp already configured. Updating..."
-        if ! $DRY_RUN; then
-            claude mcp remove microsoft-mcp -s user 2>/dev/null || true
+    # For Azure auth or single account, just configure once
+    if [ "$AUTH_METHOD" != "msal" ] || [ "$account_count" -le 1 ]; then
+        local account_id="${USER_ACCOUNTS[0]:-default}"
+        local server_name="microsoft-mcp"
+        local server_config
+        server_config=$(build_server_config "$account_id") || {
+            log_error "Failed to build server config"
+            return 1
+        }
+
+        # Check if already configured
+        if claude mcp list 2>/dev/null | grep -q "$server_name"; then
+            log_info "$server_name already configured. Updating..."
+            if ! $DRY_RUN; then
+                claude mcp remove "$server_name" -s user 2>/dev/null || true
+            fi
         fi
-    fi
 
-    # Add the MCP server
-    log_info "Adding microsoft-mcp to Claude Code..."
+        # Add the MCP server
+        log_info "Adding $server_name to Claude Code..."
 
-    if $DRY_RUN; then
-        log_info "[DRY RUN] Would add microsoft-mcp server config"
-        log_success "Claude Code configured successfully (dry run)"
-        return 0
-    fi
+        if $DRY_RUN; then
+            log_info "[DRY RUN] Would add $server_name server config"
+            log_success "Claude Code configured successfully (dry run)"
+            return 0
+        fi
 
-    if claude mcp add-json microsoft-mcp "$server_config" -s user; then
-        log_success "Claude Code configured successfully"
+        if claude mcp add-json "$server_name" "$server_config" -s user; then
+            log_success "Claude Code configured with account: $account_id"
+        else
+            log_error "Failed to configure Claude Code"
+            return 1
+        fi
     else
-        log_error "Failed to configure Claude Code"
-        return 1
+        # Multiple MSAL accounts - create server entry for each
+        for account_id in "${USER_ACCOUNTS[@]}"; do
+            local server_name
+            server_name=$(get_server_name "$account_id" "$index")
+            local server_config
+            server_config=$(build_server_config "$account_id") || {
+                log_error "Failed to build server config for $account_id"
+                continue
+            }
+
+            # Check if already configured
+            if claude mcp list 2>/dev/null | grep -q "$server_name"; then
+                log_info "$server_name already configured. Updating..."
+                if ! $DRY_RUN; then
+                    claude mcp remove "$server_name" -s user 2>/dev/null || true
+                fi
+            fi
+
+            # Add the MCP server
+            log_info "Adding $server_name to Claude Code..."
+
+            if $DRY_RUN; then
+                log_info "[DRY RUN] Would add $server_name server config"
+            elif claude mcp add-json "$server_name" "$server_config" -s user; then
+                log_success "Added $server_name for account: $account_id"
+            else
+                log_warning "Failed to configure $server_name"
+            fi
+
+            ((index++))
+        done
+        log_success "Claude Code configured with ${#USER_ACCOUNTS[@]} accounts"
     fi
 }
 
@@ -522,40 +649,60 @@ install_cursor() {
     # Backup existing config
     backup_config "$config_file"
 
-    local server_config
-    server_config=$(build_server_config) || {
-        log_error "Failed to build server config"
-        return 1
-    }
-
     if $DRY_RUN; then
         log_info "[DRY RUN] Would configure Cursor at: $config_file"
         log_success "Cursor configured (dry run)"
         return 0
     fi
 
+    local account_count=${#USER_ACCOUNTS[@]}
+    local index=0
+
+    # Build list of server configs to add
+    declare -A server_configs
+    if [ "$AUTH_METHOD" != "msal" ] || [ "$account_count" -le 1 ]; then
+        local account_id="${USER_ACCOUNTS[0]:-default}"
+        server_configs["microsoft-mcp"]=$(build_server_config "$account_id")
+    else
+        for account_id in "${USER_ACCOUNTS[@]}"; do
+            local server_name
+            server_name=$(get_server_name "$account_id" "$index")
+            server_configs["$server_name"]=$(build_server_config "$account_id")
+            ((index++))
+        done
+    fi
+
     if [ -f "$config_file" ] && command_exists jq; then
         # Merge with existing config using jq
         log_info "Merging with existing Cursor config..."
 
-        local temp_file
+        local temp_file current_config
         temp_file=$(create_temp_file) || return 1
+        cp "$config_file" "$temp_file"
 
-        if jq -e '.mcpServers' "$config_file" >/dev/null 2>&1; then
-            if ! jq --argjson microsoft "$server_config" \
-                '.mcpServers["microsoft-mcp"] = $microsoft' \
-                "$config_file" > "$temp_file"; then
-                log_error "Failed to merge config with jq"
-                return 1
+        for server_name in "${!server_configs[@]}"; do
+            local server_config="${server_configs[$server_name]}"
+            local new_temp
+            new_temp=$(create_temp_file) || return 1
+
+            if jq -e '.mcpServers' "$temp_file" >/dev/null 2>&1; then
+                if ! jq --argjson config "$server_config" --arg name "$server_name" \
+                    '.mcpServers[$name] = $config' \
+                    "$temp_file" > "$new_temp"; then
+                    log_error "Failed to merge config with jq for $server_name"
+                    return 1
+                fi
+            else
+                if ! jq --argjson config "$server_config" --arg name "$server_name" \
+                    '. + {"mcpServers": {($name): $config}}' \
+                    "$temp_file" > "$new_temp"; then
+                    log_error "Failed to create config with jq for $server_name"
+                    return 1
+                fi
             fi
-        else
-            if ! jq --argjson microsoft "$server_config" \
-                '. + {"mcpServers": {"microsoft-mcp": $microsoft}}' \
-                "$config_file" > "$temp_file"; then
-                log_error "Failed to create config with jq"
-                return 1
-            fi
-        fi
+            mv "$new_temp" "$temp_file"
+            log_info "Added server: $server_name"
+        done
 
         # Validate output is valid JSON
         if ! jq empty "$temp_file" 2>/dev/null; then
@@ -569,14 +716,28 @@ install_cursor() {
         # Create new config
         log_info "Creating new Cursor config..."
 
-        # Build config with jq if available for proper escaping
         if command_exists jq; then
-            jq -n --argjson microsoft "$server_config" \
-                '{"mcpServers": {"microsoft-mcp": $microsoft}}' > "$config_file" || {
-                log_error "Failed to create config file"
-                return 1
-            }
+            # Start with empty mcpServers
+            echo '{"mcpServers": {}}' > "$config_file"
+
+            for server_name in "${!server_configs[@]}"; do
+                local server_config="${server_configs[$server_name]}"
+                local temp_file
+                temp_file=$(create_temp_file) || return 1
+
+                jq --argjson config "$server_config" --arg name "$server_name" \
+                    '.mcpServers[$name] = $config' "$config_file" > "$temp_file" || {
+                    log_error "Failed to add $server_name to config file"
+                    return 1
+                }
+                mv "$temp_file" "$config_file"
+                log_info "Added server: $server_name"
+            done
         else
+            # Fallback without jq - only supports single account
+            local account_id="${USER_ACCOUNTS[0]:-default}"
+            local server_config
+            server_config=$(build_server_config "$account_id")
             cat > "$config_file" << EOF
 {
   "mcpServers": {
@@ -584,6 +745,9 @@ install_cursor() {
   }
 }
 EOF
+            if [ "$account_count" -gt 1 ]; then
+                log_warning "Multiple accounts require jq. Only first account configured."
+            fi
         fi
         log_success "Cursor configuration created"
     fi
@@ -613,16 +777,27 @@ install_claude_desktop() {
     # Backup existing config
     backup_config "$config_file"
 
-    local server_config
-    server_config=$(build_server_config) || {
-        log_error "Failed to build server config"
-        return 1
-    }
-
     if $DRY_RUN; then
         log_info "[DRY RUN] Would configure Claude Desktop at: $config_file"
         log_success "Claude Desktop configured (dry run)"
         return 0
+    fi
+
+    local account_count=${#USER_ACCOUNTS[@]}
+    local index=0
+
+    # Build list of server configs to add
+    declare -A server_configs
+    if [ "$AUTH_METHOD" != "msal" ] || [ "$account_count" -le 1 ]; then
+        local account_id="${USER_ACCOUNTS[0]:-default}"
+        server_configs["microsoft-mcp"]=$(build_server_config "$account_id")
+    else
+        for account_id in "${USER_ACCOUNTS[@]}"; do
+            local server_name
+            server_name=$(get_server_name "$account_id" "$index")
+            server_configs["$server_name"]=$(build_server_config "$account_id")
+            ((index++))
+        done
     fi
 
     if [ -f "$config_file" ] && command_exists jq; then
@@ -631,22 +806,31 @@ install_claude_desktop() {
 
         local temp_file
         temp_file=$(create_temp_file) || return 1
+        cp "$config_file" "$temp_file"
 
-        if jq -e '.mcpServers' "$config_file" >/dev/null 2>&1; then
-            if ! jq --argjson microsoft "$server_config" \
-                '.mcpServers["microsoft-mcp"] = $microsoft' \
-                "$config_file" > "$temp_file"; then
-                log_error "Failed to merge config with jq"
-                return 1
+        for server_name in "${!server_configs[@]}"; do
+            local server_config="${server_configs[$server_name]}"
+            local new_temp
+            new_temp=$(create_temp_file) || return 1
+
+            if jq -e '.mcpServers' "$temp_file" >/dev/null 2>&1; then
+                if ! jq --argjson config "$server_config" --arg name "$server_name" \
+                    '.mcpServers[$name] = $config' \
+                    "$temp_file" > "$new_temp"; then
+                    log_error "Failed to merge config with jq for $server_name"
+                    return 1
+                fi
+            else
+                if ! jq --argjson config "$server_config" --arg name "$server_name" \
+                    '. + {"mcpServers": {($name): $config}}' \
+                    "$temp_file" > "$new_temp"; then
+                    log_error "Failed to create config with jq for $server_name"
+                    return 1
+                fi
             fi
-        else
-            if ! jq --argjson microsoft "$server_config" \
-                '. + {"mcpServers": {"microsoft-mcp": $microsoft}}' \
-                "$config_file" > "$temp_file"; then
-                log_error "Failed to create config with jq"
-                return 1
-            fi
-        fi
+            mv "$new_temp" "$temp_file"
+            log_info "Added server: $server_name"
+        done
 
         # Validate output is valid JSON
         if ! jq empty "$temp_file" 2>/dev/null; then
@@ -660,14 +844,28 @@ install_claude_desktop() {
         # Create new config
         log_info "Creating new Claude Desktop config..."
 
-        # Build config with jq if available for proper escaping
         if command_exists jq; then
-            jq -n --argjson microsoft "$server_config" \
-                '{"mcpServers": {"microsoft-mcp": $microsoft}}' > "$config_file" || {
-                log_error "Failed to create config file"
-                return 1
-            }
+            # Start with empty mcpServers
+            echo '{"mcpServers": {}}' > "$config_file"
+
+            for server_name in "${!server_configs[@]}"; do
+                local server_config="${server_configs[$server_name]}"
+                local temp_file
+                temp_file=$(create_temp_file) || return 1
+
+                jq --argjson config "$server_config" --arg name "$server_name" \
+                    '.mcpServers[$name] = $config' "$config_file" > "$temp_file" || {
+                    log_error "Failed to add $server_name to config file"
+                    return 1
+                }
+                mv "$temp_file" "$config_file"
+                log_info "Added server: $server_name"
+            done
         else
+            # Fallback without jq - only supports single account
+            local account_id="${USER_ACCOUNTS[0]:-default}"
+            local server_config
+            server_config=$(build_server_config "$account_id")
             cat > "$config_file" << EOF
 {
   "mcpServers": {
@@ -675,11 +873,27 @@ install_claude_desktop() {
   }
 }
 EOF
+            if [ "$account_count" -gt 1 ]; then
+                log_warning "Multiple accounts require jq. Only first account configured."
+            fi
         fi
         log_success "Claude Desktop configuration created"
     fi
 
     log_success "Claude Desktop configured at: $config_file"
+}
+
+# Build Python command for authentication based on local/remote install
+build_auth_python_cmd() {
+    local install_source="$1"
+
+    if is_local_install "$install_source"; then
+        # Local: uv run --python 3.13 --project /path/to/repo python -c "..."
+        echo "\"$UV_PATH\" run --python 3.13 --project \"$install_source\" python -c"
+    else
+        # Remote: uv tool run --python 3.13 --from git+https://... python -c "..."
+        echo "\"$UV_PATH\" tool run --python 3.13 --from \"$install_source\" python -c"
+    fi
 }
 
 # Run initial authentication
@@ -689,7 +903,11 @@ run_authentication() {
     local install_source
     install_source=$(get_install_source)
 
+    local account_count=${#USER_ACCOUNTS[@]}
     echo "Would you like to authenticate now?"
+    if [ $account_count -gt 1 ]; then
+        echo "You have $account_count accounts to authenticate."
+    fi
     echo "This will allow you to verify the setup is working."
     echo ""
     read -r -p "Run authentication? [Y/n]: " run_auth
@@ -697,43 +915,86 @@ run_authentication() {
     case "$run_auth" in
         [nN]*)
             log_info "Skipping authentication. You can run it later with:"
+            local python_cmd
+            python_cmd=$(build_auth_python_cmd "$install_source")
             if [ "$AUTH_METHOD" == "msal" ]; then
-                echo "  MICROSOFT_MCP_AUTH_METHOD=msal uvx --python 3.13 --from $install_source python -c 'from microsoft_mcp.auth_msal import MSALRefreshTokenAuth; a = MSALRefreshTokenAuth(); a.authenticate()'"
+                echo "  MICROSOFT_MCP_AUTH_METHOD=msal MICROSOFT_MCP_ACCOUNT_ID=your@email.com $python_cmd 'from microsoft_mcp.auth_msal import MSALRefreshTokenAuth; import os; a = MSALRefreshTokenAuth(account_identifier=os.getenv(\"MICROSOFT_MCP_ACCOUNT_ID\")); a.authenticate()'"
             else
-                echo "  MICROSOFT_MCP_CLIENT_ID=$MICROSOFT_MCP_CLIENT_ID uvx --python 3.13 --from $install_source python -c 'from microsoft_mcp.auth import AzureAuthentication; a = AzureAuthentication(); a.authenticate()'"
+                echo "  MICROSOFT_MCP_CLIENT_ID=$MICROSOFT_MCP_CLIENT_ID $python_cmd 'from microsoft_mcp.auth import AzureAuthentication; a = AzureAuthentication(); a.authenticate()'"
             fi
             return
             ;;
     esac
 
-    log_info "Starting authentication..."
-    echo ""
-
     if [ "$AUTH_METHOD" == "msal" ]; then
         log_info "MSAL Device Code Flow: You'll see a code to enter at microsoft.com/devicelogin"
         echo ""
-        MICROSOFT_MCP_AUTH_METHOD=msal uvx --python 3.13 --from "$install_source" python -c "
+
+        # Pre-sync the virtual environment to avoid recreation during account loop
+        if is_local_install "$install_source"; then
+            log_info "Preparing Python environment..."
+            "$UV_PATH" sync --python 3.13 --project "$install_source" 2>/dev/null || true
+        fi
+
+        # Loop through all accounts
+        for account_id in "${USER_ACCOUNTS[@]}"; do
+            log_info "Authenticating account: $account_id"
+            echo ""
+
+            if is_local_install "$install_source"; then
+                MICROSOFT_MCP_AUTH_METHOD=msal MICROSOFT_MCP_ACCOUNT_ID="$account_id" "$UV_PATH" run --python 3.13 --project "$install_source" python -c "
+import os
 from microsoft_mcp.auth_msal import MSALRefreshTokenAuth
-auth = MSALRefreshTokenAuth()
+account_id = os.getenv('MICROSOFT_MCP_ACCOUNT_ID', 'default')
+auth = MSALRefreshTokenAuth(account_identifier=account_id)
 result = auth.authenticate()
 print('Authentication successful!')
 print(f'Logged in as: {result.get(\"username\", \"unknown\")}')
 " || {
-            log_warning "Authentication failed or was cancelled."
-            log_info "You can try again later."
-        }
+                    log_warning "Authentication failed or was cancelled for: $account_id"
+                    log_info "You can try again later."
+                }
+            else
+                MICROSOFT_MCP_AUTH_METHOD=msal MICROSOFT_MCP_ACCOUNT_ID="$account_id" "$UV_PATH" tool run --python 3.13 --from "$install_source" python -c "
+import os
+from microsoft_mcp.auth_msal import MSALRefreshTokenAuth
+account_id = os.getenv('MICROSOFT_MCP_ACCOUNT_ID', 'default')
+auth = MSALRefreshTokenAuth(account_identifier=account_id)
+result = auth.authenticate()
+print('Authentication successful!')
+print(f'Logged in as: {result.get(\"username\", \"unknown\")}')
+" || {
+                    log_warning "Authentication failed or was cancelled for: $account_id"
+                    log_info "You can try again later."
+                }
+            fi
+            echo ""
+        done
     else
         log_info "Azure SDK: A browser window will open for sign-in"
         echo ""
-        MICROSOFT_MCP_CLIENT_ID="$MICROSOFT_MCP_CLIENT_ID" uvx --python 3.13 --from "$install_source" python -c "
+
+        if is_local_install "$install_source"; then
+            MICROSOFT_MCP_CLIENT_ID="$MICROSOFT_MCP_CLIENT_ID" "$UV_PATH" run --python 3.13 --project "$install_source" python -c "
 from microsoft_mcp.auth import AzureAuthentication
 auth = AzureAuthentication()
 auth.authenticate()
 print('Authentication successful!')
 " || {
-            log_warning "Authentication failed or was cancelled."
-            log_info "You can try again later."
-        }
+                log_warning "Authentication failed or was cancelled."
+                log_info "You can try again later."
+            }
+        else
+            MICROSOFT_MCP_CLIENT_ID="$MICROSOFT_MCP_CLIENT_ID" "$UV_PATH" tool run --python 3.13 --from "$install_source" python -c "
+from microsoft_mcp.auth import AzureAuthentication
+auth = AzureAuthentication()
+auth.authenticate()
+print('Authentication successful!')
+" || {
+                log_warning "Authentication failed or was cancelled."
+                log_info "You can try again later."
+            }
+        fi
     fi
 }
 
@@ -787,6 +1048,7 @@ main() {
     check_prerequisites
     select_install_targets
     select_auth_method
+    prompt_user_accounts
 
     echo ""
     log_header "Installing Microsoft MCP Server"

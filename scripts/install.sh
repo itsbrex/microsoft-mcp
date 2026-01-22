@@ -138,6 +138,55 @@ log_header() {
     echo "---------------------------------------"
 }
 
+# Spinner for long-running operations
+# Usage: run_with_spinner "message" command args...
+run_with_spinner() {
+    local message="$1"
+    shift
+    local pid
+    local spin_chars='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+    local i=0
+    local output_file
+    output_file=$(mktemp)
+    TEMP_FILES+=("$output_file")
+
+    # Run command in background, capturing output
+    "$@" > "$output_file" 2>&1 &
+    pid=$!
+
+    # Show spinner while command runs
+    printf "${CYAN}%s${NC} " "$message"
+    while kill -0 "$pid" 2>/dev/null; do
+        printf "\r${CYAN}%s${NC} %s " "$message" "${spin_chars:i++%${#spin_chars}:1}"
+        sleep 0.1
+    done
+
+    # Get exit status
+    wait "$pid"
+    local exit_code=$?
+
+    # Clear the spinner line
+    printf "\r\033[K"
+
+    if [[ $exit_code -eq 0 ]]; then
+        log_success "$message"
+    else
+        log_error "$message"
+        # Show error output if command failed
+        if [[ -s "$output_file" ]]; then
+            echo -e "${RED}Output:${NC}"
+            cat "$output_file" | head -20
+        fi
+    fi
+
+    return $exit_code
+}
+
+# Show progress status (non-blocking)
+log_progress() {
+    printf "\r${CYAN}⏳ %s...${NC}" "$1"
+}
+
 # Check if command exists
 command_exists() {
     command -v "$1" >/dev/null 2>&1
@@ -932,8 +981,7 @@ run_authentication() {
 
         # Pre-sync the virtual environment to avoid recreation during account loop
         if is_local_install "$install_source"; then
-            log_info "Preparing Python environment..."
-            "$UV_PATH" sync --python 3.13 --project "$install_source" 2>/dev/null || true
+            run_with_spinner "Preparing Python environment" "$UV_PATH" sync --python 3.13 --project "$install_source" || true
         fi
 
         # Loop through all accounts
@@ -955,6 +1003,7 @@ print(f'Logged in as: {result.get(\"username\", \"unknown\")}')
                     log_info "You can try again later."
                 }
             else
+                log_info "Downloading and preparing packages (this may take a moment)..."
                 MICROSOFT_MCP_AUTH_METHOD=msal MICROSOFT_MCP_ACCOUNT_ID="$account_id" "$UV_PATH" tool run --python 3.13 --from "$install_source" python -c "
 import os
 from microsoft_mcp.auth_msal import MSALRefreshTokenAuth
@@ -985,6 +1034,7 @@ print('Authentication successful!')
                 log_info "You can try again later."
             }
         else
+            log_info "Downloading and preparing packages (this may take a moment)..."
             MICROSOFT_MCP_CLIENT_ID="$MICROSOFT_MCP_CLIENT_ID" "$UV_PATH" tool run --python 3.13 --from "$install_source" python -c "
 from microsoft_mcp.auth import AzureAuthentication
 auth = AzureAuthentication()

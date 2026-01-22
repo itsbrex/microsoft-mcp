@@ -1,5 +1,6 @@
 import base64
 import datetime as dt
+import json
 import logging
 import os
 import pathlib as pl
@@ -14,7 +15,7 @@ from markitdown import MarkItDown, StreamInfo
 from io import BytesIO
 from sys import stderr
 
-# Configure logging to both console and file
+# Configure logging to stderr (MCP servers should log to stderr, not files)
 logger = logging.getLogger(__name__)
 
 # Only configure logging if it hasn't been configured yet
@@ -24,22 +25,16 @@ if not logging.getLogger().hasHandlers():
         "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     )
 
-    # Console handler
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
+    # Console handler (stderr) - MCP protocol requires stdout for JSON-RPC
     console_handler = logging.StreamHandler(stderr)
+    console_handler.setLevel(logging.INFO)
     console_handler.setFormatter(formatter)
 
-    # File handler - log to mcp.log in current working directory
-    file_handler = logging.FileHandler("mcp.log")
-    file_handler.setLevel(logging.INFO)
-    file_handler.setFormatter(formatter)
-
-    # Configure root logger
+    # Configure root logger - only stderr, no file logging
+    # File logging causes issues when cwd is / (read-only on macOS)
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.INFO)
     root_logger.addHandler(console_handler)
-    root_logger.addHandler(file_handler)
 
 mcp = FastMCP("microsoft-graph-mcp")
 
@@ -52,10 +47,17 @@ if auth_method == "msal":
     from .auth_msal import MSALRefreshTokenAuth
 
     logger.info("Using MSAL authentication method (device code flow)")
+
+    # MSALRefreshTokenAuth has sensible defaults for all params:
+    # - tokens_dir: ~/.config/microsoft-mcp/tokens/ (or MICROSOFT_MCP_TOKENS_DIR)
+    # - client_id: Microsoft Office client ID (or MICROSOFT_MCP_CLIENT_ID)
+    # - tenant_id: "common" (or MICROSOFT_MCP_TENANT_ID)
+    # - account_identifier: "default" (or MICROSOFT_MCP_ACCOUNT_ID)
     auth: AuthProvider = MSALRefreshTokenAuth(
         tokens_dir=os.getenv("MICROSOFT_MCP_TOKENS_DIR"),
         client_id=os.getenv("MICROSOFT_MCP_CLIENT_ID"),
         tenant_id=os.getenv("MICROSOFT_MCP_TENANT_ID"),
+        account_identifier=os.getenv("MICROSOFT_MCP_ACCOUNT_ID"),
     )
 else:
     # Default: Azure SDK-based authentication with browser flow
@@ -84,6 +86,173 @@ FOLDERS = {
     }.items()
 }
 
+# ============================================================================
+# Account Management Tools (Multi-account support)
+# ============================================================================
+
+@mcp.tool
+def list_accounts() -> list[dict[str, Any]]:
+    """List all authenticated Microsoft accounts.
+
+    Returns a list of all available accounts that have been authenticated,
+    including their email addresses, identifiers, and token expiration status.
+    Use this to see which accounts are available before switching.
+
+    Returns:
+        List of account dictionaries, each containing:
+        - identifier: The account identifier (usually email address)
+        - email: The email address associated with the account
+        - expires_at: When the access token expires
+        - is_active: Whether this is the currently active account
+
+    Examples:
+        - list_accounts() - See all available authenticated accounts
+    """
+    logger.info("list_accounts called")
+
+    tokens_dir = pl.Path(
+        os.getenv(
+            "MICROSOFT_MCP_TOKENS_DIR",
+            pl.Path.home() / ".config" / "microsoft-mcp" / "tokens",
+        )
+    )
+
+    accounts = []
+    if not tokens_dir.exists():
+        logger.info("Token directory does not exist, returning empty list")
+        return accounts
+
+    # Get current active account identifier
+    active_identifier = None
+    if hasattr(auth, "account_identifier"):
+        active_identifier = auth.account_identifier
+
+    for token_file in tokens_dir.glob("*_access_token.json"):
+        try:
+            data = json.loads(token_file.read_text())
+            identifier = token_file.stem.replace("_access_token", "")
+            accounts.append(
+                {
+                    "identifier": identifier,
+                    "email": data.get("email", identifier),
+                    "expires_at": data.get("expires_at"),
+                    "is_active": identifier == active_identifier,
+                }
+            )
+        except Exception as e:
+            logger.warning(f"Failed to read token file {token_file}: {e}")
+            continue
+
+    logger.info(f"list_accounts found {len(accounts)} accounts")
+    return accounts
+
+@mcp.tool
+def set_active_account(account: str) -> dict[str, str]:
+    """Switch the active Microsoft account.
+
+    Changes which Microsoft account is used for all subsequent API calls.
+    The account must have been previously authenticated.
+
+    Args:
+        account: Email address or identifier of the account to activate.
+                 Use list_accounts() to see available accounts.
+
+    Returns:
+        Confirmation dictionary with:
+        - status: "switched" on success
+        - active_account: The new active account identifier
+
+    Raises:
+        ValueError: If no tokens are found for the specified account
+
+    Examples:
+        - set_active_account("work@company.com") - Switch to work account
+        - set_active_account("personal@outlook.com") - Switch to personal account
+    """
+    global auth
+
+    logger.info(f"set_active_account called: account={account}")
+
+    # Verify this is MSAL auth method
+    if auth_method != "msal":
+        raise ValueError(
+            "Account switching is only supported with MSAL authentication method"
+        )
+
+    # Verify account exists
+    tokens_dir = pl.Path(
+        os.getenv(
+            "MICROSOFT_MCP_TOKENS_DIR",
+            pl.Path.home() / ".config" / "microsoft-mcp" / "tokens",
+        )
+    )
+    token_file = tokens_dir / f"{account}_access_token.json"
+
+    if not token_file.exists():
+        available = [f.stem.replace("_access_token", "") for f in tokens_dir.glob("*_access_token.json")]
+        raise ValueError(
+            f"No tokens found for account: {account}. "
+            f"Available accounts: {available}"
+        )
+
+    # Import here to avoid circular import issues
+    from .auth_msal import MSALRefreshTokenAuth
+
+    # Create new auth instance for this account
+    auth = MSALRefreshTokenAuth(
+        tokens_dir=os.getenv("MICROSOFT_MCP_TOKENS_DIR"),
+        client_id=os.getenv("MICROSOFT_MCP_CLIENT_ID"),
+        tenant_id=os.getenv("MICROSOFT_MCP_TENANT_ID"),
+        account_identifier=account,
+    )
+    graph.set_auth_instance(auth)
+
+    logger.info(f"set_active_account successful: switched to {account}")
+    return {"status": "switched", "active_account": account}
+
+@mcp.tool
+def get_active_account() -> dict[str, Any]:
+    """Get the currently active Microsoft account.
+
+    Returns information about which account is currently being used for API calls.
+
+    Returns:
+        Dictionary containing:
+        - identifier: The account identifier
+        - email: The email address (if available)
+        - expires_at: When the access token expires (if available)
+        - auth_method: The authentication method being used ("msal" or "azure")
+
+    Examples:
+        - get_active_account() - See which account is currently active
+    """
+    logger.info("get_active_account called")
+
+    result: dict[str, Any] = {"auth_method": auth_method}
+
+    if hasattr(auth, "account_identifier"):
+        result["identifier"] = auth.account_identifier
+
+        # Try to load token data for more details
+        try:
+            if hasattr(auth, "_load_access_token_data"):
+                token_data = auth._load_access_token_data()
+                if token_data:
+                    result["email"] = token_data.get("email", auth.account_identifier)
+                    result["expires_at"] = token_data.get("expires_at")
+        except Exception as e:
+            logger.warning(f"Could not load token data: {e}")
+            result["email"] = auth.account_identifier
+    else:
+        result["identifier"] = "default"
+        result["email"] = "unknown"
+
+    logger.info(f"get_active_account returning: {result}")
+    return result
+
+# ============================================================================
+# Utility Functions
+# ============================================================================
 
 def convert_to_markdown(html: str, mimetype: str = "text/html") -> str:
     """Convert HTML content to Markdown format."""
@@ -94,7 +263,6 @@ def convert_to_markdown(html: str, mimetype: str = "text/html") -> str:
     return markitdown.convert(
         stream, stream_info=StreamInfo(mimetype=mimetype)
     ).text_content
-
 
 @mcp.tool
 def get_user_details(email: str | None = None) -> dict[str, Any]:
@@ -151,7 +319,6 @@ def get_user_details(email: str | None = None) -> dict[str, Any]:
         )
         raise
 
-
 @mcp.prompt
 def prepare_work_day():
     return """
@@ -160,11 +327,9 @@ def prepare_work_day():
     
     """
 
-
 @mcp.tool
 def is_logged_in() -> bool:
     return auth.exists_valid_token()
-
 
 @mcp.tool
 def login() -> str:
@@ -184,7 +349,6 @@ def login() -> str:
 
     else:
         return "already logged in"
-
 
 @mcp.tool
 def list_emails(
@@ -291,7 +455,6 @@ def list_emails(
         logger.error(f"list_emails failed: {str(e)}", exc_info=True)
         raise
 
-
 @mcp.tool
 def get_email(
     email_id: str,
@@ -392,7 +555,6 @@ def get_email(
         )
         raise
 
-
 @mcp.tool
 def list_events(
     days_ahead: int = 7,
@@ -467,7 +629,6 @@ def list_events(
         logger.error(f"list_events failed: {str(e)}", exc_info=True)
         raise
 
-
 @mcp.tool
 def get_event(event_id: str) -> dict[str, Any]:
     """Get complete details for a specific calendar event by its ID.
@@ -506,7 +667,6 @@ def get_event(event_id: str) -> dict[str, Any]:
             f"get_event failed for event_id={event_id}: {str(e)}", exc_info=True
         )
         raise
-
 
 @mcp.tool
 def check_availability(
@@ -574,7 +734,6 @@ def check_availability(
         logger.error(f"check_availability failed: {str(e)}", exc_info=True)
         raise
 
-
 @mcp.tool
 def list_contacts(limit: int = 50) -> list[dict[str, Any]]:
     """List contacts from the user's address book.
@@ -612,7 +771,6 @@ def list_contacts(limit: int = 50) -> list[dict[str, Any]]:
     except Exception as e:
         logger.error(f"list_contacts failed: {str(e)}", exc_info=True)
         raise
-
 
 @mcp.tool
 def get_contact(contact_id: str) -> dict[str, Any]:
@@ -653,7 +811,6 @@ def get_contact(contact_id: str) -> dict[str, Any]:
             f"get_contact failed for contact_id={contact_id}: {str(e)}", exc_info=True
         )
         raise
-
 
 @mcp.tool
 def list_files(path: str = "/", limit: int = 50) -> list[dict[str, Any]]:
@@ -713,7 +870,6 @@ def list_files(path: str = "/", limit: int = 50) -> list[dict[str, Any]]:
     except Exception as e:
         logger.error(f"list_files failed for path={path}: {str(e)}", exc_info=True)
         raise
-
 
 @mcp.tool
 def get_file(file_id: str, download_path: str) -> dict[str, Any]:
@@ -781,7 +937,6 @@ def get_file(file_id: str, download_path: str) -> dict[str, Any]:
     except Exception as e:
         logger.error(f"get_file failed for file_id={file_id}: {str(e)}", exc_info=True)
         raise
-
 
 @mcp.tool
 def get_attachment(email_id: str, attachment_id: str, save_path: str) -> dict[str, Any]:
@@ -852,7 +1007,6 @@ def get_attachment(email_id: str, attachment_id: str, save_path: str) -> dict[st
         )
         raise
 
-
 def _analyze_search_error(error: Exception, request_payload: dict) -> str:
     """Analyze Microsoft Graph Search API errors and provide helpful diagnostics."""
     import httpx
@@ -921,7 +1075,6 @@ def _analyze_search_error(error: Exception, request_payload: dict) -> str:
         return "Rate limited - too many requests, please retry later"
     else:
         return f"Unexpected error: {error_msg}"
-
 
 @mcp.tool
 def unified_search(
@@ -1195,7 +1348,6 @@ def unified_search(
         }
         return error_response
 
-
 def _process_search_hit(
     hit: dict[str, Any],
     include_body: bool,
@@ -1290,7 +1442,6 @@ def _process_search_hit(
         logger.warning(f"Failed to process search hit: {str(e)}")
         return None
 
-
 @mcp.tool
 def search_files(
     query: str,
@@ -1343,7 +1494,6 @@ def search_files(
             f"search_files failed for query='{query}': {str(e)}", exc_info=True
         )
         raise
-
 
 @mcp.tool
 def search_emails(
@@ -1446,7 +1596,6 @@ def search_emails(
         )
         raise
 
-
 @mcp.tool
 def search_events(
     query: str,
@@ -1489,7 +1638,6 @@ def search_events(
             f"search_events failed for query='{query}': {str(e)}", exc_info=True
         )
         raise
-
 
 @mcp.tool
 def search_contacts(
@@ -1540,7 +1688,6 @@ def search_contacts(
             f"search_contacts failed for query='{query}': {str(e)}", exc_info=True
         )
         raise
-
 
 @mcp.tool
 def list_chat_messages(
@@ -1669,7 +1816,6 @@ def list_chat_messages(
     except Exception as e:
         logger.error(f"list_chat_messages failed: {str(e)}", exc_info=True)
         raise
-
 
 @mcp.tool
 def list_channel_messages(
@@ -1829,7 +1975,6 @@ def list_channel_messages(
         logger.error(f"list_channel_messages failed: {str(e)}", exc_info=True)
         raise
 
-
 @mcp.tool
 def get_chat_message(chat_id: str, message_id: str) -> dict[str, Any]:
     """Get detailed information about a specific chat message by its ID.
@@ -1907,7 +2052,6 @@ def get_chat_message(chat_id: str, message_id: str) -> dict[str, Any]:
             exc_info=True,
         )
         raise
-
 
 @mcp.tool
 def get_channel_message(
@@ -1997,7 +2141,6 @@ def get_channel_message(
         )
         raise
 
-
 @mcp.tool
 def search_chat_messages(
     query: str,
@@ -2066,7 +2209,6 @@ def search_chat_messages(
             f"search_chat_messages failed for query='{query}': {str(e)}", exc_info=True
         )
         raise
-
 
 @mcp.tool
 def search_channel_messages(
@@ -2157,3 +2299,4 @@ def search_channel_messages(
             exc_info=True,
         )
         raise
+

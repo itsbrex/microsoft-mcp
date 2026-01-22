@@ -625,15 +625,16 @@ install_claude_code() {
         }
 
         # Check if already configured
+        log_progress "Checking existing configuration"
         if claude mcp list 2>/dev/null | grep -q "$server_name"; then
+            printf "\r\033[K"  # Clear progress line
             log_info "$server_name already configured. Updating..."
             if ! $DRY_RUN; then
-                claude mcp remove "$server_name" -s user 2>/dev/null || true
+                run_with_spinner "Removing old configuration" claude mcp remove "$server_name" -s user || true
             fi
+        else
+            printf "\r\033[K"  # Clear progress line
         fi
-
-        # Add the MCP server
-        log_info "Adding $server_name to Claude Code..."
 
         if $DRY_RUN; then
             log_info "[DRY RUN] Would add $server_name server config"
@@ -641,7 +642,8 @@ install_claude_code() {
             return 0
         fi
 
-        if claude mcp add-json "$server_name" "$server_config" -s user; then
+        # Add the MCP server
+        if run_with_spinner "Adding $server_name to Claude Code" claude mcp add-json "$server_name" "$server_config" -s user; then
             log_success "Claude Code configured with account: $account_id"
         else
             log_error "Failed to configure Claude Code"
@@ -659,19 +661,20 @@ install_claude_code() {
             }
 
             # Check if already configured
+            log_progress "Checking existing configuration for $account_id"
             if claude mcp list 2>/dev/null | grep -q "$server_name"; then
+                printf "\r\033[K"  # Clear progress line
                 log_info "$server_name already configured. Updating..."
                 if ! $DRY_RUN; then
-                    claude mcp remove "$server_name" -s user 2>/dev/null || true
+                    run_with_spinner "Removing old configuration" claude mcp remove "$server_name" -s user || true
                 fi
+            else
+                printf "\r\033[K"  # Clear progress line
             fi
-
-            # Add the MCP server
-            log_info "Adding $server_name to Claude Code..."
 
             if $DRY_RUN; then
                 log_info "[DRY RUN] Would add $server_name server config"
-            elif claude mcp add-json "$server_name" "$server_config" -s user; then
+            elif run_with_spinner "Adding $server_name" claude mcp add-json "$server_name" "$server_config" -s user; then
                 log_success "Added $server_name for account: $account_id"
             else
                 log_warning "Failed to configure $server_name"

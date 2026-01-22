@@ -351,13 +351,16 @@ class MSALRefreshTokenAuth:
             )
             if result and "access_token" in result:
                 logger.info("Silent authentication successful")
+                cached_username = accounts[0].get("username")
                 self._save_tokens(
                     access_token=result["access_token"],
                     refresh_token=result.get("refresh_token"),
                     expires_in=result.get("expires_in", 3600),
                     scopes=result.get("scope", " ".join(DEFAULT_SCOPES)),
-                    email=accounts[0].get("username"),
+                    email=cached_username,
                 )
+                # Add username to result for easy access
+                result["username"] = cached_username or self.account_identifier
                 return result
 
         # Initiate device code flow
@@ -438,6 +441,9 @@ class MSALRefreshTokenAuth:
 
         logger.info("Authentication completed successfully")
         print("\n  Authentication successful!")
+
+        # Add username to result for easy access
+        result["username"] = email or self.account_identifier
 
         return result
 

@@ -465,6 +465,7 @@ class TestMSALRefreshTokenAuthDeviceCodeFlow:
                     result = auth.authenticate()
 
             assert result["access_token"] == "new-token"
+            assert result["username"] == "test@example.com"
             mock_app.initiate_device_flow.assert_called_once()
             mock_app.acquire_token_by_device_flow.assert_called_once()
 
@@ -489,6 +490,7 @@ class TestMSALRefreshTokenAuthDeviceCodeFlow:
                 result = auth.authenticate()
 
             assert result["access_token"] == "silent-token"
+            assert result["username"] == "test@example.com"
             mock_app.acquire_token_silent.assert_called_once()
             # Device flow should not be initiated
             mock_app.initiate_device_flow.assert_not_called()

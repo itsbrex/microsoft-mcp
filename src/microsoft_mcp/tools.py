@@ -366,7 +366,7 @@ def list_emails(
     folder: str = "inbox",
     limit: int = 10,
     body_max_length: int = 2000,
-    include_body: bool = True,
+    include_body: bool = False,
     start_date: str | None = None,
     end_date: str | None = None,
 ) -> list[dict[str, Any]]:
@@ -407,7 +407,7 @@ def list_emails(
         if include_body:
             select_fields = "id,subject,from,toRecipients,ccRecipients,receivedDateTime,hasAttachments,body,conversationId,isRead"
         else:
-            select_fields = "id,subject,from,toRecipients,receivedDateTime,hasAttachments,conversationId,isRead"
+            select_fields = "id,subject,from,toRecipients,receivedDateTime,hasAttachments,bodyPreview,conversationId,isRead"
 
         params = {
             "$top": min(limit, 100),
@@ -425,7 +425,7 @@ def list_emails(
         if filter_conditions:
             params["$filter"] = " and ".join(filter_conditions)
 
-        emails = list(
+        raw_emails = list(
             graph.request_paginated(
                 f"/me/mailFolders/{folder_path}/messages",
                 params=params,
@@ -433,9 +433,10 @@ def list_emails(
             )
         )
 
-        for email in emails:
-            if include_body:
-                # truncate the body
+        if include_body:
+            # Detail mode: include body, truncate if needed
+            results = []
+            for email in raw_emails:
                 if "body" in email and "content" in email["body"]:
                     content = email["body"]["content"]
                     if len(content) > body_max_length:
@@ -445,23 +446,20 @@ def list_emails(
                         )
                         email["body"]["truncated"] = True
                         email["body"]["total_length"] = len(content)
-                        logger.info(
-                            f"list_emails: body truncated from {len(content)} to {body_max_length} characters"
-                        )
-            if "conversationId" in email:
-                email["conversation_url"] = (
-                    f"https://outlook.office.com/mail/deeplink/readconv/{quote(email['conversationId'], safe='')}"
-                )
+                results.append(shape_email_detail(email))
+        else:
+            # Summary mode: compact, no body
+            results = [shape_email_summary(e) for e in raw_emails]
 
         logger.info(
-            f"list_emails successful: retrieved {len(emails)} emails from folder {folder}"
+            f"list_emails successful: retrieved {len(results)} emails from folder {folder}"
             + (
                 f" with date filter start_date={start_date}, end_date={end_date}"
                 if start_date or end_date
                 else ""
             )
         )
-        return emails
+        return results
     except Exception as e:
         logger.error(f"list_emails failed: {str(e)}", exc_info=True)
         raise
@@ -507,56 +505,38 @@ def get_email(
         if include_attachments:
             params["$expand"] = "attachments($select=id,name,size,contentType)"
 
-        result = graph.request("GET", f"/me/messages/{email_id}", params=params)
-        if not result:
+        raw = graph.request("GET", f"/me/messages/{email_id}", params=params)
+        if not raw:
             logger.error(f"get_email failed: Email with ID {email_id} not found")
             raise ValueError(f"Email with ID {email_id} not found")
 
         # Convert HTML to markdown and truncate body if needed
-        if include_body and "body" in result and "content" in result["body"]:
-            if result["body"]["contentType"].lower() == "html":
-                result["body"]["content"] = convert_to_markdown(
-                    result["body"]["content"]
+        if include_body and "body" in raw and "content" in raw["body"]:
+            if raw["body"]["contentType"].lower() == "html":
+                raw["body"]["content"] = convert_to_markdown(
+                    raw["body"]["content"]
                 )
-                result["body"]["contentType"] = "text/markdown"
+                raw["body"]["contentType"] = "text/markdown"
 
-            content = result["body"]["content"]
+            content = raw["body"]["content"]
             if len(content) > body_max_length:
-                result["body"]["content"] = (
+                raw["body"]["content"] = (
                     content[:body_max_length]
                     + f"\n\n[Content truncated - {len(content)} total characters]"
                 )
-                result["body"]["truncated"] = True
-                result["body"]["total_length"] = len(content)
-                logger.info(
-                    f"get_email: body truncated from {len(content)} to {body_max_length} characters"
-                )
-        elif not include_body and "body" in result:
-            del result["body"]
+                raw["body"]["truncated"] = True
+                raw["body"]["total_length"] = len(content)
+        elif not include_body and "body" in raw:
+            del raw["body"]
 
-        # tidy up to save tokens
-        for key in [
-            "@odata.context",
-            "@odata.etag",
-            "parentFolderId",
-            "changeKey",
-            "internetMessageId",
-            "isDeliveryReceiptRequested",
-            "isReadReceiptRequested",
-        ]:
-            if key in result:
-                del result[key]
-        # add a link to open the whole conversation as "conversation_url"
-        if "conversationId" in result:
-            result["conversation_url"] = (
-                f"https://outlook.office.com/mail/deeplink/readconv/{quote(result['conversationId'], safe='')}"
-            )
+        result = shape_email_detail(raw)
 
         # Remove attachment content bytes to reduce size
-        if "attachments" in result and result["attachments"]:
-            for attachment in result["attachments"]:
-                if "contentBytes" in attachment:
-                    del attachment["contentBytes"]
+        if "attachments" in raw and raw["attachments"]:
+            result["attachments"] = [
+                {k: v for k, v in a.items() if k != "contentBytes"}
+                for a in raw["attachments"]
+            ]
 
         logger.info(f"get_email successful: retrieved email {email_id}")
         return result

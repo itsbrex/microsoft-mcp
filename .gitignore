@@ -38,5 +38,6 @@ htmlcov/
 *.swp
 *.swo
 *~
+.specstory/
 
 creds/

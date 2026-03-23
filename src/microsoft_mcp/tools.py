@@ -1168,12 +1168,12 @@ def unified_search(
     )
 
     try:
-        # Default to compatible entity types if none specified
-        # Starting with file-related types as they are most commonly searched together
+        # Default to inbox-first entity types for assistant workflows
         if entity_types is None:
             entity_types = [
-                "driveItem",
-                "site",
+                "message",
+                "event",
+                "chatMessage",
             ]
 
         # Validate entity types
@@ -1255,76 +1255,65 @@ def unified_search(
         entity_type_counts = {}
         total_results = 0
 
-        # Validate entity type combinations - some combinations are not supported
-        # Based on Microsoft Graph Search API limitations
-        if len(filtered_entity_types) > 1:
-            # Check for incompatible combinations
-            message_chat_types = {"message", "chatMessage"}
-            file_types = {"driveItem", "list", "listItem", "site", "drive"}
+        # Split incompatible entity types into separate request groups
+        # MS Graph Search API: event/person must be alone, message/chat can't mix with file types
+        message_chat_types = {"message", "chatMessage"}
+        file_types = {"driveItem", "list", "listItem", "site", "drive"}
+        solo_types = {"event", "person"}
 
-            has_message_chat = any(
-                et in message_chat_types for et in filtered_entity_types
-            )
-            has_file_types = any(et in file_types for et in filtered_entity_types)
-            has_event = "event" in filtered_entity_types
-            has_person = "person" in filtered_entity_types
+        request_groups: list[list[str]] = []
+        remaining = list(filtered_entity_types)
 
-            # Events cannot be combined with other types
-            if has_event and len(filtered_entity_types) > 1:
-                logger.warning(
-                    "unified_search: Event entity type cannot be combined with others, using event only"
-                )
-                filtered_entity_types = ["event"]
-            # Person cannot be combined with other types
-            elif has_person and len(filtered_entity_types) > 1:
-                logger.warning(
-                    "unified_search: Person entity type cannot be combined with others, using person only"
-                )
-                filtered_entity_types = ["person"]
-            # Message/chatMessage cannot be combined with file types
-            elif has_message_chat and has_file_types:
-                logger.warning(
-                    "unified_search: Message/chat types cannot be combined with file types, prioritizing messages"
-                )
-                filtered_entity_types = [
-                    et for et in filtered_entity_types if et in message_chat_types
-                ]
+        for st in solo_types:
+            if st in remaining:
+                remaining.remove(st)
+                request_groups.append([st])
+
+        msg_group = [et for et in remaining if et in message_chat_types]
+        file_group = [et for et in remaining if et in file_types]
+        if msg_group:
+            request_groups.append(msg_group)
+        if file_group:
+            request_groups.append(file_group)
+
+        if not request_groups:
+            request_groups = [filtered_entity_types]
 
         logger.info(
-            f"unified_search: Final entity types after validation: {filtered_entity_types}"
+            f"unified_search: Split into {len(request_groups)} request groups: {request_groups}"
         )
 
-        # Execute search using the graph module's request function
+        # Execute search for each request group
         try:
-            logger.info(
-                f"unified_search: Making API request with payload: {request_payload}"
-            )
-            result = graph.request("POST", "/search/query", json=request_payload)
-            logger.info(f"unified_search: API response received, type: {type(result)}")
+            for group in request_groups:
+                group_payload = {
+                    "requests": [
+                        {
+                            "entityTypes": group,
+                            "query": {"queryString": search_query},
+                            "size": min(limit, 25),
+                            "from": 0,
+                        }
+                    ]
+                }
+                result = graph.request("POST", "/search/query", json=group_payload)
 
-            if result and "value" in result:
-                for response in result["value"]:
-                    if "hitsContainers" in response:
-                        for container in response["hitsContainers"]:
-                            total_results += container.get("total", 0)
-
-                            if "hits" in container:
-                                for hit in container["hits"]:
-                                    processed_item = _process_search_hit(
-                                        hit,
-                                        include_body,
-                                        body_max_length,
-                                    )
-                                    if processed_item:
-                                        all_results.append(processed_item)
-
-                                        # Count entity types
-                                        entity_type = processed_item.get(
-                                            "entity_type", "unknown"
+                if result and "value" in result:
+                    for resp in result["value"]:
+                        if "hitsContainers" in resp:
+                            for container in resp["hitsContainers"]:
+                                total_results += container.get("total", 0)
+                                if "hits" in container:
+                                    for hit in container["hits"]:
+                                        processed_item = _process_search_hit(
+                                            hit, include_body, body_max_length,
                                         )
-                                        entity_type_counts[entity_type] = (
-                                            entity_type_counts.get(entity_type, 0) + 1
-                                        )
+                                        if processed_item:
+                                            all_results.append(processed_item)
+                                            kind = processed_item.get("kind", "unknown")
+                                            entity_type_counts[kind] = (
+                                                entity_type_counts.get(kind, 0) + 1
+                                            )
 
         except Exception as search_error:
             error_details = _analyze_search_error(search_error, request_payload)
@@ -1332,8 +1321,6 @@ def unified_search(
                 f"unified_search API error: {str(search_error)}\nError analysis: {error_details}",
                 exc_info=True,
             )
-            # Re-raise the exception instead of returning an error response
-            # This allows the MCP framework to handle the error appropriately
             raise RuntimeError(
                 f"Microsoft Graph Search API failed: {error_details}"
             ) from search_error
@@ -1373,93 +1360,95 @@ def unified_search(
         }
         return error_response
 
+def _detect_entity_kind(odata_type: str) -> str:
+    odata_type = odata_type.lower()
+    if "message" in odata_type:
+        return "message"
+    if "event" in odata_type:
+        return "event"
+    if "driveitem" in odata_type:
+        return "driveItem"
+    if "chatmessage" in odata_type:
+        return "chatMessage"
+    if "person" in odata_type:
+        return "person"
+    if "site" in odata_type:
+        return "site"
+    if "listitem" in odata_type:
+        return "listItem"
+    if "list" in odata_type:
+        return "list"
+    if "drive" in odata_type:
+        return "drive"
+    return "unknown"
+
+
 def _process_search_hit(
     hit: dict[str, Any],
     include_body: bool,
     body_max_length: int,
 ) -> dict[str, Any] | None:
-    """Process a single search hit from Microsoft Graph Search API.
+    """Process a single search hit into a normalized contract.
 
-    Returns the resource data directly from the API with minimal processing,
-    just adding entity type detection and body content handling.
+    Returns a dict with: id, kind, title, snippet, score, and kind-specific extras.
     """
     try:
         resource = hit.get("resource", {})
         if not resource:
             return None
 
-        # Make a copy of the resource to avoid modifying the original
-        result = dict(resource)
-        logger.info(f"Processing search hit resource: {result}")
+        kind = _detect_entity_kind(resource.get("@odata.type", ""))
+        title = (
+            resource.get("subject")
+            or resource.get("name")
+            or resource.get("displayName")
+            or ""
+        )
 
-        # Add entity type detection from @odata.type
-        odata_type = resource.get("@odata.type", "").lower()
-        entity_type = "unknown"
+        result: dict[str, Any] = {
+            "id": resource.get("id", ""),
+            "kind": kind,
+            "title": title,
+            "snippet": hit.get("summary", ""),
+            "score": hit.get("rank", 0),
+        }
 
-        if "message" in odata_type:
-            entity_type = "message"
-        elif "event" in odata_type:
-            entity_type = "event"
-        elif "driveitem" in odata_type:
-            entity_type = "driveItem"
-        elif "chatmessage" in odata_type:
-            entity_type = "chatMessage"
-        elif "person" in odata_type:
-            entity_type = "person"
-        elif "site" in odata_type:
-            entity_type = "site"
-        elif "list" in odata_type and "listitem" not in odata_type:
-            entity_type = "list"
-        elif "listitem" in odata_type:
-            entity_type = "listItem"
-        elif "drive" in odata_type:
-            entity_type = "drive"
+        # Kind-specific extras
+        if kind == "message":
+            if resource.get("from"):
+                result["from"] = flatten_email_address(resource["from"])
+            if resource.get("receivedDateTime"):
+                result["received"] = resource["receivedDateTime"]
+            conv_id = resource.get("conversationId")
+            if conv_id:
+                result["conversation_url"] = (
+                    f"https://outlook.office.com/mail/deeplink/readconv/{quote(conv_id, safe='')}"
+                )
+        elif kind == "event":
+            for key in ("start", "end"):
+                if key in resource:
+                    result[key] = resource[key]
+            if resource.get("location"):
+                from .response_shaping import compact_location
+                result["location"] = compact_location(resource["location"])
+            if resource.get("organizer"):
+                result["organizer"] = flatten_email_address(resource["organizer"])
+        elif kind == "driveItem":
+            result["size"] = resource.get("size", 0)
+            result["modified"] = resource.get("lastModifiedDateTime")
+            result["web_url"] = resource.get("webUrl")
 
-        result["entity_type"] = entity_type
-
-        # Add search metadata from the hit
-        result["search_rank"] = hit.get("rank", 0)
-        result["search_summary"] = hit.get("summary", "")
-
-        # Add conversation URL for messages
-        if entity_type == "message" and resource.get("conversationId"):
-            result["conversation_url"] = (
-                f"https://outlook.office.com/mail/deeplink/readconv/{quote(resource['conversationId'], safe='')}"
-            )
-
-        # Process body content if requested
-        if include_body and "body" in result:
-            if isinstance(result["body"], dict):
-                body_content = result["body"].get("content", "")
-                content_type = result["body"].get("contentType", "")
-
-                # Convert HTML to markdown if needed
+        # Body handling
+        if include_body and "body" in resource:
+            body = resource["body"]
+            if isinstance(body, dict):
+                body_content = body.get("content", "")
+                content_type = body.get("contentType", "")
                 if content_type.lower() == "html" and body_content:
                     body_content = convert_to_markdown(body_content)
-                    result["body"]["contentType"] = "text/markdown"
-
-                # Truncate if necessary
                 if body_content and len(body_content) > body_max_length:
-                    result["body"]["content"] = (
-                        body_content[:body_max_length] + "...[truncated]"
-                    )
-                    result["body"]["truncated"] = True
-                    result["body"]["original_length"] = len(body_content)
-                else:
-                    result["body"]["content"] = body_content
-        elif not include_body and "body" in result:
-            # Remove body if not requested
-            del result["body"]
-
-        # Handle content field for files/documents
-        if include_body and "content" in result:
-            content = result["content"]
-            if content and len(content) > body_max_length:
-                result["content"] = content[:body_max_length] + "...[truncated]"
-                result["content_truncated"] = True
-                result["original_content_length"] = len(content)
-        elif not include_body and "content" in result:
-            del result["content"]
+                    body_content = body_content[:body_max_length] + "...[truncated]"
+                result["body"] = body_content
 
         return result
 
@@ -1557,58 +1546,20 @@ def search_emails(
 
     try:
         if folder:
-            # For folder-specific search, use the traditional endpoint
             folder_path = FOLDERS.get(folder.casefold(), folder)
             endpoint = f"/me/mailFolders/{folder_path}/messages"
 
             params = {
                 "$search": f'"{query}"',
                 "$top": min(limit, 100),
-                "$select": "id,subject,from,toRecipients,receivedDateTime,hasAttachments,body,conversationId,isRead",
+                "$select": "id,subject,from,toRecipients,receivedDateTime,hasAttachments,bodyPreview,conversationId,isRead",
             }
 
-            result = list(graph.request_paginated(endpoint, params=params, limit=limit))
-            for email in result:
-                if "conversationId" in email:
-                    email["conversation_url"] = (
-                        f"https://outlook.office.com/mail/deeplink/readconv/{quote(email['conversationId'], safe='')}"
-                    )
-                # tidy up to save tokens
-                for key in [
-                    "@odata.context",
-                    "@odata.etag",
-                    "parentFolderId",
-                    "changeKey",
-                    "internetMessageId",
-                    "isDeliveryReceiptRequested",
-                    "isReadReceiptRequested",
-                ]:
-                    if key in email:
-                        del email[key]
+            raw = list(graph.request_paginated(endpoint, params=params, limit=limit))
+        else:
+            raw = list(graph.search_query(query, ["message"], limit))
 
-            logger.info(
-                f"search_emails successful: found {len(result)} emails in folder '{folder}' matching '{query}'"
-            )
-            return result
-
-        result = list(graph.search_query(query, ["message"], limit))
-        for email in result:
-            if "conversationId" in email:
-                email["conversation_url"] = (
-                    f"https://outlook.office.com/mail/deeplink/readconv/{quote(email['conversationId'], safe='')}"
-                )
-            # tidy up to save tokens
-            for key in [
-                "@odata.context",
-                "@odata.etag",
-                "parentFolderId",
-                "changeKey",
-                "internetMessageId",
-                "isDeliveryReceiptRequested",
-                "isReadReceiptRequested",
-            ]:
-                if key in email:
-                    del email[key]
+        result = [shape_email_summary(e) for e in raw]
 
         logger.info(
             f"search_emails successful: found {len(result)} emails matching '{query}'"
@@ -1652,7 +1603,8 @@ def search_events(
     logger.info(f"search_events called: query='{query}', limit={limit}")
 
     try:
-        events = list(graph.search_query(query, ["event"], limit))
+        raw_events = list(graph.search_query(query, ["event"], limit))
+        events = [shape_event_summary(e) for e in raw_events]
 
         logger.info(
             f"search_events successful: found {len(events)} events matching '{query}'"
@@ -1700,9 +1652,10 @@ def search_contacts(
             "$top": min(limit, 100),
         }
 
-        contacts = list(
+        raw_contacts = list(
             graph.request_paginated("/me/contacts", params=params, limit=limit)
         )
+        contacts = [shape_contact_summary(c) for c in raw_contacts]
 
         logger.info(
             f"search_contacts successful: found {len(contacts)} contacts matching '{query}'"

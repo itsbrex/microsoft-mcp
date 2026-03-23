@@ -112,6 +112,46 @@ Microsoft MCP currently exposes **27 MCP tools**:
 ### Search (1 tool)
 - **`unified_search`** - Search across supported Microsoft Graph content types
 
+### Inbox (2 tools)
+- **`list_inbox_items`** - List prioritized inbox items (emails and calendar events) as normalized `InboxItem` summaries, ranked by urgency signals (unread, mentions, flagged, meeting proximity)
+- **`get_inbox_item_detail`** - Hydrate a single inbox item by its `id` and `kind` to retrieve full body, participants, and action hints
+
+## Code Mode Orchestration
+
+For batch triage workflows, [Code Mode](https://docs.anthropic.com/en/docs/claude-code/overview) is the recommended way to orchestrate calls to this MCP server. Code Mode lets you write TypeScript that calls multiple MCP tools in sequence, compute decisions locally (prioritization, filtering, deduplication), and return a compact report — without sending full Graph payloads to the model on every step.
+
+### When to use Code Mode vs server-side shaping
+
+| Concern | Solution |
+|---|---|
+| Raw Graph payload bloat (large bodies, unused fields) | Server-side response shaping (already applied by this server) |
+| Batching follow-up calls over only the selected items | Code Mode orchestration |
+| Computing triage scores or ranking across items | Code Mode orchestration |
+| Hydrating only the top-N items from a larger list | Code Mode orchestration |
+
+Code Mode is **not** the primary fix for payload size — the server already trims Graph responses. Code Mode is the right tool when the assistant needs to make conditional, multi-step decisions over a set of items.
+
+### Recommended inbox triage flow
+
+1. Call `list_inbox_items` to get normalized summaries (low token cost)
+2. Optionally call `search_inbox_items` to narrow by keyword or sender
+3. Call `get_inbox_item_detail` only for the items that need full context (top 2-3)
+4. Compute and return a triage report in the Code Mode script
+
+See [`docs/code-mode-inbox-orchestration.md`](docs/code-mode-inbox-orchestration.md) and [`examples/code-mode/inbox_triage.ts`](examples/code-mode/inbox_triage.ts) for a complete walkthrough.
+
+### Inbox triage example
+
+```typescript
+// examples/code-mode/inbox_triage.ts — fetch summaries, hydrate top 3, report
+const summaries = await mcp.list_inbox_items({ limit: 20 });
+const top3 = summaries.items.slice(0, 3);
+const details = await Promise.all(
+  top3.map(item => mcp.get_inbox_item_detail({ item_id: item.id, kind: item.kind }))
+);
+// ... build compact triage report from details
+```
+
 ## Manual Setup
 
 ### 1. Azure App Registration

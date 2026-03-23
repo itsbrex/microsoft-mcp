@@ -214,6 +214,10 @@ def request_paginated(path, params=None, limit=None):
 
 ### Universal Search Tools (1 tool)
 - **unified_search**: Comprehensive Microsoft Search API integration with advanced KQL filtering
+
+### Inbox Tools (2 tools)
+- **list_inbox_items**: Returns a ranked list of `InboxItem` summaries drawn from emails and calendar events. Items are scored by urgency signals: unread, direct mentions, flagged state, meeting proximity, and newsletter suppression. Accepts `limit` and `include_kinds` parameters.
+- **get_inbox_item_detail**: Hydrates a single item by `item_id` and `kind`, returning the full body, participants, and action hints from the underlying Graph API.
 - **Supported Entity Types**: 
   - `message` - Outlook emails
   - `event` - Calendar events
@@ -299,6 +303,24 @@ SCOPES = [
 - **Attachment Handling**: Metadata only unless explicitly requested
 - **Pagination**: Limit-based result sets to manage response sizes
 
+### 7. Inbox Ranking and Normalization
+- **InboxItem dataclass** (`inbox_models.py`): Normalized representation of emails and calendar events with fields: `id`, `kind`, `source_tool`, `title`, `snippet`, `participants`, `when`, `state`, `score`, `reason`, `action_hints`, `web_url`, plus ranking signals
+- **rank_items()** (`inbox_ranking.py`): Scores items using heuristics: unread (+weight), direct mentions (+weight), flagged (+weight), meeting proximity (+weight), newsletter suppression (-weight)
+- **Search cache** (`search_cache.py`): In-memory TTL cache with degraded fallback so inbox listing can tolerate transient Graph API errors
+
+### 8. Code Mode Orchestration Pattern
+Code Mode is the recommended orchestration layer for multi-step inbox triage. The server handles payload shaping; Code Mode handles conditional batching over only the items that need full hydration.
+
+**Preferred flow:**
+1. `list_inbox_items` — get ranked summaries (low token cost)
+2. `search_inbox_items` (optional) — narrow by keyword/sender
+3. `get_inbox_item_detail` — hydrate only the top 2-3 items
+4. Code Mode computes and returns a triage report locally
+
+Code Mode is **not** the fix for raw Graph payload size — the server's response shaping (`response_shaping.py`) already handles that. Code Mode is the right layer for conditional, multi-step decisions across a set of items.
+
+See `docs/code-mode-inbox-orchestration.md` and `examples/code-mode/inbox_triage.ts`.
+
 ## Security Considerations
 
 ### 1. Token Security
@@ -330,7 +352,11 @@ src/microsoft_mcp/
 ├── auth_msal.py         # MSAL device code flow authentication (CLI/headless)
 ├── auth_base.py         # AuthProvider protocol definition
 ├── graph.py             # Microsoft Graph API client
-└── tools.py             # MCP tool implementations (30+ tools)
+├── tools.py             # MCP tool implementations (30+ tools)
+├── response_shaping.py  # ResponseProfile, BudgetHints, type-specific shapers
+├── inbox_models.py      # InboxItem dataclass (normalized cross-service item)
+├── inbox_ranking.py     # rank_items() scoring heuristics
+└── search_cache.py      # In-memory TTL cache with degraded fallback
 
 tests/
 ├── conftest.py          # Shared test fixtures
@@ -339,7 +365,15 @@ tests/
 ├── test_graph.py        # Graph API client tests
 ├── test_integration.py  # Module integration tests
 ├── test_tools_simple.py # Tools logic tests
+├── test_inbox_ranking.py # Inbox ranking heuristics tests
+├── test_inbox_tools.py  # Inbox tool integration tests
 └── README.md            # Test documentation
+
+docs/
+└── code-mode-inbox-orchestration.md  # Code Mode guidance for inbox triage
+
+examples/code-mode/
+└── inbox_triage.ts      # TypeScript example: fetch summaries, hydrate top 3, report
 
 authenticate.py          # Standalone authentication script
 ```

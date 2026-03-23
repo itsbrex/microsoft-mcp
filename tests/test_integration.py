@@ -180,15 +180,10 @@ class TestModuleIntegration:
         )
 
         assert result is not None
-        assert result["entity_type"] == "message"
+        assert result["kind"] == "message"
         assert result["id"] == "test-id"
-        # The function preserves original resource fields, so "subject" not "title"
-        assert result["subject"] == "Test Subject"
-        assert result["search_rank"] == 1
-        # Resource fields are at top level, not nested in "metadata"
-        assert result["from"] == {
-            "emailAddress": {"name": "John Doe", "address": "john@test.com"}
-        }
-        # Should generate conversation URL
+        assert result["title"] == "Test Subject"
+        assert result["score"] == 1
+        assert result["from"] == "John Doe <john@test.com>"
         assert "conversation_url" in result
         assert "test-conversation-id" in result["conversation_url"]

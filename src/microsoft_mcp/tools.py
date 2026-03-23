@@ -20,6 +20,8 @@ from .response_shaping import (
     flatten_email_address,
 )
 from .search_cache import get_global_cache
+from .inbox_models import InboxItem
+from .inbox_ranking import rank_items
 from markitdown import MarkItDown, StreamInfo
 from io import BytesIO
 from sys import stderr
@@ -2371,3 +2373,149 @@ def search_channel_messages(
             exc_info=True,
         )
         raise
+
+
+# ============================================================================
+# Assistant-Native Inbox Tools
+# ============================================================================
+
+
+def _emails_to_inbox_items(raw_emails: list[dict[str, Any]]) -> list[InboxItem]:
+    items = []
+    for e in raw_emails:
+        from_addr = ""
+        if "from" in e:
+            from_addr = flatten_email_address(e["from"])
+        items.append(
+            InboxItem(
+                id=e["id"],
+                kind="email",
+                source_tool="list_emails",
+                title=e.get("subject", ""),
+                snippet=e.get("bodyPreview", "")[:200],
+                participants=[from_addr] if from_addr else [],
+                when=e.get("receivedDateTime"),
+                unread=not e.get("isRead", True),
+                web_url=f"https://outlook.office.com/mail/deeplink/readconv/{quote(e.get('conversationId', ''), safe='')}"
+                if e.get("conversationId")
+                else "",
+            )
+        )
+    return items
+
+
+def _events_to_inbox_items(raw_events: list[dict[str, Any]]) -> list[InboxItem]:
+    items = []
+    for ev in raw_events:
+        organizer = ""
+        if "organizer" in ev:
+            organizer = flatten_email_address(ev["organizer"])
+        start_dt = ev.get("start", {}).get("dateTime", "")
+        items.append(
+            InboxItem(
+                id=ev["id"],
+                kind="event",
+                source_tool="list_events",
+                title=ev.get("subject", ""),
+                participants=[organizer] if organizer else [],
+                when=start_dt,
+            )
+        )
+    return items
+
+
+@mcp.tool
+def list_inbox_items(
+    limit: int = 20,
+    include_kinds: list[str] | None = None,
+) -> dict[str, Any]:
+    """Get a ranked, mixed-kind inbox summary across email and calendar.
+
+    Returns a priority-ranked list of inbox items (emails, events) scored by
+    urgency signals like unread status, mentions, and meeting proximity.
+
+    Args:
+        limit: Maximum items to return (default 20)
+        include_kinds: Optional filter, e.g. ["email"], ["event"], or ["email","event"]
+
+    Returns:
+        Dictionary with 'items' (ranked list) and 'meta' (counts, sources).
+    """
+    logger.info(
+        f"list_inbox_items called: limit={limit}, include_kinds={include_kinds}"
+    )
+    all_items: list[InboxItem] = []
+    kinds = set(include_kinds) if include_kinds else {"email", "event"}
+
+    try:
+        if "email" in kinds:
+            params = {
+                "$top": min(limit, 25),
+                "$select": "id,subject,from,toRecipients,receivedDateTime,hasAttachments,bodyPreview,conversationId,isRead",
+                "$orderby": "receivedDateTime desc",
+            }
+            raw = list(
+                graph.request_paginated(
+                    "/me/mailFolders/inbox/messages", params=params, limit=limit
+                )
+            )
+            all_items.extend(_emails_to_inbox_items(raw))
+
+        if "event" in kinds:
+            now = dt.datetime.now(dt.timezone.utc)
+            params = {
+                "startDateTime": now.isoformat(),
+                "endDateTime": (now + dt.timedelta(days=2)).isoformat(),
+                "$orderby": "start/dateTime",
+                "$top": min(limit, 25),
+                "$select": "id,subject,start,end,location,organizer,seriesMasterId",
+            }
+            raw = list(
+                graph.request_paginated("/me/calendarView", params=params, limit=limit)
+            )
+            all_items.extend(_events_to_inbox_items(raw))
+    except Exception as e:
+        logger.error(f"list_inbox_items data fetch failed: {e}", exc_info=True)
+
+    ranked = rank_items(all_items)[:limit]
+
+    return {
+        "items": [item.to_dict() for item in ranked],
+        "meta": {
+            "total_fetched": len(all_items),
+            "returned": len(ranked),
+            "kinds": list(kinds),
+        },
+    }
+
+
+@mcp.tool
+def get_inbox_item_detail(item_id: str, kind: str) -> dict[str, Any]:
+    """Hydrate full details for a single inbox item.
+
+    Args:
+        item_id: The item ID from list_inbox_items results
+        kind: The item kind ("email" or "event")
+
+    Returns:
+        Full item detail with body content included.
+    """
+    logger.info(f"get_inbox_item_detail called: item_id={item_id}, kind={kind}")
+
+    if kind == "email":
+        raw = graph.request("GET", f"/me/messages/{item_id}")
+        if not raw:
+            raise ValueError(f"Email {item_id} not found")
+        detail = shape_email_detail(raw)
+        detail["kind"] = "email"
+        return detail
+
+    if kind == "event":
+        raw = graph.request("GET", f"/me/events/{item_id}")
+        if not raw:
+            raise ValueError(f"Event {item_id} not found")
+        detail = shape_event_detail(raw)
+        detail["kind"] = "event"
+        return detail
+
+    raise ValueError(f"Unsupported kind: {kind}")

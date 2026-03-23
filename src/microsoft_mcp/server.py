@@ -1,14 +1,41 @@
 import os
 import sys
-import asyncio
-from .tools import mcp
-from .auth import AzureAuthentication
+from dotenv import load_dotenv
 
 
 def main() -> None:
+    # Load local development configuration before importing modules that read env.
+    load_dotenv()
+
+    from .tools import auth, auth_method, mcp
+
     if not os.getenv("MICROSOFT_MCP_CLIENT_ID"):
         print(
             "Error: MICROSOFT_MCP_CLIENT_ID environment variable is required",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    configured_auth_method = os.getenv("MICROSOFT_MCP_AUTH_METHOD", "azure").lower()
+    actual_auth_method = (
+        "msal" if auth.__class__.__name__ == "MSALRefreshTokenAuth" else "azure"
+    )
+    account_identifier = os.getenv("MICROSOFT_MCP_ACCOUNT_ID")
+
+    print(
+        (
+            f"Microsoft MCP auth startup: configured={configured_auth_method}, "
+            f"actual={actual_auth_method}, "
+            f"account={account_identifier or 'default'}"
+        ),
+        file=sys.stderr,
+    )
+    if actual_auth_method != configured_auth_method or auth_method != configured_auth_method:
+        print(
+            (
+                "Error: authentication mode mismatch during startup. "
+                f"Configured={configured_auth_method}, tools={auth_method}, actual={actual_auth_method}"
+            ),
             file=sys.stderr,
         )
         sys.exit(1)

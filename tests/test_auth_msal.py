@@ -12,6 +12,7 @@ import pytest
 from src.microsoft_mcp.auth_msal import (
     MSALRefreshTokenAuth,
     MICROSOFT_OFFICE_CLIENT_ID,
+    DEFAULT_TENANT_ID,
     DEFAULT_SCOPES,
     TOKEN_EXPIRY_BUFFER_SECONDS,
 )
@@ -30,8 +31,9 @@ class TestMSALRefreshTokenAuthInit:
                 auth = MSALRefreshTokenAuth()
 
                 assert auth.client_id == MICROSOFT_OFFICE_CLIENT_ID
-                assert auth.tenant_id == "common"
+                assert auth.tenant_id == DEFAULT_TENANT_ID
                 assert auth.account_identifier == "default"
+                assert auth.authority == f"https://login.microsoftonline.com/{DEFAULT_TENANT_ID}"
                 assert auth._msal_app is None
 
     def test_init_custom_values(self):
@@ -49,6 +51,7 @@ class TestMSALRefreshTokenAuthInit:
             assert auth.client_id == "custom-client-id"
             assert auth.tenant_id == "custom-tenant"
             assert auth.account_identifier == "user@example.com"
+            assert auth.authority == "https://login.microsoftonline.com/custom-tenant"
 
     def test_init_from_env_vars(self):
         """Test initialization from environment variables."""
@@ -64,6 +67,78 @@ class TestMSALRefreshTokenAuthInit:
                 assert str(auth.tokens_dir) == tmpdir
                 assert auth.client_id == "env-client-id"
                 assert auth.tenant_id == "env-tenant"
+
+    def test_init_uses_outlook_creds_metadata_for_account_authority(self):
+        """Test initialization prefers outlook-creds tenant metadata for known accounts."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            outlook_config_dir = Path(tmpdir) / "outlook-creds"
+            account_dir = outlook_config_dir / "tokens" / "broach_cresa_com"
+            account_dir.mkdir(parents=True)
+            account_dir.joinpath("account_info.json").write_text(
+                json.dumps(
+                    {
+                        "authority": "https://login.microsoftonline.com/tenant-123",
+                        "realm": "tenant-123",
+                        "login_name": "broach@cresa.com",
+                        "additional_properties": json.dumps(
+                            {"aud": "metadata-client-id"}
+                        ),
+                    }
+                )
+            )
+
+            with patch.dict(
+                os.environ,
+                {
+                    "OUTLOOK_CREDS_CONFIG_DIR": str(outlook_config_dir),
+                },
+                clear=True,
+            ):
+                auth = MSALRefreshTokenAuth(
+                    tokens_dir=Path(tmpdir) / "tokens",
+                    account_identifier="broach@cresa.com",
+                )
+
+            assert auth.tenant_id == "tenant-123"
+            assert auth.authority == "https://login.microsoftonline.com/tenant-123"
+            assert auth.client_id == "metadata-client-id"
+
+    def test_init_prefers_explicit_tenant_over_outlook_creds_metadata(self):
+        """Test explicit tenant configuration overrides outlook-creds metadata."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            outlook_config_dir = Path(tmpdir) / "outlook-creds"
+            account_dir = outlook_config_dir / "tokens" / "broach_cresa_com"
+            account_dir.mkdir(parents=True)
+            account_dir.joinpath("account_info.json").write_text(
+                json.dumps(
+                    {
+                        "authority": "https://login.microsoftonline.com/tenant-123",
+                        "realm": "tenant-123",
+                        "login_name": "broach@cresa.com",
+                        "additional_properties": json.dumps(
+                            {"aud": "metadata-client-id"}
+                        ),
+                    }
+                )
+            )
+
+            with patch.dict(
+                os.environ,
+                {
+                    "OUTLOOK_CREDS_CONFIG_DIR": str(outlook_config_dir),
+                },
+                clear=True,
+            ):
+                auth = MSALRefreshTokenAuth(
+                    tokens_dir=Path(tmpdir) / "tokens",
+                    tenant_id="explicit-tenant",
+                    client_id="explicit-client",
+                    account_identifier="broach@cresa.com",
+                )
+
+            assert auth.tenant_id == "explicit-tenant"
+            assert auth.authority == "https://login.microsoftonline.com/explicit-tenant"
+            assert auth.client_id == "explicit-client"
 
     def test_init_creates_tokens_directory(self):
         """Test that initialization creates the tokens directory."""
@@ -491,6 +566,7 @@ class TestMSALRefreshTokenAuthDeviceCodeFlow:
 
             assert result["access_token"] == "silent-token"
             assert result["username"] == "test@example.com"
+            mock_app.get_accounts.assert_called_once_with(username="test@example.com")
             mock_app.acquire_token_silent.assert_called_once()
             # Device flow should not be initiated
             mock_app.initiate_device_flow.assert_not_called()

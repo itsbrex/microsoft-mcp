@@ -35,6 +35,7 @@ def get_auth_provider() -> AuthProvider:
             tokens_dir=os.getenv("MICROSOFT_MCP_TOKENS_DIR"),
             client_id=os.getenv("MICROSOFT_MCP_CLIENT_ID"),
             tenant_id=os.getenv("MICROSOFT_MCP_TENANT_ID"),
+            account_identifier=os.getenv("MICROSOFT_MCP_ACCOUNT_ID"),
         )
     else:
         from microsoft_mcp.auth import AzureAuthentication
@@ -81,6 +82,9 @@ def main():
             print(f"Using custom client ID: {client_id[:8]}...")
         else:
             print("Using default Microsoft Office client ID")
+        account_id = os.getenv("MICROSOFT_MCP_ACCOUNT_ID")
+        if account_id:
+            print(f"Using account identifier: {account_id}")
         tokens_dir = os.getenv("MICROSOFT_MCP_TOKENS_DIR", "~/.config/microsoft-mcp/tokens/")
         print(f"Token storage: {tokens_dir}")
     else:

@@ -1,6 +1,8 @@
+import os
 import httpx
 import time
 from typing import Any, Iterator, Optional, TYPE_CHECKING
+from dotenv import load_dotenv
 
 if TYPE_CHECKING:
     from .auth_base import AuthProvider
@@ -29,13 +31,30 @@ def set_auth_instance(auth: "AuthProvider") -> None:
 def get_auth_instance() -> "AuthProvider":
     """Get the global authentication instance, creating one if needed.
 
-    Falls back to AzureAuthentication if no instance was set.
+    Falls back to the auth method configured in the environment.
     """
     global _global_auth
     if _global_auth is None:
-        # Import here to avoid circular imports and allow default fallback
-        from .auth import AzureAuthentication
-        _global_auth = AzureAuthentication()
+        load_dotenv()
+        auth_method = os.getenv("MICROSOFT_MCP_AUTH_METHOD", "azure").lower()
+
+        # Import here to avoid circular imports and honor runtime env configuration.
+        if auth_method == "msal":
+            from .auth_msal import MSALRefreshTokenAuth
+
+            _global_auth = MSALRefreshTokenAuth(
+                tokens_dir=os.getenv("MICROSOFT_MCP_TOKENS_DIR"),
+                client_id=os.getenv("MICROSOFT_MCP_CLIENT_ID"),
+                tenant_id=os.getenv("MICROSOFT_MCP_TENANT_ID"),
+                account_identifier=os.getenv("MICROSOFT_MCP_ACCOUNT_ID"),
+            )
+        else:
+            from .auth import AzureAuthentication
+
+            _global_auth = AzureAuthentication(
+                auth_record_file=os.getenv("AZURE_CRED_CACHE_FILE"),
+                token_cache_file=os.getenv("AZURE_TOKEN_CACHE_FILE"),
+            )
     return _global_auth
 
 

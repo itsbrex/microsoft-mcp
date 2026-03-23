@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 # Microsoft Office client ID (same as outlook-creds)
 # This client ID works out of the box for device code flow
 MICROSOFT_OFFICE_CLIENT_ID = "d3590ed6-52b3-4102-aeff-aad2292ab01c"
+DEFAULT_TENANT_ID = "common"
 
 # Token endpoint template
 TOKEN_ENDPOINT_TEMPLATE = "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
@@ -56,6 +57,59 @@ CONFIG_DIR_MODE = stat.S_IRWXU  # 0o700
 
 # Token expiry buffer (refresh if less than this many seconds remaining)
 TOKEN_EXPIRY_BUFFER_SECONDS = 60
+
+
+def _normalize_account_identifier(identifier: str) -> str:
+    """Normalize account identifier to outlook-creds directory format."""
+    return identifier.replace("@", "_").replace(".", "_")
+
+
+def _load_outlook_creds_account_metadata(
+    account_identifier: Optional[str],
+) -> Optional[dict[str, str]]:
+    """Load authority metadata from an outlook-creds account, if available.
+
+    outlook-creds stores per-account metadata under:
+    - $OUTLOOK_CREDS_CONFIG_DIR/tokens/<normalized>/account_info.json
+    - ~/config/outlook-creds/tokens/<normalized>/account_info.json
+    """
+    if not account_identifier or account_identifier == "default":
+        return None
+
+    config_root = Path(
+        os.getenv("OUTLOOK_CREDS_CONFIG_DIR", str(Path.home() / "config" / "outlook-creds"))
+    )
+    account_info_path = (
+        config_root
+        / "tokens"
+        / _normalize_account_identifier(account_identifier)
+        / "account_info.json"
+    )
+    if not account_info_path.exists():
+        return None
+
+    try:
+        account_info = json.loads(account_info_path.read_text())
+        additional_properties = json.loads(
+            account_info.get("additional_properties", "{}")
+        )
+    except Exception as e:
+        logger.warning(
+            f"Failed to load outlook-creds account metadata from {account_info_path}: {e}"
+        )
+        return None
+
+    authority = account_info.get("authority")
+    tenant_id = account_info.get("realm")
+    client_id = additional_properties.get("aud")
+    if not authority or not tenant_id:
+        return None
+
+    return {
+        "authority": authority,
+        "tenant_id": tenant_id,
+        "client_id": client_id or MICROSOFT_OFFICE_CLIENT_ID,
+    }
 
 
 class MSALRefreshTokenAuth:
@@ -98,10 +152,24 @@ class MSALRefreshTokenAuth:
             )
 
         # Client and tenant configuration
-        self.client_id = client_id or os.getenv(
-            "MICROSOFT_MCP_CLIENT_ID", MICROSOFT_OFFICE_CLIENT_ID
-        )
-        self.tenant_id = tenant_id or os.getenv("MICROSOFT_MCP_TENANT_ID", "common")
+        explicit_client_id = client_id or os.getenv("MICROSOFT_MCP_CLIENT_ID")
+        self.client_id = explicit_client_id or MICROSOFT_OFFICE_CLIENT_ID
+        explicit_tenant_id = tenant_id or os.getenv("MICROSOFT_MCP_TENANT_ID")
+        self.tenant_id = explicit_tenant_id or DEFAULT_TENANT_ID
+        self.authority = f"https://login.microsoftonline.com/{self.tenant_id}"
+
+        # Prefer tenant-specific authority metadata from outlook-creds when the
+        # caller selected an account but did not explicitly set the tenant.
+        self.account_identifier = account_identifier or "default"
+        if explicit_tenant_id is None:
+            account_metadata = _load_outlook_creds_account_metadata(
+                self.account_identifier
+            )
+            if account_metadata:
+                self.tenant_id = account_metadata["tenant_id"]
+                self.authority = account_metadata["authority"]
+                if explicit_client_id is None:
+                    self.client_id = account_metadata["client_id"]
 
         # Account identifier for file naming
         self.account_identifier = account_identifier or "default"
@@ -115,6 +183,7 @@ class MSALRefreshTokenAuth:
         logger.info(
             f"MSALRefreshTokenAuth initialized with client_id={self.client_id[:8]}..."
         )
+        logger.info(f"MSAL authority: {self.authority}")
         logger.info(f"Token storage: {self.tokens_dir}")
 
     def _ensure_token_dir(self) -> None:
@@ -128,12 +197,11 @@ class MSALRefreshTokenAuth:
     def _get_msal_app(self) -> PublicClientApplication:
         """Get or create MSAL PublicClientApplication instance."""
         if self._msal_app is None:
-            authority = f"https://login.microsoftonline.com/{self.tenant_id}"
             self._msal_app = PublicClientApplication(
                 client_id=self.client_id,
-                authority=authority,
+                authority=self.authority,
             )
-            logger.info(f"Created MSAL app with authority: {authority}")
+            logger.info(f"Created MSAL app with authority: {self.authority}")
         return self._msal_app
 
     # Token file paths
@@ -343,7 +411,10 @@ class MSALRefreshTokenAuth:
         app = self._get_msal_app()
 
         # Check for cached accounts first
-        accounts = app.get_accounts()
+        if self.account_identifier != "default":
+            accounts = app.get_accounts(username=self.account_identifier)
+        else:
+            accounts = app.get_accounts()
         if accounts:
             logger.info("Found cached account, attempting silent authentication")
             result = app.acquire_token_silent(

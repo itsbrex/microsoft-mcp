@@ -1,7 +1,6 @@
-"""
-Unit tests for Microsoft Graph API module.
-"""
+"""Unit tests for Microsoft Graph API module."""
 
+import os
 import pytest
 from unittest.mock import Mock, patch, MagicMock
 import httpx
@@ -31,9 +30,10 @@ class TestGraphModule:
         retrieved_auth = get_auth_instance()
         assert retrieved_auth == self.mock_auth
 
+    @patch("src.microsoft_mcp.graph.load_dotenv")
     @patch("src.microsoft_mcp.auth.AzureAuthentication")
-    def test_get_auth_instance_creates_default(self, mock_auth_class):
-        """Test that get_auth_instance creates a default instance when none exists."""
+    def test_get_auth_instance_creates_default(self, mock_auth_class, _mock_load_dotenv):
+        """Test that get_auth_instance uses the default Azure auth when env is unset."""
         # Reset global auth instance
         import src.microsoft_mcp.graph as graph_module
 
@@ -42,7 +42,8 @@ class TestGraphModule:
         mock_auth_instance = Mock()
         mock_auth_class.return_value = mock_auth_instance
 
-        result = get_auth_instance()
+        with patch.dict(os.environ, {}, clear=True):
+            result = get_auth_instance()
 
         assert result == mock_auth_instance
         mock_auth_class.assert_called_once()

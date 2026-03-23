@@ -11,6 +11,17 @@ from urllib.parse import quote
 from fastmcp import FastMCP
 from . import graph
 from .auth_base import AuthProvider
+from .response_shaping import (
+    cleanup_graph_payload,
+    shape_contact_detail,
+    shape_contact_summary,
+    shape_email_detail,
+    shape_email_summary,
+    shape_event_detail,
+    shape_event_summary,
+    shape_message_summary,
+    flatten_email_address,
+)
 from markitdown import MarkItDown, StreamInfo
 from io import BytesIO
 from sys import stderr
@@ -312,7 +323,7 @@ def get_user_details(email: str | None = None) -> dict[str, Any]:
                 f"get_user_details successful: retrieved details for user {email}"
             )
 
-        return result
+        return cleanup_graph_payload(result)
     except Exception as e:
         logger.error(
             f"get_user_details failed for email={email}: {str(e)}", exc_info=True
@@ -721,15 +732,43 @@ def check_availability(
             "availabilityViewInterval": 30,
         }
 
-        result = graph.request("POST", "/me/calendar/getSchedule", json=payload)
-        if not result:
+        raw = graph.request("POST", "/me/calendar/getSchedule", json=payload)
+        if not raw:
             logger.error("check_availability failed: no response from server")
             raise ValueError("Failed to check availability")
 
         logger.info(
             f"check_availability successful: checked availability for {len(schedules)} schedules"
         )
-        return result
+
+        # Shape into compact assistant-facing format
+        raw_schedules = raw.get("value", [])
+        participants = []
+        for sched in raw_schedules:
+            entry: dict[str, Any] = {
+                "email": sched.get("scheduleId", ""),
+                "availability": sched.get("availabilityView", ""),
+            }
+            items = sched.get("scheduleItems", [])
+            if items:
+                entry["slots"] = [
+                    {
+                        "status": s.get("status"),
+                        "subject": s.get("subject"),
+                        "start": s.get("start"),
+                        "end": s.get("end"),
+                    }
+                    for s in items
+                ]
+            wh = sched.get("workingHours")
+            if wh:
+                entry["working_hours"] = wh
+            participants.append(entry)
+
+        return {
+            "participants": participants,
+            "time_range": {"start": start, "end": end},
+        }
     except Exception as e:
         logger.error(f"check_availability failed: {str(e)}", exc_info=True)
         raise
@@ -762,9 +801,11 @@ def list_contacts(limit: int = 50) -> list[dict[str, Any]]:
     try:
         params = {"$top": min(limit, 100)}
 
-        contacts = list(
+        raw_contacts = list(
             graph.request_paginated("/me/contacts", params=params, limit=limit)
         )
+
+        contacts = [shape_contact_summary(c) for c in raw_contacts]
 
         logger.info(f"list_contacts successful: retrieved {len(contacts)} contacts")
         return contacts
@@ -799,13 +840,13 @@ def get_contact(contact_id: str) -> dict[str, Any]:
     logger.info(f"get_contact called: contact_id={contact_id}")
 
     try:
-        result = graph.request("GET", f"/me/contacts/{contact_id}")
-        if not result:
+        raw = graph.request("GET", f"/me/contacts/{contact_id}")
+        if not raw:
             logger.error(f"get_contact failed: Contact with ID {contact_id} not found")
             raise ValueError(f"Contact with ID {contact_id} not found")
 
         logger.info(f"get_contact successful: retrieved contact {contact_id}")
-        return result
+        return shape_contact_detail(raw)
     except Exception as e:
         logger.error(
             f"get_contact failed for contact_id={contact_id}: {str(e)}", exc_info=True

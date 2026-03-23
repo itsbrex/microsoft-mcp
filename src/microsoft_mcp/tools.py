@@ -1338,7 +1338,6 @@ def unified_search(
                                             )
 
         except Exception as search_error:
-
             status = getattr(
                 getattr(search_error, "response", None), "status_code", None
             )
@@ -1734,20 +1733,26 @@ def search_contacts(
 
 @mcp.tool
 def list_chat_messages(
+    chat_id: str | None = None,
     limit: int = 10,
+    recent_container_limit: int = 10,
     body_max_length: int = 2000,
     include_body: bool = True,
     start_date: str | None = None,
     end_date: str | None = None,
 ) -> list[dict[str, Any]]:
-    """List recent chat messages from all 1:1 and group chats.
+    """List recent chat messages from Teams chats.
 
     Retrieves messages from Microsoft Teams chats, ordered by most recent first. This includes
     both one-on-one chats and group chat conversations. Use this to get an overview of recent
     chat activity across all conversations.
 
     Args:
+        chat_id: Optional ID of a specific chat to retrieve messages from. If provided, only
+                 messages from this chat are returned (targeted mode).
         limit: Maximum number of messages to retrieve (1-100, defaults to 10)
+        recent_container_limit: Maximum number of recent chats to scan when chat_id is not
+                                provided (default 10). Prevents scanning every chat.
         body_max_length: Maximum characters for message body content (default 2000, will truncate if longer)
         include_body: Whether to include message body content (affects response size)
         start_date: Optional start date in ISO format (UTC timezone, e.g., "2024-09-01T00:00:00Z") to filter messages from this date onwards
@@ -1763,17 +1768,28 @@ def list_chat_messages(
 
     Examples:
         - list_chat_messages() - Get 10 most recent chat messages
+        - list_chat_messages(chat_id="19:abc...") - Get messages from a specific chat
         - list_chat_messages(limit=50) - Get more recent messages
         - list_chat_messages(include_body=False) - Get messages without body content for faster response
         - list_chat_messages(start_date="2024-09-01T00:00:00Z") - Get messages from September 1st onwards
     """
     logger.info(
-        f"list_chat_messages called: limit={limit}, include_body={include_body}, start_date={start_date}, end_date={end_date}"
+        f"list_chat_messages called: chat_id={chat_id}, limit={limit}, include_body={include_body}, start_date={start_date}, end_date={end_date}"
     )
 
     try:
-        # First get all chats
-        chats = list(graph.request_paginated("/me/chats", params={"$top": 50}))
+        if chat_id:
+            # Targeted mode: single chat
+            chats = [{"id": chat_id, "topic": "", "chatType": "", "webUrl": ""}]
+        else:
+            # Bounded scan: fetch only top-N recent chats
+            chats = list(
+                graph.request_paginated(
+                    "/me/chats",
+                    params={"$top": min(recent_container_limit, 50)},
+                    limit=recent_container_limit,
+                )
+            )
 
         all_messages = []
 
@@ -1866,6 +1882,7 @@ def list_channel_messages(
     team_id: str | None = None,
     channel_id: str | None = None,
     limit: int = 10,
+    recent_team_limit: int = 5,
     body_max_length: int = 2000,
     include_body: bool = True,
     start_date: str | None = None,
@@ -1874,12 +1891,13 @@ def list_channel_messages(
     """List recent messages from Microsoft Teams channels.
 
     Retrieves messages from team channels, ordered by most recent first. If no team/channel is specified,
-    gets messages from all accessible channels. Use this to monitor channel activity and discussions.
+    gets messages from only the most recent teams to avoid excessive fan-out.
 
     Args:
         team_id: Optional ID of specific team to get messages from
         channel_id: Optional ID of specific channel (requires team_id)
         limit: Maximum number of messages to retrieve (1-100, defaults to 10)
+        recent_team_limit: Maximum number of teams to scan when team_id is not provided (default 5)
         body_max_length: Maximum characters for message body content (default 2000, will truncate if longer)
         include_body: Whether to include message body content (affects response size)
         start_date: Optional start date in ISO format (UTC timezone, e.g., "2024-09-01T00:00:00Z") to filter messages from this date onwards
@@ -1914,8 +1932,14 @@ def list_channel_messages(
             channels = list(graph.request_paginated(f"/teams/{team_id}/channels"))
             teams_channels = [(team_id, ch["id"]) for ch in channels]
         else:
-            # Get messages from all teams and channels user has access to
-            teams = list(graph.request_paginated("/me/joinedTeams"))
+            # Bounded scan: only top-N recent teams
+            teams = list(
+                graph.request_paginated(
+                    "/me/joinedTeams",
+                    params={"$top": min(recent_team_limit, 25)},
+                    limit=recent_team_limit,
+                )
+            )
             teams_channels = []
             for team in teams:
                 try:

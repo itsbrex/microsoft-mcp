@@ -27,7 +27,7 @@ Device Code Flow (also called "device authorization flow") allows users to authe
          │ 1. Initiate          │ 2. Get device code     │
          │◀──────────────────────│◀────────────────────────│
          │                       │                         │
-         │ 3. User enters code at microsoft.com/devicelogin
+         │ 3. User enters code at https://login.microsoft.com/device
          │                       │                         │
          │ 4. Poll for result   │ 5. Poll auth server    │
          │──────────────────────▶│─────────────────────────▶│
@@ -51,8 +51,9 @@ Add to your `.env` file:
 ```bash
 # MSAL Device Code Flow Configuration
 MSAL_ENABLED=true
-MSAL_CLIENT_ID=d3590ed6-52b3-4102-aeff-aad2292ab01c  # Microsoft Office client ID (works out of box)
-MSAL_TENANT_ID=common  # or your specific tenant ID
+MSAL_CLIENT_ID=d3590ed6-52b3-4102-aeff-aad2292ab01c
+MSAL_TENANT_ID=your-tenant-guid  # Prefer a tenant-specific value when known
+MSAL_AUTHORITY=  # Optional full authority URL override
 MSAL_DEBUG=false  # Set to true for verbose MSAL logging
 
 # Required for token encryption
@@ -70,7 +71,7 @@ AUTH_SECRET=your-auth-secret-for-better-auth
 | `d3590ed6-52b3-4102-aeff-aad2292ab01c` | Microsoft Office (default) | No |
 | Your Azure AD App ID | Custom permissions | Yes |
 
-**Important**: The Microsoft Office client ID works out of the box for device code flow with pre-authorized Graph API permissions. No Azure app registration needed.
+**Important**: Do not assume `common` authority always works with the Microsoft Office client ID for work or school tenants. In `microsoft-mcp`, fresh device-code login became reliable only after using a tenant-specific authority. Prefer an explicit tenant ID, a persisted authority URL, or account metadata from another known-good Microsoft auth flow.
 
 ## Database Schema
 
@@ -117,6 +118,7 @@ export const env = createEnv({
     // MSAL Device Code Flow
     MSAL_CLIENT_ID: z.string().optional(),
     MSAL_TENANT_ID: z.string().optional(),
+    MSAL_AUTHORITY: z.string().optional(),
     MSAL_ENABLED: z.string().optional(), // "true" to enable
     MSAL_DEBUG: z.string().optional(), // "true" for verbose logging
 
@@ -152,10 +154,15 @@ export function isMSALDeviceCodeEnabled(): boolean {
 }
 
 // MSAL configuration
-export function getMSALConfig(): { clientId: string; tenantId: string } {
+export function getMSALConfig(): { clientId: string; authority: string } {
+  const clientId = env.MSAL_CLIENT_ID || MICROSOFT_OFFICE_CLIENT_ID;
+  const authority =
+    env.MSAL_AUTHORITY ||
+    `https://login.microsoftonline.com/${env.MSAL_TENANT_ID || "common"}`;
+
   return {
-    clientId: env.MSAL_CLIENT_ID || MICROSOFT_OFFICE_CLIENT_ID,
-    tenantId: env.MSAL_TENANT_ID || "common",
+    clientId,
+    authority,
   };
 }
 
@@ -165,12 +172,12 @@ let msalApp: PublicClientApplication | null = null;
 export function getMSALApp(): PublicClientApplication {
   if (msalApp) return msalApp;
 
-  const { clientId, tenantId } = getMSALConfig();
+  const { clientId, authority } = getMSALConfig();
 
   const config: Configuration = {
     auth: {
       clientId,
-      authority: `https://login.microsoftonline.com/${tenantId}`,
+      authority,
     },
     system: {
       loggerOptions: {
@@ -366,6 +373,16 @@ export function cancelDeviceCodeFlow(sessionId: string): boolean {
   return false;
 }
 ```
+
+### Authority Selection Matters
+
+The `microsoft-mcp` implementation now treats authority selection as a first-class concern:
+
+- Prefer a tenant-specific authority over `common` for work and school tenants
+- Persist the resolved authority after the first successful login
+- If you already have another Microsoft auth flow in your product, reuse that account metadata to seed the MSAL authority for later device-code logins
+
+This avoids fresh-login failures where the same client ID works for cached refresh but fails during a new device-code prompt.
 
 ### 3. API Routes
 

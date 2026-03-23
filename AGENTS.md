@@ -15,8 +15,11 @@ uv sync
 # Run the MCP server
 uv run microsoft-mcp
 
-# Run authentication (required first time)
-MICROSOFT_MCP_CLIENT_ID="your-app-id" uv run authenticate.py
+# Run authentication (required first time, MSAL example)
+MICROSOFT_MCP_AUTH_METHOD=msal \
+MICROSOFT_MCP_ACCOUNT_ID="your-email@example.com" \
+MICROSOFT_MCP_CLIENT_ID="d3590ed6-52b3-4102-aeff-aad2292ab01c" \
+uv run authenticate.py
 
 # Run all tests
 uv run pytest tests/ -v
@@ -46,7 +49,8 @@ uvx ruff check --fix --unsafe-fixes .
 - **`auth_msal.py`** - MSAL device code flow authentication with `MSALRefreshTokenAuth` class
   - Alternative for CLI/headless environments without browser access
   - File-based token storage, compatible with outlook-creds tokens
-  - Uses Microsoft Office client ID by default (works out of box)
+  - Supports per-account token files and cached-account selection via `MICROSOFT_MCP_ACCOUNT_ID`
+  - Reuses tenant-specific authority metadata from `outlook-creds` when tenant is unset and account metadata exists
 
 - **`auth_base.py`** - Protocol definition for authentication providers
   - `AuthProvider` protocol defining `get_token()`, `exists_valid_token()`, `authenticate()`, `clear_cache()`
@@ -56,18 +60,22 @@ uvx ruff check --fix --unsafe-fixes .
   - Handles pagination via `@odata.nextLink`
   - Supports large file uploads via chunked sessions
   - Global auth instance via `set_auth_instance()`/`get_auth_instance()`
+  - Falls back to the auth method configured in the environment after loading `.env`
 
-- **`tools.py`** - FastMCP tool implementations (30+ tools)
-  - Account Management (3 tools): `list_accounts`, `set_active_account`, `get_active_account`
-  - Email (9 tools): list, get, send, reply, move, delete, attachments
-  - Calendar (7 tools): events, availability, responses
-  - Contacts (6 tools): CRUD + search
-  - Files (6 tools): OneDrive operations
+- **`tools.py`** - FastMCP tool implementations (27 tools)
+  - Account/Auth (6 tools): account switching, login state, and user details
+  - Email (4 tools): list/get/search plus attachment fetch
+  - Calendar (4 tools): list/get/search plus availability
+  - Contacts (3 tools): list/get/search
+  - Files (3 tools): list/get/search
   - Teams (6 tools): chat and channel messages
   - Search: unified search across all services with KQL support
   - Initializes global auth instance based on `MICROSOFT_MCP_AUTH_METHOD`
 
-- **`server.py`** - MCP server entry point, validates `MICROSOFT_MCP_CLIENT_ID`
+- **`server.py`** - MCP server entry point
+  - Loads `.env` before importing auth-sensitive modules
+  - Validates `MICROSOFT_MCP_CLIENT_ID`
+  - Logs configured vs actual auth mode and exits on mismatch
 
 ### Key Patterns
 
@@ -75,7 +83,9 @@ uvx ruff check --fix --unsafe-fixes .
 
 **Dual Auth Support**: Azure SDK (browser) or MSAL (device code) via `MICROSOFT_MCP_AUTH_METHOD=azure|msal`
 
-**Multi-Account Support** (MSAL only): Install multiple accounts during setup, switch at runtime via `set_active_account()`. Tokens stored per-account as `{email}_access_token.json`.
+**Multi-Account Support** (MSAL only): Install multiple accounts during setup, switch at runtime via `set_active_account()`. Tokens are stored per-account as `{email}_access_token.json`, and `MICROSOFT_MCP_ACCOUNT_ID` also drives cached-account selection.
+
+**Authority Resolution** (MSAL only): If `MICROSOFT_MCP_TENANT_ID` is unset and the account exists in `outlook-creds`, `auth_msal.py` reuses that profile's tenant-specific authority instead of defaulting to `common`.
 
 **Dependency Injection**: Graph module uses global `_global_auth` instance; tests mock via `set_auth_instance()`
 
@@ -93,9 +103,9 @@ uvx ruff check --fix --unsafe-fixes .
 **MSAL Auth:**
 - `MICROSOFT_MCP_AUTH_METHOD=msal` - enable MSAL device code flow
 - `MICROSOFT_MCP_CLIENT_ID` (required) - Microsoft Office client ID: `d3590ed6-52b3-4102-aeff-aad2292ab01c`
-- `MICROSOFT_MCP_TENANT_ID` (optional) - defaults to "common"
+- `MICROSOFT_MCP_TENANT_ID` (optional) - explicit tenant override
 - `MICROSOFT_MCP_TOKENS_DIR` (optional) - token storage directory (defaults to `~/.config/microsoft-mcp/tokens/`)
-- `MICROSOFT_MCP_ACCOUNT_ID` (optional) - account identifier for token file naming (defaults to "default", typically set to user's email)
+- `MICROSOFT_MCP_ACCOUNT_ID` (optional) - account identifier for token file naming, cached-account selection, and optional `outlook-creds` authority lookup
 
 ## MCP Configuration Format
 

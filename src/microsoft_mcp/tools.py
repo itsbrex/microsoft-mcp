@@ -4,9 +4,7 @@ import json
 import logging
 import os
 import pathlib as pl
-import subprocess
 from typing import Any
-from unittest import result
 from urllib.parse import quote
 from fastmcp import FastMCP
 from . import graph
@@ -19,9 +17,9 @@ from .response_shaping import (
     shape_email_summary,
     shape_event_detail,
     shape_event_summary,
-    shape_message_summary,
     flatten_email_address,
 )
+from .search_cache import get_global_cache
 from markitdown import MarkItDown, StreamInfo
 from io import BytesIO
 from sys import stderr
@@ -101,6 +99,7 @@ FOLDERS = {
 # Account Management Tools (Multi-account support)
 # ============================================================================
 
+
 @mcp.tool
 def list_accounts() -> list[dict[str, Any]]:
     """List all authenticated Microsoft accounts.
@@ -157,6 +156,7 @@ def list_accounts() -> list[dict[str, Any]]:
     logger.info(f"list_accounts found {len(accounts)} accounts")
     return accounts
 
+
 @mcp.tool
 def set_active_account(account: str) -> dict[str, str]:
     """Switch the active Microsoft account.
@@ -200,10 +200,12 @@ def set_active_account(account: str) -> dict[str, str]:
     token_file = tokens_dir / f"{account}_access_token.json"
 
     if not token_file.exists():
-        available = [f.stem.replace("_access_token", "") for f in tokens_dir.glob("*_access_token.json")]
+        available = [
+            f.stem.replace("_access_token", "")
+            for f in tokens_dir.glob("*_access_token.json")
+        ]
         raise ValueError(
-            f"No tokens found for account: {account}. "
-            f"Available accounts: {available}"
+            f"No tokens found for account: {account}. Available accounts: {available}"
         )
 
     # Import here to avoid circular import issues
@@ -220,6 +222,7 @@ def set_active_account(account: str) -> dict[str, str]:
 
     logger.info(f"set_active_account successful: switched to {account}")
     return {"status": "switched", "active_account": account}
+
 
 @mcp.tool
 def get_active_account() -> dict[str, Any]:
@@ -261,9 +264,11 @@ def get_active_account() -> dict[str, Any]:
     logger.info(f"get_active_account returning: {result}")
     return result
 
+
 # ============================================================================
 # Utility Functions
 # ============================================================================
+
 
 def convert_to_markdown(html: str, mimetype: str = "text/html") -> str:
     """Convert HTML content to Markdown format."""
@@ -274,6 +279,7 @@ def convert_to_markdown(html: str, mimetype: str = "text/html") -> str:
     return markitdown.convert(
         stream, stream_info=StreamInfo(mimetype=mimetype)
     ).text_content
+
 
 @mcp.tool
 def get_user_details(email: str | None = None) -> dict[str, Any]:
@@ -330,6 +336,7 @@ def get_user_details(email: str | None = None) -> dict[str, Any]:
         )
         raise
 
+
 @mcp.prompt
 def prepare_work_day():
     return """
@@ -338,9 +345,11 @@ def prepare_work_day():
     
     """
 
+
 @mcp.tool
 def is_logged_in() -> bool:
     return auth.exists_valid_token()
+
 
 @mcp.tool
 def login() -> str:
@@ -360,6 +369,7 @@ def login() -> str:
 
     else:
         return "already logged in"
+
 
 @mcp.tool
 def list_emails(
@@ -464,6 +474,7 @@ def list_emails(
         logger.error(f"list_emails failed: {str(e)}", exc_info=True)
         raise
 
+
 @mcp.tool
 def get_email(
     email_id: str,
@@ -513,9 +524,7 @@ def get_email(
         # Convert HTML to markdown and truncate body if needed
         if include_body and "body" in raw and "content" in raw["body"]:
             if raw["body"]["contentType"].lower() == "html":
-                raw["body"]["content"] = convert_to_markdown(
-                    raw["body"]["content"]
-                )
+                raw["body"]["content"] = convert_to_markdown(raw["body"]["content"])
                 raw["body"]["contentType"] = "text/markdown"
 
             content = raw["body"]["content"]
@@ -545,6 +554,7 @@ def get_email(
             f"get_email failed for email_id={email_id}: {str(e)}", exc_info=True
         )
         raise
+
 
 @mcp.tool
 def list_events(
@@ -624,6 +634,7 @@ def list_events(
         logger.error(f"list_events failed: {str(e)}", exc_info=True)
         raise
 
+
 @mcp.tool
 def get_event(event_id: str) -> dict[str, Any]:
     """Get complete details for a specific calendar event by its ID.
@@ -662,6 +673,7 @@ def get_event(event_id: str) -> dict[str, Any]:
             f"get_event failed for event_id={event_id}: {str(e)}", exc_info=True
         )
         raise
+
 
 @mcp.tool
 def check_availability(
@@ -757,6 +769,7 @@ def check_availability(
         logger.error(f"check_availability failed: {str(e)}", exc_info=True)
         raise
 
+
 @mcp.tool
 def list_contacts(limit: int = 50) -> list[dict[str, Any]]:
     """List contacts from the user's address book.
@@ -797,6 +810,7 @@ def list_contacts(limit: int = 50) -> list[dict[str, Any]]:
         logger.error(f"list_contacts failed: {str(e)}", exc_info=True)
         raise
 
+
 @mcp.tool
 def get_contact(contact_id: str) -> dict[str, Any]:
     """Get detailed information for a specific contact by ID.
@@ -836,6 +850,7 @@ def get_contact(contact_id: str) -> dict[str, Any]:
             f"get_contact failed for contact_id={contact_id}: {str(e)}", exc_info=True
         )
         raise
+
 
 @mcp.tool
 def list_files(path: str = "/", limit: int = 50) -> list[dict[str, Any]]:
@@ -895,6 +910,7 @@ def list_files(path: str = "/", limit: int = 50) -> list[dict[str, Any]]:
     except Exception as e:
         logger.error(f"list_files failed for path={path}: {str(e)}", exc_info=True)
         raise
+
 
 @mcp.tool
 def get_file(file_id: str, download_path: str) -> dict[str, Any]:
@@ -962,6 +978,7 @@ def get_file(file_id: str, download_path: str) -> dict[str, Any]:
     except Exception as e:
         logger.error(f"get_file failed for file_id={file_id}: {str(e)}", exc_info=True)
         raise
+
 
 @mcp.tool
 def get_attachment(email_id: str, attachment_id: str, save_path: str) -> dict[str, Any]:
@@ -1032,9 +1049,9 @@ def get_attachment(email_id: str, attachment_id: str, save_path: str) -> dict[st
         )
         raise
 
+
 def _analyze_search_error(error: Exception, request_payload: dict) -> str:
     """Analyze Microsoft Graph Search API errors and provide helpful diagnostics."""
-    import httpx
 
     error_msg = str(error)
 
@@ -1088,7 +1105,7 @@ def _analyze_search_error(error: Exception, request_payload: dict) -> str:
         if suggestions:
             return f"Bad Request - Possible issues: {'; '.join(suggestions)}"
         else:
-            return f"Bad Request - Check entity type combinations and query format"
+            return "Bad Request - Check entity type combinations and query format"
 
     elif "401 Unauthorized" in error_msg:
         return "Authentication failed - token may be expired or invalid"
@@ -1100,6 +1117,7 @@ def _analyze_search_error(error: Exception, request_payload: dict) -> str:
         return "Rate limited - too many requests, please retry later"
     else:
         return f"Unexpected error: {error_msg}"
+
 
 @mcp.tool
 def unified_search(
@@ -1284,6 +1302,8 @@ def unified_search(
         )
 
         # Execute search for each request group
+        degraded = False
+        degraded_reason = None
         try:
             for group in request_groups:
                 group_payload = {
@@ -1306,7 +1326,9 @@ def unified_search(
                                 if "hits" in container:
                                     for hit in container["hits"]:
                                         processed_item = _process_search_hit(
-                                            hit, include_body, body_max_length,
+                                            hit,
+                                            include_body,
+                                            body_max_length,
                                         )
                                         if processed_item:
                                             all_results.append(processed_item)
@@ -1316,33 +1338,69 @@ def unified_search(
                                             )
 
         except Exception as search_error:
-            error_details = _analyze_search_error(search_error, request_payload)
-            logger.error(
-                f"unified_search API error: {str(search_error)}\nError analysis: {error_details}",
-                exc_info=True,
+
+            status = getattr(
+                getattr(search_error, "response", None), "status_code", None
             )
-            raise RuntimeError(
-                f"Microsoft Graph Search API failed: {error_details}"
-            ) from search_error
+            if status in (403, 404):
+                # Fall back to cache search
+                logger.warning(
+                    f"unified_search: Graph Search returned {status}, falling back to cache"
+                )
+                cache = get_global_cache()
+                all_results = cache.search(query or "*", kinds=filtered_entity_types)
+                total_results = len(all_results)
+                degraded = True
+                degraded_reason = f"Graph Search returned HTTP {status}"
+                entity_type_counts = {}
+                for item in all_results:
+                    k = item.get("kind", "unknown")
+                    entity_type_counts[k] = entity_type_counts.get(k, 0) + 1
+            else:
+                error_details = _analyze_search_error(search_error, request_payload)
+                logger.error(
+                    f"unified_search API error: {str(search_error)}\nError analysis: {error_details}",
+                    exc_info=True,
+                )
+                raise RuntimeError(
+                    f"Microsoft Graph Search API failed: {error_details}"
+                ) from search_error
+
+        # Populate cache with successful results for future fallback
+        if not degraded and all_results:
+            cache = get_global_cache()
+            by_kind: dict[str, list] = {}
+            for item in all_results:
+                by_kind.setdefault(item.get("kind", "unknown"), []).append(item)
+            for kind, items in by_kind.items():
+                cache.store(kind, items)
 
         # Build response
+        summary: dict[str, Any] = {
+            "total_results": len(all_results),
+            "total_available": total_results,
+            "query": query,
+            "kql_filters": kql_filters,
+            "entity_types_searched": filtered_entity_types,
+            "entity_type_counts": entity_type_counts,
+            "limit_applied": limit,
+            "include_body": include_body,
+            "mode": "degraded_cache_search" if degraded else "graph_search",
+        }
+
+        if degraded:
+            summary["degraded_reason"] = degraded_reason
+            summary["data_freshness"] = get_global_cache().freshness_info()
+
         response = {
-            "summary": {
-                "total_results": len(all_results),
-                "total_available": total_results,
-                "query": query,
-                "kql_filters": kql_filters,
-                "entity_types_searched": filtered_entity_types,
-                "entity_type_counts": entity_type_counts,
-                "limit_applied": limit,
-                "include_body": include_body,
-            },
-            "results": all_results[:limit],  # Apply final limit
+            "summary": summary,
+            "results": all_results[:limit],
         }
 
         logger.info(
             f"unified_search successful: found {len(all_results)} results "
             f"across {len(entity_type_counts)} entity types with query '{search_query}'"
+            + (f" (degraded: {degraded_reason})" if degraded else "")
         )
         return response
 
@@ -1359,6 +1417,7 @@ def unified_search(
             "results": [],
         }
         return error_response
+
 
 def _detect_entity_kind(odata_type: str) -> str:
     odata_type = odata_type.lower()
@@ -1430,6 +1489,7 @@ def _process_search_hit(
                     result[key] = resource[key]
             if resource.get("location"):
                 from .response_shaping import compact_location
+
                 result["location"] = compact_location(resource["location"])
             if resource.get("organizer"):
                 result["organizer"] = flatten_email_address(resource["organizer"])
@@ -1455,6 +1515,7 @@ def _process_search_hit(
     except Exception as e:
         logger.warning(f"Failed to process search hit: {str(e)}")
         return None
+
 
 @mcp.tool
 def search_files(
@@ -1508,6 +1569,7 @@ def search_files(
             f"search_files failed for query='{query}': {str(e)}", exc_info=True
         )
         raise
+
 
 @mcp.tool
 def search_emails(
@@ -1572,6 +1634,7 @@ def search_emails(
         )
         raise
 
+
 @mcp.tool
 def search_events(
     query: str,
@@ -1615,6 +1678,7 @@ def search_events(
             f"search_events failed for query='{query}': {str(e)}", exc_info=True
         )
         raise
+
 
 @mcp.tool
 def search_contacts(
@@ -1666,6 +1730,7 @@ def search_contacts(
             f"search_contacts failed for query='{query}': {str(e)}", exc_info=True
         )
         raise
+
 
 @mcp.tool
 def list_chat_messages(
@@ -1794,6 +1859,7 @@ def list_chat_messages(
     except Exception as e:
         logger.error(f"list_chat_messages failed: {str(e)}", exc_info=True)
         raise
+
 
 @mcp.tool
 def list_channel_messages(
@@ -1953,6 +2019,7 @@ def list_channel_messages(
         logger.error(f"list_channel_messages failed: {str(e)}", exc_info=True)
         raise
 
+
 @mcp.tool
 def get_chat_message(chat_id: str, message_id: str) -> dict[str, Any]:
     """Get detailed information about a specific chat message by its ID.
@@ -2030,6 +2097,7 @@ def get_chat_message(chat_id: str, message_id: str) -> dict[str, Any]:
             exc_info=True,
         )
         raise
+
 
 @mcp.tool
 def get_channel_message(
@@ -2119,6 +2187,7 @@ def get_channel_message(
         )
         raise
 
+
 @mcp.tool
 def search_chat_messages(
     query: str,
@@ -2187,6 +2256,7 @@ def search_chat_messages(
             f"search_chat_messages failed for query='{query}': {str(e)}", exc_info=True
         )
         raise
+
 
 @mcp.tool
 def search_channel_messages(
@@ -2277,4 +2347,3 @@ def search_channel_messages(
             exc_info=True,
         )
         raise
-

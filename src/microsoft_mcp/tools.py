@@ -599,18 +599,22 @@ def list_events(
             params["$select"] = "id,subject,start,end,location,organizer,seriesMasterId"
 
         # Use calendarView to get recurring event instances
-        events = list(graph.request_paginated("/me/calendarView", params=params))
+        raw_events = list(graph.request_paginated("/me/calendarView", params=params))
 
-        # truncate the body content if it exceeds max_body_length
-        for event in events:
-            if "body" in event:
-                if (
-                    "content" in event["body"]
-                    and len(event["body"]["content"]) > max_body_length
-                ):
-                    event["body"]["content"] = (
-                        event["body"]["content"][:max_body_length] + "..."
-                    )
+        if include_details:
+            # truncate the body content if it exceeds max_body_length
+            for event in raw_events:
+                if "body" in event:
+                    if (
+                        "content" in event["body"]
+                        and len(event["body"]["content"]) > max_body_length
+                    ):
+                        event["body"]["content"] = (
+                            event["body"]["content"][:max_body_length] + "..."
+                        )
+            events = [shape_event_detail(e) for e in raw_events]
+        else:
+            events = [shape_event_summary(e) for e in raw_events]
 
         logger.info(
             f"list_events successful: retrieved {len(events)} events from {start} to {end}"
@@ -646,13 +650,13 @@ def get_event(event_id: str) -> dict[str, Any]:
     logger.info(f"get_event called: event_id={event_id}")
 
     try:
-        result = graph.request("GET", f"/me/events/{event_id}")
-        if not result:
+        raw = graph.request("GET", f"/me/events/{event_id}")
+        if not raw:
             logger.error(f"get_event failed: Event with ID {event_id} not found")
             raise ValueError(f"Event with ID {event_id} not found")
 
         logger.info(f"get_event successful: retrieved event {event_id}")
-        return result
+        return shape_event_detail(raw)
     except Exception as e:
         logger.error(
             f"get_event failed for event_id={event_id}: {str(e)}", exc_info=True

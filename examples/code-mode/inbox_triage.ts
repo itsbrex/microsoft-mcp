@@ -84,7 +84,7 @@ interface ItemDetail {
   title: string;
   body: string;
   participants: string[];
-  when: string;
+  when?: string;
   action_hints: string[];
   web_url: string;
 }

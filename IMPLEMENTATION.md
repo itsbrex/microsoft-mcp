@@ -91,7 +91,7 @@ graph.set_auth_instance(auth)
 #### 3. MCP Tools (`tools.py`)
 - **FastMCP Framework**: Uses FastMCP for tool registration and management
 - **Authentication Integration**: Initializes either Azure SDK auth or MSAL auth from the environment
-- **Current Tool Surface**: 27 tools covering account management, auth status, email, calendar, contacts, files, Teams messages, and unified search
+- **Current Tool Surface**: 29 tools covering account management, auth status, email, calendar, contacts, files, Teams messages, unified search, and inbox triage
 - **Error Handling**: Consistent error logging and exception propagation
 - **Response Optimization**: Configurable body truncation, attachment handling
 - **Microsoft Search Integration**: Universal search API with KQL support and interleaved results
@@ -214,15 +214,11 @@ def request_paginated(path, params=None, limit=None):
 
 ### Universal Search Tools (1 tool)
 - **unified_search**: Comprehensive Microsoft Search API integration with advanced KQL filtering
-
-### Inbox Tools (2 tools)
-- **list_inbox_items**: Returns a ranked list of `InboxItem` summaries drawn from emails and calendar events. Items are scored by urgency signals: unread, direct mentions, flagged state, meeting proximity, and newsletter suppression. Accepts `limit` and `include_kinds` parameters.
-- **get_inbox_item_detail**: Hydrates a single item by `item_id` and `kind`, returning the full body, participants, and action hints from the underlying Graph API.
-- **Supported Entity Types**: 
+- **Supported Entity Types**:
   - `message` - Outlook emails
   - `event` - Calendar events
   - `driveItem` - OneDrive/SharePoint files and folders
-  - `list` - SharePoint lists  
+  - `list` - SharePoint lists
   - `listItem` - SharePoint list items
   - `site` - SharePoint sites
   - `drive` - OneDrive/SharePoint drives
@@ -234,12 +230,16 @@ def request_paginated(path, params=None, limit=None):
   - Content type: `filetype:pdf`, `filetype:docx`
   - Teams mentions: `IsMentioned:true`
   - Content author: `author:"John Smith"`
-- **Response Optimization**: 
+- **Response Optimization**:
   - Configurable body inclusion with length limits
   - Minimal response mode to reduce token usage
   - Entity type result counts and summaries
   - Relevance ranking and deep links
 - **Interleaved Results**: Returns unified results across all content types ranked by relevance
+
+### Inbox Tools (2 tools)
+- **list_inbox_items**: Returns a ranked list of `InboxItem` summaries drawn from emails and calendar events. Items are scored by urgency signals: unread, direct mentions, flagged state, meeting proximity, and newsletter suppression. Accepts `limit` and `include_kinds` parameters.
+- **get_inbox_item_detail**: Hydrates a single item by `item_id` and `kind`, returning the full body, participants, and action hints from the underlying Graph API.
 
 ## Configuration
 
@@ -313,7 +313,7 @@ Code Mode is the recommended orchestration layer for multi-step inbox triage. Th
 
 **Preferred flow:**
 1. `list_inbox_items` — get ranked summaries (low token cost)
-2. `search_inbox_items` (optional) — narrow by keyword/sender
+2. `unified_search` or `search_emails` (optional) — narrow by keyword/sender
 3. `get_inbox_item_detail` — hydrate only the top 2-3 items
 4. Code Mode computes and returns a triage report locally
 

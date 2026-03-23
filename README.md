@@ -69,7 +69,7 @@ claude mcp add microsoft-mcp -e MICROSOFT_MCP_CLIENT_ID=your-app-id-here -- uvx 
 
 ## Available Tools
 
-Microsoft MCP currently exposes **27 MCP tools**:
+Microsoft MCP currently exposes **29 MCP tools**:
 
 ### Account and Authentication (6 tools)
 - **`list_accounts`** - List available MSAL accounts from the token directory
@@ -134,7 +134,7 @@ Code Mode is **not** the primary fix for payload size — the server already tri
 ### Recommended inbox triage flow
 
 1. Call `list_inbox_items` to get normalized summaries (low token cost)
-2. Optionally call `search_inbox_items` to narrow by keyword or sender
+2. Optionally call `unified_search` or `search_emails` to narrow by keyword or sender
 3. Call `get_inbox_item_detail` only for the items that need full context (top 2-3)
 4. Compute and return a triage report in the Code Mode script
 

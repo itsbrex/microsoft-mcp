@@ -18,8 +18,8 @@ Use Code Mode when you need to:
 - Fetch a list of summaries, then hydrate only the selected subset
 - Apply ranking or filtering logic that the server does not expose as a parameter
 - Batch multiple `get_inbox_item_detail` calls and reduce them to a single compact report
-- Chain `list_inbox_items` -> filter -> `get_inbox_item_detail` without passing intermediate
-  full payloads to the model
+- Chain `list_inbox_items` → `unified_search`/`search_emails` → `get_inbox_item_detail`
+  without passing intermediate full payloads to the model
 
 Do **not** use Code Mode as a workaround for raw Graph payload size. The server already applies
 `response_shaping.py` to every response. If token usage is still too high, check `BudgetHints`
@@ -31,7 +31,7 @@ parameters on the individual tools, not Code Mode.
 list_inbox_items(limit=20)
     -> ranked InboxItem summaries (id, kind, title, snippet, score, reason)
 
-[optional] search_inbox_items(query="...", limit=10)
+[optional] unified_search(query="...") or search_emails(query="...")
     -> narrowed summaries for keyword/sender searches
 
 get_inbox_item_detail(item_id=..., kind=...)   [call for top 2-3 items only]
@@ -59,10 +59,11 @@ Returns normalized `InboxItem` summaries ranked by urgency. Fields present on ev
 | `action_hints` | list[str] | Suggested next actions |
 | `web_url` | str | Deep link to item in Outlook/Teams |
 
-### Step 2: search_inbox_items (optional)
+### Step 2: unified_search or search_emails (optional)
 
-Use this tool when the user has a specific keyword, sender, or subject to narrow results before
-hydrating. Avoid calling `get_inbox_item_detail` on items that have not passed a relevance filter.
+Use `unified_search` or `search_emails` when the user has a specific keyword, sender, or subject
+to narrow results before hydrating. Avoid calling `get_inbox_item_detail` on items that have not
+passed a relevance filter.
 
 ### Step 3: get_inbox_item_detail
 
@@ -120,5 +121,6 @@ complete TypeScript script that:
 
 1. Registers this MCP server
 2. Calls `list_inbox_items` for ranked summaries
-3. Hydrates the top 3 items with `get_inbox_item_detail`
-4. Returns a compact triage report
+3. Optionally narrows with `unified_search` or `search_emails`
+4. Hydrates the top 3 items with `get_inbox_item_detail`
+5. Returns a compact triage report

@@ -20,10 +20,9 @@
  *   - Authentication completed for the configured account
  */
 
-import Anthropic from "@anthropic-ai/sdk";
-
 // ---------------------------------------------------------------------------
-// MCP server configuration
+// MCP server configuration (reference — paste into your .mcp.json or
+// claude_desktop_config.json under "mcpServers").
 // Update paths and account details to match your local setup.
 // ---------------------------------------------------------------------------
 const MCP_SERVER_CONFIG = {
@@ -60,7 +59,7 @@ interface InboxItem {
   title: string;
   snippet: string;
   participants: string[];
-  when: string;
+  when?: string;
   state: string;
   score: number;
   reason: string;
@@ -68,9 +67,15 @@ interface InboxItem {
   web_url: string;
 }
 
+interface InboxListMeta {
+  total_fetched: number;
+  returned: number;
+  kinds: string[];
+}
+
 interface InboxListResult {
   items: InboxItem[];
-  total: number;
+  meta: InboxListMeta;
 }
 
 interface ItemDetail {
@@ -97,45 +102,13 @@ interface TriageEntry {
 }
 
 // ---------------------------------------------------------------------------
-// Helper: call an MCP tool and parse the JSON result
+// Note on MCP tool invocation
 // ---------------------------------------------------------------------------
-async function callMcpTool<T>(
-  client: Anthropic,
-  toolName: string,
-  toolInput: Record<string, unknown>
-): Promise<T> {
-  // In a real Code Mode script this would be a direct MCP tool invocation.
-  // Here we use the Anthropic client with tool_choice to demonstrate the pattern.
-  const response = await client.messages.create({
-    model: "claude-sonnet-4-5",
-    max_tokens: 4096,
-    tools: [
-      {
-        name: toolName,
-        description: `Call ${toolName}`,
-        input_schema: {
-          type: "object" as const,
-          properties: toolInput,
-        },
-      },
-    ],
-    tool_choice: { type: "any" },
-    messages: [
-      {
-        role: "user",
-        content: `Call ${toolName} with the provided parameters: ${JSON.stringify(toolInput)}`,
-      },
-    ],
-  });
-
-  // Extract tool result from response
-  for (const block of response.content) {
-    if (block.type === "tool_use") {
-      return block.input as T;
-    }
-  }
-  throw new Error(`No tool_use block in response from ${toolName}`);
-}
+// In a real Code Mode script, MCP tools are called directly via the host
+// runtime (e.g. `mcp.list_inbox_items({ limit: 20 })`). There is no
+// Anthropic Messages API call involved — the MCP server runs as a sidecar
+// process and the tool calls are dispatched by the host, not by constructing
+// chat completions. The simulated results below stand in for those calls.
 
 // ---------------------------------------------------------------------------
 // Build a one-sentence summary from item detail
@@ -168,9 +141,9 @@ function suggestAction(detail: ItemDetail): string {
 async function runInboxTriage(): Promise<void> {
   console.log("Starting inbox triage...\n");
 
-  // In a Code Mode script registered against the MCP server, tool calls happen
-  // via the MCP protocol. This example shows the logical flow using the
-  // Anthropic SDK as a stand-in for illustration.
+  // In a real Code Mode script, tool calls go directly to the MCP server via
+  // the host runtime. This example shows the logical flow with simulated
+  // results standing in for actual MCP calls.
   //
   // The key pattern is:
   //   1. list_inbox_items -> ranked summaries (one call, low cost)
@@ -227,10 +200,10 @@ async function runInboxTriage(): Promise<void> {
         web_url: "https://outlook.office.com/mail/id/item-003",
       },
     ],
-    total: 3,
+    meta: { total_fetched: 20, returned: 3, kinds: ["email", "event"] },
   };
 
-  console.log(`  Received ${summaryResult.total} items. Top scores:`);
+  console.log(`  Received ${summaryResult.meta.returned} items (fetched ${summaryResult.meta.total_fetched}). Top scores:`);
   summaryResult.items.forEach((item, i) => {
     console.log(
       `  ${i + 1}. [${item.kind}] "${item.title}" — score=${item.score.toFixed(2)} (${item.reason})`
@@ -259,7 +232,7 @@ async function runInboxTriage(): Promise<void> {
         ? `Full email body for "${item.title}". ${item.snippet} [Additional context from full body...]`
         : `Event description: ${item.snippet}`,
     participants: item.participants,
-    when: item.when,
+    when: item.when ?? "",
     action_hints: item.action_hints,
     web_url: item.web_url,
   }));

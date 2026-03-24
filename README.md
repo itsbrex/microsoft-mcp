@@ -264,7 +264,7 @@ The server shapes Microsoft Graph API responses to reduce token usage when tools
 | Value | Behavior |
 |---|---|
 | `legacy` (default) | Current behavior. List/search tools return shaped summaries; detail tools return shaped details. Safe for existing integrations. |
-| `assistant` | Optimized for AI assistant workflows. Same shaping as `legacy` in the current release, but signals intent to adopt future assistant-optimized defaults. |
+| `assistant` | Optimized for AI assistant workflows. Forces summary mode on list tools (suppresses body/detail even when explicitly requested). Contacts use compact shaped output. |
 
 **Per-call override:** The `list_emails`, `list_events`, `list_contacts`, and `list_chat_messages` tools accept an optional `response_profile` parameter (`"auto"`, `"legacy"`, or `"assistant"`) that overrides the environment variable for that single call. The default value `"auto"` defers to the env var.
 

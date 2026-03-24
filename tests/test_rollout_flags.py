@@ -114,8 +114,9 @@ def test_list_events_assistant_suppresses_details(mock_graph, monkeypatch):
 
 
 @patch("microsoft_mcp.tools.graph")
-def test_list_contacts_respects_assistant_profile(mock_graph, monkeypatch):
-    monkeypatch.setenv("MICROSOFT_MCP_RESPONSE_PROFILE", "assistant")
+def test_list_contacts_always_uses_shaped_summary(mock_graph, monkeypatch):
+    """Contacts always use shape_contact_summary regardless of profile
+    (contacts have no body/detail toggle)."""
     from microsoft_mcp.tools import list_contacts
 
     mock_graph.request_paginated.return_value = iter(
@@ -125,14 +126,17 @@ def test_list_contacts_respects_assistant_profile(mock_graph, monkeypatch):
                 "displayName": "Alice",
                 "emailAddresses": [{"address": "alice@x.com"}],
                 "businessPhones": ["+1234"],
+                "@odata.etag": "W/\"etag1\"",
+                "changeKey": "ck1",
             }
         ]
     )
 
     result = list_contacts.fn(limit=5, response_profile="assistant")
     first = result[0]
-    assert "body" not in first
     assert first["displayName"] == "Alice"
+    assert "email_addresses" in first
+    assert "@odata.etag" not in first
 
 
 # ---------------------------------------------------------------------------

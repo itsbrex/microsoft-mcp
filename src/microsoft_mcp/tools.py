@@ -2414,6 +2414,36 @@ def search_channel_messages(
         raise
 
 
+TEAMS_TOOL_NAMES = (
+    "list_chat_messages",
+    "list_channel_messages",
+    "get_chat_message",
+    "get_channel_message",
+    "search_chat_messages",
+    "search_channel_messages",
+)
+
+
+def _configure_teams_tools_for_auth_method() -> None:
+    if auth_method != "msal":
+        return
+
+    for tool_name in TEAMS_TOOL_NAMES:
+        tool = mcp._tool_manager._tools.get(tool_name)
+        if tool is None:
+            logger.warning(
+                "Expected Teams tool '%s' was not registered before MSAL gating",
+                tool_name,
+            )
+            continue
+        tool.disable()
+
+    logger.info("Disabled Teams tools for MSAL authentication method")
+
+
+_configure_teams_tools_for_auth_method()
+
+
 # ============================================================================
 # Assistant-Native Inbox Tools
 # ============================================================================

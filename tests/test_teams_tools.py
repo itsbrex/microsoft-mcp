@@ -1,4 +1,10 @@
+import asyncio
+import importlib
+import sys
 from unittest.mock import patch
+
+import pytest
+from fastmcp.exceptions import NotFoundError
 
 
 def _make_chat(chat_id, topic="", chat_type="oneOnOne"):
@@ -121,3 +127,43 @@ def test_chat_messages_include_chat_context(mock_graph):
     msg = result[0]
     assert "chatId" in msg
     assert msg["chatTopic"] == "Project Alpha"
+
+
+@pytest.fixture
+def load_tools_module(monkeypatch):
+    def _load(auth_method: str):
+        monkeypatch.setenv("MICROSOFT_MCP_AUTH_METHOD", auth_method)
+        if auth_method == "azure":
+            monkeypatch.setenv("MICROSOFT_MCP_CLIENT_ID", "test-client-id")
+        sys.modules.pop("microsoft_mcp.tools", None)
+        return importlib.import_module("microsoft_mcp.tools")
+
+    yield _load
+    sys.modules.pop("microsoft_mcp.tools", None)
+
+
+def test_teams_tools_are_hidden_from_msal_tool_list(load_tools_module):
+    module = load_tools_module("msal")
+
+    tool_names = {
+        tool.name for tool in asyncio.run(module.mcp._list_tools_middleware())
+    }
+
+    assert not (set(module.TEAMS_TOOL_NAMES) & tool_names)
+
+
+def test_teams_tools_remain_available_for_azure_tool_list(load_tools_module):
+    module = load_tools_module("azure")
+
+    tool_names = {
+        tool.name for tool in asyncio.run(module.mcp._list_tools_middleware())
+    }
+
+    assert set(module.TEAMS_TOOL_NAMES) <= tool_names
+
+
+def test_teams_tools_cannot_be_called_under_msal(load_tools_module):
+    module = load_tools_module("msal")
+
+    with pytest.raises(NotFoundError, match="Unknown tool: list_chat_messages"):
+        asyncio.run(module.mcp._call_tool_mcp("list_chat_messages", {}))

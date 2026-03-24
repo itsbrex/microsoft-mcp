@@ -23,42 +23,51 @@ def _make_raw_email(email_id, subject="Test", body_preview="Hello..."):
 # ---------------------------------------------------------------------------
 
 
+def _make_raw_email_with_body(email_id):
+    """Build a raw Graph email with body content included."""
+    raw = _make_raw_email(email_id)
+    raw["body"] = {"content": "Full email body here", "contentType": "text"}
+    return raw
+
+
 @patch("microsoft_mcp.tools.graph")
-def test_assistant_profile_can_be_enabled_with_env_flag(mock_graph, monkeypatch):
-    """When MICROSOFT_MCP_RESPONSE_PROFILE=assistant, list_emails returns
-    shaped summaries without 'body'."""
+def test_assistant_profile_suppresses_body_even_when_requested(mock_graph, monkeypatch):
+    """When MICROSOFT_MCP_RESPONSE_PROFILE=assistant, list_emails suppresses
+    body even if include_body=True is passed."""
     monkeypatch.setenv("MICROSOFT_MCP_RESPONSE_PROFILE", "assistant")
     from microsoft_mcp.tools import list_emails
 
     mock_graph.request_paginated.return_value = iter([_make_raw_email("e-1")])
 
-    result = list_emails.fn(limit=5)
+    # Explicitly request body, but assistant profile overrides to summary
+    result = list_emails.fn(limit=5, include_body=True)
     assert "body" not in result[0]
 
 
 @patch("microsoft_mcp.tools.graph")
-def test_legacy_profile_is_default(mock_graph, monkeypatch):
-    """Default (no env var set) should behave as legacy -- which currently
-    also uses shapers, so the output is the same shaped summary."""
+def test_legacy_profile_allows_body_when_requested(mock_graph, monkeypatch):
+    """Default legacy profile respects include_body=True."""
     monkeypatch.delenv("MICROSOFT_MCP_RESPONSE_PROFILE", raising=False)
     from microsoft_mcp.tools import list_emails
 
-    mock_graph.request_paginated.return_value = iter([_make_raw_email("e-2")])
+    mock_graph.request_paginated.return_value = iter(
+        [_make_raw_email_with_body("e-2")]
+    )
 
-    result = list_emails.fn(limit=5)
-    # Legacy still works -- summary mode by default (no body)
-    assert "body" not in result[0]
+    result = list_emails.fn(limit=5, include_body=True)
+    assert "body" in result[0]
 
 
 @patch("microsoft_mcp.tools.graph")
 def test_response_profile_parameter_overrides_env(mock_graph, monkeypatch):
-    """An explicit response_profile parameter overrides the env var."""
+    """An explicit response_profile='assistant' overrides legacy env var."""
     monkeypatch.setenv("MICROSOFT_MCP_RESPONSE_PROFILE", "legacy")
     from microsoft_mcp.tools import list_emails
 
     mock_graph.request_paginated.return_value = iter([_make_raw_email("e-3")])
 
-    result = list_emails.fn(limit=5, response_profile="assistant")
+    # Even with legacy env, parameter wins
+    result = list_emails.fn(limit=5, include_body=True, response_profile="assistant")
     assert "body" not in result[0]
     assert result[0]["from"] == "Sender <sender@x.com>"
 
@@ -68,27 +77,32 @@ def test_response_profile_parameter_overrides_env(mock_graph, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def _make_event_with_body():
+    return {
+        "id": "evt-1",
+        "subject": "Standup",
+        "start": {"dateTime": "2026-03-24T09:00:00", "timeZone": "UTC"},
+        "end": {"dateTime": "2026-03-24T09:30:00", "timeZone": "UTC"},
+        "location": {"displayName": "Room A"},
+        "organizer": {
+            "emailAddress": {"name": "Boss", "address": "boss@x.com"}
+        },
+        "body": {"content": "<p>Standup details</p>", "contentType": "html"},
+        "attendees": [
+            {"emailAddress": {"name": "Dev", "address": "dev@x.com"}, "status": {"response": "accepted"}}
+        ],
+    }
+
+
 @patch("microsoft_mcp.tools.graph")
-def test_list_events_respects_assistant_profile(mock_graph, monkeypatch):
+def test_list_events_assistant_suppresses_details(mock_graph, monkeypatch):
+    """Assistant profile forces include_details=False even when True is passed."""
     monkeypatch.setenv("MICROSOFT_MCP_RESPONSE_PROFILE", "assistant")
     from microsoft_mcp.tools import list_events
 
-    mock_graph.request_paginated.return_value = iter(
-        [
-            {
-                "id": "evt-1",
-                "subject": "Standup",
-                "start": {"dateTime": "2026-03-24T09:00:00", "timeZone": "UTC"},
-                "end": {"dateTime": "2026-03-24T09:30:00", "timeZone": "UTC"},
-                "location": {"displayName": "Room A"},
-                "organizer": {
-                    "emailAddress": {"name": "Boss", "address": "boss@x.com"}
-                },
-            }
-        ]
-    )
+    mock_graph.request_paginated.return_value = iter([_make_event_with_body()])
 
-    result = list_events.fn(response_profile="assistant")
+    result = list_events.fn(include_details=True, response_profile="assistant")
     evt = result[0]
     assert "body" not in evt
     assert evt["organizer"] == "Boss <boss@x.com>"

@@ -427,8 +427,12 @@ def list_emails(
         - list_emails(start_date="2024-08-01T00:00:00Z") - Get emails from August 1st, 2024 onwards
         - list_emails(end_date="2024-08-31T23:59:59Z") - Get emails up to August 31st, 2024
     """
+    profile = get_response_profile(response_profile)
+    if profile == "assistant":
+        include_body = False
+
     logger.info(
-        f"list_emails called: folder={folder}, limit={limit}, include_body={include_body}, start_date={start_date}, end_date={end_date}"
+        f"list_emails called: folder={folder}, limit={limit}, include_body={include_body}, start_date={start_date}, end_date={end_date}, profile={profile}"
     )
 
     try:
@@ -607,8 +611,12 @@ def list_events(
         - list_events(days_back=7, days_ahead=7) - Get events from past week to next week
         - list_events(include_details=False) - Get basic event info only for faster and shorter response
     """
+    profile = get_response_profile(response_profile)
+    if profile == "assistant":
+        include_details = False
+
     logger.info(
-        f"list_events called: days_ahead={days_ahead}, days_back={days_back}, include_details={include_details}"
+        f"list_events called: days_ahead={days_ahead}, days_back={days_back}, include_details={include_details}, profile={profile}"
     )
 
     try:
@@ -818,7 +826,9 @@ def list_contacts(
         - list_contacts(limit=100) - Get more contacts
         - Use to find someone's email before sending messages
     """
-    logger.info(f"list_contacts called: limit={limit}")
+    profile = get_response_profile(response_profile)
+
+    logger.info(f"list_contacts called: limit={limit}, profile={profile}")
 
     try:
         params = {"$top": min(limit, 100)}
@@ -1800,8 +1810,12 @@ def list_chat_messages(
         - list_chat_messages(include_body=False) - Get messages without body content for faster response
         - list_chat_messages(start_date="2024-09-01T00:00:00Z") - Get messages from September 1st onwards
     """
+    profile = get_response_profile(response_profile)
+    if profile == "assistant":
+        include_body = False
+
     logger.info(
-        f"list_chat_messages called: chat_id={chat_id}, limit={limit}, include_body={include_body}, start_date={start_date}, end_date={end_date}"
+        f"list_chat_messages called: chat_id={chat_id}, limit={limit}, include_body={include_body}, start_date={start_date}, end_date={end_date}, profile={profile}"
     )
 
     try:

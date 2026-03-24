@@ -1,126 +1,128 @@
 # Code Mode Orchestration for Inbox Triage
 
-This document explains when and how to use Code Mode with this MCP server to orchestrate
-multi-step inbox triage workflows efficiently.
+This document explains how to use the integrated code-mode surface in `microsoft-mcp` for multi-step inbox workflows.
 
 ## Core Principle
 
-The server handles **payload shaping** — trimming raw Microsoft Graph responses so they fit
-within token budgets. Code Mode handles **orchestration** — batching follow-up calls over
-only the items that actually need full hydration.
+The server still handles response shaping. The code-mode layer handles orchestration over the live Microsoft tool registry:
 
-These are separate concerns. Do not conflate them.
+- discovery
+- interface inspection
+- selective hydration
+- local ranking or summarization
 
-## When to Use Code Mode
+Do not use code mode to compensate for raw Graph payload size. Use it after the server has already produced compact summaries.
 
-Use Code Mode when you need to:
+## Public APIs
 
-- Fetch a list of summaries, then hydrate only the selected subset
-- Apply ranking or filtering logic that the server does not expose as a parameter
-- Batch multiple `get_inbox_item_detail` calls and reduce them to a single compact report
-- Chain `list_inbox_items` → `unified_search`/`search_emails` → `get_inbox_item_detail`
-  without passing intermediate full payloads to the model
+The integrated surface exposes these operations:
 
-Do **not** use Code Mode as a workaround for raw Graph payload size. The server already applies
-`response_shaping.py` to every response. If token usage is still too high, check `BudgetHints`
-parameters on the individual tools, not Code Mode.
+- `search_tools(query)` - find relevant Microsoft tools for a task
+- `list_tools()` - list the active, auth-aware tool set
+- `tools_info(tool_names)` - return tool metadata and generated interfaces
+- `get_required_keys_for_tool(tool_name)` - inspect required config or secrets
+- `call_tool_chain(code, timeout?)` - execute sandboxed multi-step code against the active tool set
+- `utcp_codemode_usage` - prompt that teaches the discovery-first workflow
 
 ## Recommended Inbox Triage Flow
 
 ```
-list_inbox_items(limit=20)
-    -> ranked InboxItem summaries (id, kind, title, snippet, score, reason)
+search_tools("inbox triage")
+    -> identify the smallest useful tool set
 
-[optional] unified_search(query="...") or search_emails(query="...")
-    -> narrowed summaries for keyword/sender searches
+list_tools()
+    -> confirm which tools are active for the current auth mode
 
-get_inbox_item_detail(item_id=..., kind=...)   [call for top 2-3 items only]
-    -> full body, participants, action_hints
+tools_info(["list_inbox_items", "get_inbox_item_detail", "search_emails"])
+    -> inspect the generated interfaces
 
-[Code Mode] compute and return triage report
+call_tool_chain(...)
+    -> fetch summaries, hydrate only the top items, and return a compact report
 ```
 
 ### Step 1: list_inbox_items
 
-Returns normalized `InboxItem` summaries ranked by urgency. Fields present on every item:
+Use `list_inbox_items` to get normalized summaries ranked by urgency. Fields present on every item:
 
 | Field | Type | Description |
 |---|---|---|
-| `id` | str | Opaque item identifier (pass to `get_inbox_item_detail`) |
-| `kind` | str | `"email"` or `"event"` |
-| `source_tool` | str | Which Graph API tool produced this item |
+| `id` | str | Opaque item identifier |
+| `kind` | str | `email` or `event` |
+| `source_tool` | str | Which Graph API tool produced the item |
 | `title` | str | Subject line or event title |
 | `snippet` | str | Short preview of the body |
 | `participants` | list[str] | Sender or organizer + key recipients |
-| `when` | str or absent | ISO timestamp (absent if unknown) |
-| `state` | str | `"unread"`, `"read"`, `"flagged"`, etc. |
-| `score` | float | Urgency score (higher = more urgent) |
+| `when` | str or absent | ISO timestamp if known |
+| `state` | str | `unread`, `read`, `flagged`, etc. |
+| `score` | float | Urgency score |
 | `reason` | str | Human-readable explanation of score |
 | `action_hints` | list[str] | Suggested next actions |
-| `web_url` | str | Deep link to item in Outlook/Teams |
+| `web_url` | str | Deep link to the item |
 
-### Step 2: unified_search or search_emails (optional)
+### Step 2: Optional Narrowing
 
-Use `unified_search` or `search_emails` when the user has a specific keyword, sender, or subject
-to narrow results before hydrating. Avoid calling `get_inbox_item_detail` on items that have not
-passed a relevance filter.
+Use `search_emails` or `unified_search` when the user has a specific keyword, sender, or subject.
+Use `list_tools` and `tools_info` when you need to verify whether a tool is active or what arguments it expects.
 
-### Step 3: get_inbox_item_detail
+### Step 3: Hydrate Only the Top Items
 
-Only call this for items the triage logic has selected. Hydrating 10+ items is expensive.
-The typical pattern is top 3 by score, unless the user specifies otherwise.
+Only call `get_inbox_item_detail` for the items selected by the triage logic. Hydrating everything defeats the point of code mode.
 
-### Step 4: Compile the report in Code Mode
+### Step 4: Compile the Report in Code Mode
 
-Code Mode receives the detail payloads and reduces them to a compact triage report that fits
-in a single assistant message. The report should include:
+The report should be compact and decision-oriented:
 
-- Item title and kind
-- One-sentence summary of what needs to happen
-- Suggested action (reply, accept, delegate, archive)
-- Any deadlines or time-sensitive signals
+- item title and kind
+- one-sentence summary
+- suggested action
+- any deadline or time-sensitive signal
 
-## MCP Server Registration
+## Example
 
-To use this server from a Code Mode script, register it in your MCP configuration:
+```python
+async def triage_inbox(mcp):
+    # Discovery first
+    matches = await mcp.search_tools("inbox triage and selective hydration")
+    print(matches)
 
-```json
-{
-  "mcpServers": {
-    "microsoft-mcp": {
-      "command": "/path/to/uv",
-      "args": [
-        "run", "--python", "3.13",
-        "--project", "/path/to/microsoft-mcp",
-        "microsoft-mcp"
-      ],
-      "env": {
-        "MICROSOFT_MCP_AUTH_METHOD": "msal",
-        "MICROSOFT_MCP_ACCOUNT_ID": "your-email@example.com",
-        "MICROSOFT_MCP_CLIENT_ID": "d3590ed6-52b3-4102-aeff-aad2292ab01c"
-      }
-    }
-  }
+    # Inspect the active contract
+    info = await mcp.tools_info([
+        "list_inbox_items",
+        "get_inbox_item_detail",
+        "search_emails",
+    ])
+    print(info)
+
+    result = await mcp.call_tool_chain(
+        """
+summary = microsoft.list_inbox_items({"limit": 20})
+top_items = summary["items"][:3]
+details = [
+    microsoft.get_inbox_item_detail({"item_id": item["id"], "kind": item["kind"]})
+    for item in top_items
+]
+
+return {
+    "titles": [item["title"] for item in top_items],
+    "actions": [
+        detail["action_hints"][0] if detail["action_hints"] else "review"
+        for detail in details
+    ],
 }
+"""
+    )
+
+    return result
 ```
 
 ## What Code Mode Is Not
 
-- It is **not** a substitute for server-side response shaping. If raw Graph payloads are too
-  large, configure `BudgetHints` or `ResponseProfile` parameters on the tool call, not in
-  Code Mode.
-- It is **not** required for simple single-item lookups. Use `get_inbox_item_detail` directly
-  when you already know the item ID.
-- It is **not** required for single-step listing. `list_inbox_items` is already optimized for
-  direct assistant use.
+- It is not a substitute for server-side response shaping.
+- It is not required for single-item lookups.
+- It is not required for single-step listing.
 
-## Full Example
+## Related Files
 
-See [`examples/code-mode/inbox_triage.ts`](../examples/code-mode/inbox_triage.ts) for a
-complete TypeScript script that:
-
-1. Registers this MCP server
-2. Calls `list_inbox_items` for ranked summaries
-3. Optionally narrows with `unified_search` or `search_emails`
-4. Hydrates the top 3 items with `get_inbox_item_detail`
-5. Returns a compact triage report
+- [`README.md`](/Users/hack/github/microsoft-mcp/README.md)
+- [`IMPLEMENTATION.md`](/Users/hack/github/microsoft-mcp/IMPLEMENTATION.md)
+- [`examples/code-mode/inbox_triage.py`](/Users/hack/github/microsoft-mcp/examples/code-mode/inbox_triage.py)

@@ -1,4 +1,6 @@
+import asyncio
 import base64
+import concurrent.futures
 import datetime as dt
 import json
 import logging
@@ -22,6 +24,7 @@ from .response_shaping import (
 from .search_cache import get_global_cache
 from .inbox_models import InboxItem
 from .inbox_ranking import rank_items
+from .code_mode import CodeModeRuntime, build_code_mode_runtime
 from markitdown import MarkItDown, StreamInfo
 from io import BytesIO
 from sys import stderr
@@ -100,6 +103,42 @@ else:
 graph.set_auth_instance(auth)
 
 markitdown = MarkItDown(enable_builtins=True)
+
+CODE_MODE_TOOL_NAMES = (
+    "search_tools",
+    "list_tools",
+    "tools_info",
+    "get_required_keys_for_tool",
+    "call_tool_chain",
+)
+
+_code_mode_runtime: CodeModeRuntime | None = None
+
+
+def _run_async(coro: Any) -> Any:
+    """Run an async coroutine from sync FastMCP tool functions."""
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(lambda: asyncio.run(coro))
+        return future.result()
+
+
+def _get_code_mode_runtime() -> CodeModeRuntime:
+    global _code_mode_runtime
+
+    if _code_mode_runtime is None:
+        _code_mode_runtime = _run_async(
+            build_code_mode_runtime(mcp, excluded_tools=CODE_MODE_TOOL_NAMES)
+        )
+    else:
+        _run_async(_code_mode_runtime.refresh())
+
+    return _code_mode_runtime
 
 FOLDERS = {
     k.casefold(): v
@@ -362,6 +401,70 @@ def prepare_work_day():
     You can use tools to get information about their calendar, emails, contacts and availability accessing the MS Graph API.
     
     """
+
+
+@mcp.prompt
+def utcp_codemode_usage():
+    """Guide assistants toward discovery-first code-mode workflows."""
+
+    return CodeModeRuntime.AGENT_PROMPT_TEMPLATE
+
+
+@mcp.tool
+def list_tools() -> dict[str, Any]:
+    """List the active Microsoft MCP tool registry for integrated code-mode workflows.
+
+    Returns the auth-aware business tools that are available inside the
+    `microsoft.<tool>()` namespace used by `call_tool_chain`.
+    """
+
+    runtime = _get_code_mode_runtime()
+    tools = _run_async(runtime.list_tools())
+    return {"namespace": runtime.namespace, "count": len(tools), "tools": tools}
+
+
+@mcp.tool
+def search_tools(task_description: str, limit: int = 10) -> dict[str, Any]:
+    """Search the active Microsoft tool registry using a natural-language query."""
+
+    runtime = _get_code_mode_runtime()
+    tools = _run_async(runtime.search_tools(task_description, limit=limit))
+    return {
+        "query": task_description,
+        "namespace": runtime.namespace,
+        "count": len(tools),
+        "tools": tools,
+    }
+
+
+@mcp.tool
+def tools_info(tool_names: list[str]) -> dict[str, Any]:
+    """Return detailed metadata and generated Python interfaces for selected tools."""
+
+    runtime = _get_code_mode_runtime()
+    tools = _run_async(runtime.tools_info(tool_names))
+    return {"namespace": runtime.namespace, "count": len(tools), "tools": tools}
+
+
+@mcp.tool
+def get_required_keys_for_tool(tool_name: str) -> dict[str, Any]:
+    """Return the required configuration keys for a code-mode-visible tool."""
+
+    runtime = _get_code_mode_runtime()
+    return _run_async(runtime.get_required_keys_for_tool(tool_name))
+
+
+@mcp.tool
+def call_tool_chain(code: str, timeout: float = 30.0) -> dict[str, Any]:
+    """Execute a multi-step Python workflow against the active Microsoft tool namespace.
+
+    The sandbox exposes the active business tools as `microsoft.<tool>()`,
+    generated interfaces through `__interfaces`, and per-tool interface lookup
+    via `__get_tool_interface(name)`.
+    """
+
+    runtime = _get_code_mode_runtime()
+    return _run_async(runtime.call_tool_chain(code, timeout=timeout))
 
 
 @mcp.tool

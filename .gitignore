@@ -39,6 +39,7 @@ htmlcov/
 *.swo
 *~
 .specstory/
+tmp/
 
 creds/
 mcp-tool-responses/

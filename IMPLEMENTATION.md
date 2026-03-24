@@ -352,7 +352,7 @@ src/microsoft_mcp/
 ├── auth_msal.py         # MSAL device code flow authentication (CLI/headless)
 ├── auth_base.py         # AuthProvider protocol definition
 ├── graph.py             # Microsoft Graph API client
-├── tools.py             # MCP tool implementations (30+ tools)
+├── tools.py             # MCP tool implementations (29 tools)
 ├── response_shaping.py  # ResponseProfile, BudgetHints, type-specific shapers
 ├── inbox_models.py      # InboxItem dataclass (normalized cross-service item)
 ├── inbox_ranking.py     # rank_items() scoring heuristics

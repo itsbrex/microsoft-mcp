@@ -52,7 +52,7 @@ Returns normalized `InboxItem` summaries ranked by urgency. Fields present on ev
 | `title` | str | Subject line or event title |
 | `snippet` | str | Short preview of the body |
 | `participants` | list[str] | Sender or organizer + key recipients |
-| `when` | str | ISO timestamp |
+| `when` | str or absent | ISO timestamp (absent if unknown) |
 | `state` | str | `"unread"`, `"read"`, `"flagged"`, etc. |
 | `score` | float | Urgency score (higher = more urgent) |
 | `reason` | str | Human-readable explanation of score |

@@ -97,6 +97,9 @@ uvx ruff check --fix --unsafe-fixes .
 - `MICROSOFT_MCP_TOKENS_DIR` (optional) - token storage directory (defaults to `~/.config/microsoft-mcp/tokens/`)
 - `MICROSOFT_MCP_ACCOUNT_ID` (optional) - account identifier for token file naming (defaults to "default", typically set to user's email)
 
+**Response Shaping:**
+- `MICROSOFT_MCP_RESPONSE_PROFILE` (optional) - `legacy` (default) or `assistant`. Controls response shaping for list/search tools. Individual tool calls can override via `response_profile` parameter.
+
 ## MCP Configuration Format
 
 For manual MCP server configuration (Cursor, Claude Desktop, etc.), use the following formats:

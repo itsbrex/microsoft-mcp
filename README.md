@@ -244,6 +244,7 @@ uv run authenticate.py
 - `MICROSOFT_MCP_TENANT_ID`: Optional Azure AD tenant ID override
 - `MICROSOFT_MCP_TOKENS_DIR`: Token storage directory (defaults to `~/.config/microsoft-mcp/tokens/`)
 - `MICROSOFT_MCP_ACCOUNT_ID`: Account identifier used for token files, cached-account selection, and optional authority lookup
+- `MICROSOFT_MCP_RESPONSE_PROFILE`: Response shaping profile (`legacy` or `assistant`, default: `legacy`). See [Response Shaping](#response-shaping) below.
 
 If `MICROSOFT_MCP_TENANT_ID` is not set and `MICROSOFT_MCP_ACCOUNT_ID` matches an existing `outlook-creds` profile, the MSAL auth provider will reuse that profile's tenant-specific authority. This avoids tenant-specific device-code failures such as `AADSTS65002` on fresh login.
 
@@ -254,6 +255,30 @@ export MICROSOFT_MCP_AUTH_METHOD=msal
 export MICROSOFT_MCP_ACCOUNT_ID="your-email@example.com"
 export MICROSOFT_MCP_CLIENT_ID="d3590ed6-52b3-4102-aeff-aad2292ab01c"
 uv run microsoft-mcp
+```
+
+### Response Shaping
+
+The server shapes Microsoft Graph API responses to reduce token usage when tools are called by AI assistants. You can control this behavior with the `MICROSOFT_MCP_RESPONSE_PROFILE` environment variable:
+
+| Value | Behavior |
+|---|---|
+| `legacy` (default) | Current behavior. List/search tools return shaped summaries; detail tools return shaped details. Safe for existing integrations. |
+| `assistant` | Optimized for AI assistant workflows. Same shaping as `legacy` in the current release, but signals intent to adopt future assistant-optimized defaults. |
+
+**Per-call override:** The `list_emails`, `list_events`, `list_contacts`, and `list_chat_messages` tools accept an optional `response_profile` parameter (`"auto"`, `"legacy"`, or `"assistant"`) that overrides the environment variable for that single call. The default value `"auto"` defers to the env var.
+
+**Inbox tools** (`list_inbox_items`, `get_inbox_item_detail`) always use assistant-shaped responses regardless of the profile setting.
+
+**Token budgets:** Shaped summary responses are designed to stay within these approximate size budgets:
+- `list_emails(limit=10)` -- under 12k characters
+- `list_events(limit=10)` -- under 8k characters
+- `list_contacts(limit=20)` -- under 10k characters
+- `list_chat_messages(limit=10)` -- under 12k characters
+
+```bash
+# Opt in to assistant profile
+export MICROSOFT_MCP_RESPONSE_PROFILE=assistant
 ```
 
 ### 4. Claude Desktop Configuration

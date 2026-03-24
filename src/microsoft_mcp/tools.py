@@ -49,6 +49,22 @@ if not logging.getLogger().hasHandlers():
 
 mcp = FastMCP("microsoft-graph-mcp")
 
+
+def get_response_profile(override: str = "auto") -> str:
+    """Return the active response profile.
+
+    Resolution order:
+    1. *override* parameter (if not ``"auto"``)
+    2. ``MICROSOFT_MCP_RESPONSE_PROFILE`` env var
+    3. ``"legacy"`` (safe default for first release)
+
+    Valid values: ``"legacy"`` | ``"assistant"``
+    """
+    if override and override != "auto":
+        return override.lower()
+    return os.getenv("MICROSOFT_MCP_RESPONSE_PROFILE", "legacy").lower()
+
+
 # Create authentication instance based on MICROSOFT_MCP_AUTH_METHOD environment variable
 # Supported methods: "azure" (default), "msal"
 auth_method = os.getenv("MICROSOFT_MCP_AUTH_METHOD", "azure").lower()
@@ -381,6 +397,7 @@ def list_emails(
     include_body: bool = False,
     start_date: str | None = None,
     end_date: str | None = None,
+    response_profile: str = "auto",
 ) -> list[dict[str, Any]]:
     """List emails from a specified folder in the user's mailbox.
 
@@ -395,6 +412,7 @@ def list_emails(
         include_body: Whether to include email body content (affects response size)
         start_date: Optional start date in ISO format (UTC timezone, e.g., "2024-09-01T00:00:00Z") to filter emails from this date onwards
         end_date: Optional end date in ISO format (UTC timezone, e.g., "2024-09-30T23:59:59Z") to filter emails up to this date
+        response_profile: Response shaping profile ("auto", "legacy", or "assistant"). "auto" defers to MICROSOFT_MCP_RESPONSE_PROFILE env var.
 
     Returns:
         List of email objects containing id, subject, sender, recipients, date, attachments info,
@@ -564,6 +582,7 @@ def list_events(
     days_back: int = 0,
     max_body_length: int = 500,
     include_details: bool = False,
+    response_profile: str = "auto",
 ) -> list[dict[str, Any]]:
     """List calendar events within a specified date range.
 
@@ -574,6 +593,7 @@ def list_events(
         days_ahead: Number of days into the future to search (default 7)
         days_back: Number of days into the past to search (default 0 = today onwards)
         include_details: Whether to include full event details like body, attendees, online meeting info
+        response_profile: Response shaping profile ("auto", "legacy", or "assistant"). "auto" defers to MICROSOFT_MCP_RESPONSE_PROFILE env var.
 
     Returns:
         List of calendar event objects containing:
@@ -773,7 +793,9 @@ def check_availability(
 
 
 @mcp.tool
-def list_contacts(limit: int = 50) -> list[dict[str, Any]]:
+def list_contacts(
+    limit: int = 50, response_profile: str = "auto"
+) -> list[dict[str, Any]]:
     """List contacts from the user's address book.
 
     Retrieves personal contacts with names, email addresses, phone numbers, and other details.
@@ -781,6 +803,7 @@ def list_contacts(limit: int = 50) -> list[dict[str, Any]]:
 
     Args:
         limit: Maximum number of contacts to retrieve (1-100, defaults to 50)
+        response_profile: Response shaping profile ("auto", "legacy", or "assistant"). "auto" defers to MICROSOFT_MCP_RESPONSE_PROFILE env var.
 
     Returns:
         List of contact objects containing:
@@ -1742,6 +1765,7 @@ def list_chat_messages(
     include_body: bool = True,
     start_date: str | None = None,
     end_date: str | None = None,
+    response_profile: str = "auto",
 ) -> list[dict[str, Any]]:
     """List recent chat messages from Teams chats.
 
@@ -1759,6 +1783,7 @@ def list_chat_messages(
         include_body: Whether to include message body content (affects response size)
         start_date: Optional start date in ISO format (UTC timezone, e.g., "2024-09-01T00:00:00Z") to filter messages from this date onwards
         end_date: Optional end date in ISO format (UTC timezone, e.g., "2024-09-30T23:59:59Z") to filter messages up to this date
+        response_profile: Response shaping profile ("auto", "legacy", or "assistant"). "auto" defers to MICROSOFT_MCP_RESPONSE_PROFILE env var.
 
     Returns:
         List of message objects containing:

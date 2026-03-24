@@ -2,7 +2,6 @@
 Integration tests for Microsoft MCP modules.
 """
 
-import pytest
 from unittest.mock import Mock, patch
 from src.microsoft_mcp import auth, graph
 
@@ -125,9 +124,9 @@ class TestModuleIntegration:
 
         actual_params = list(sig.parameters.keys())
         for param in expected_params:
-            assert (
-                param in actual_params
-            ), f"Parameter '{param}' missing from unified_search signature"
+            assert param in actual_params, (
+                f"Parameter '{param}' missing from unified_search signature"
+            )
 
     def test_unified_search_entity_validation(self):
         """Test that unified_search validates entity types correctly."""
@@ -175,9 +174,7 @@ class TestModuleIntegration:
         }
 
         # Updated function signature: no minimal_response parameter
-        result = _process_search_hit(
-            mock_hit, include_body=False, body_max_length=1000
-        )
+        result = _process_search_hit(mock_hit, include_body=False, body_max_length=1000)
 
         assert result is not None
         assert result["kind"] == "message"

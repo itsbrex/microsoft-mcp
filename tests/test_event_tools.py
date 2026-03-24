@@ -13,7 +13,9 @@ def test_list_events_returns_shaped_summaries(mock_graph):
                 "start": {"dateTime": "2026-03-24T09:00:00", "timeZone": "UTC"},
                 "end": {"dateTime": "2026-03-24T09:30:00", "timeZone": "UTC"},
                 "location": {"displayName": "Teams"},
-                "organizer": {"emailAddress": {"name": "Boss", "address": "boss@x.com"}},
+                "organizer": {
+                    "emailAddress": {"name": "Boss", "address": "boss@x.com"}
+                },
                 "@odata.etag": "junk",
                 "seriesMasterId": "series-1",
             }
@@ -43,7 +45,9 @@ def test_get_event_extracts_teams_meeting_info(mock_graph):
             "contentType": "html",
             "content": '<a href="https://teams.microsoft.com/l/meetup-join/abc123">Join</a>',
         },
-        "onlineMeeting": {"joinUrl": "https://teams.microsoft.com/l/meetup-join/abc123"},
+        "onlineMeeting": {
+            "joinUrl": "https://teams.microsoft.com/l/meetup-join/abc123"
+        },
         "attendees": [
             {
                 "emailAddress": {"name": "A", "address": "a@x.com"},
@@ -55,7 +59,10 @@ def test_get_event_extracts_teams_meeting_info(mock_graph):
 
     result = get_event.fn("evt-2")
     assert "meeting" in result
-    assert result["meeting"]["join_url"] == "https://teams.microsoft.com/l/meetup-join/abc123"
+    assert (
+        result["meeting"]["join_url"]
+        == "https://teams.microsoft.com/l/meetup-join/abc123"
+    )
     assert "@odata.context" not in result
     assert result["attendees"][0]["name"] == "A <a@x.com>"
     assert result["attendees"][0]["status"] == "accepted"

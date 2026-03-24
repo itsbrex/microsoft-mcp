@@ -166,7 +166,9 @@ def test_shape_event_detail_extracts_teams_meeting():
             "contentType": "html",
             "content": '<a href="https://teams.microsoft.com/l/meetup-join/abc123">Join</a>',
         },
-        "onlineMeeting": {"joinUrl": "https://teams.microsoft.com/l/meetup-join/abc123"},
+        "onlineMeeting": {
+            "joinUrl": "https://teams.microsoft.com/l/meetup-join/abc123"
+        },
         "attendees": [
             {
                 "emailAddress": {"name": "A", "address": "a@x.com"},
@@ -176,7 +178,10 @@ def test_shape_event_detail_extracts_teams_meeting():
     }
     shaped = shape_event_detail(raw)
     assert "meeting" in shaped
-    assert shaped["meeting"]["join_url"] == "https://teams.microsoft.com/l/meetup-join/abc123"
+    assert (
+        shaped["meeting"]["join_url"]
+        == "https://teams.microsoft.com/l/meetup-join/abc123"
+    )
     assert shaped["attendees"] == [{"name": "A <a@x.com>", "status": "accepted"}]
 
 
@@ -196,7 +201,9 @@ def test_shape_contact_summary_separates_unresolved_addresses():
         "displayName": "Someone",
         "emailAddresses": [
             {"address": "good@smtp.com"},
-            {"address": "/o=ExchangeLabs/ou=Exchange Administrative Group/cn=Recipients/cn=abc"},
+            {
+                "address": "/o=ExchangeLabs/ou=Exchange Administrative Group/cn=Recipients/cn=abc"
+            },
         ],
     }
     shaped = shape_contact_summary(raw)

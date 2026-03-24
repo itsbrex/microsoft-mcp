@@ -3,9 +3,7 @@ Unit tests for Microsoft MCP tools module - simplified version.
 Tests focus on core logic without directly accessing decorated functions.
 """
 
-import pytest
-from unittest.mock import Mock, patch
-from src.microsoft_mcp.tools import FOLDERS
+from unittest.mock import patch
 
 
 class TestToolsBehavior:
@@ -15,7 +13,6 @@ class TestToolsBehavior:
     def test_user_details_logic_success(self, mock_request):
         """Test user details retrieval logic through import simulation."""
         # Import the module to test the code path
-        import src.microsoft_mcp.tools
 
         mock_user_data = {
             "id": "12345",

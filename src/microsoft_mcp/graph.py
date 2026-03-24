@@ -344,7 +344,7 @@ def search_query(
         "site",
         "drive",
         "chatMessage",
-        "person"
+        "person",
     }
 
     # Filter to only valid entity types

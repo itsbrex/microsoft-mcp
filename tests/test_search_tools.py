@@ -8,7 +8,11 @@ def test_unified_search_defaults_to_inbox_entities(mock_graph):
     mock_graph.request.return_value = {"value": []}
 
     result = unified_search.fn("AI pilot")
-    assert result["summary"]["entity_types_searched"] == ["message", "event", "chatMessage"]
+    assert result["summary"]["entity_types_searched"] == [
+        "message",
+        "event",
+        "chatMessage",
+    ]
 
 
 @patch("microsoft_mcp.tools.graph")
@@ -29,7 +33,12 @@ def test_unified_search_results_are_normalized(mock_graph):
                                     "@odata.type": "#microsoft.graph.message",
                                     "id": "msg-1",
                                     "subject": "Budget Q4",
-                                    "from": {"emailAddress": {"name": "JP", "address": "jp@x.com"}},
+                                    "from": {
+                                        "emailAddress": {
+                                            "name": "JP",
+                                            "address": "jp@x.com",
+                                        }
+                                    },
                                     "receivedDateTime": "2026-03-23T10:00:00Z",
                                     "conversationId": "conv-1",
                                 },

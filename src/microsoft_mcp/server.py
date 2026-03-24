@@ -30,7 +30,10 @@ def main() -> None:
         ),
         file=sys.stderr,
     )
-    if actual_auth_method != configured_auth_method or auth_method != configured_auth_method:
+    if (
+        actual_auth_method != configured_auth_method
+        or auth_method != configured_auth_method
+    ):
         print(
             (
                 "Error: authentication mode mismatch during startup. "

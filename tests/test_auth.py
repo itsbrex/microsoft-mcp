@@ -5,7 +5,7 @@ Unit tests for Microsoft Graph authentication module.
 import os
 import json
 import pytest
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
 from pathlib import Path
 from azure.identity import AuthenticationRecord
 from azure.core.credentials import AccessToken
@@ -103,7 +103,7 @@ class TestAzureAuthentication:
         mock_credential_class.return_value = mock_credential
 
         auth = AzureAuthentication()
-        credential = auth.get_credential()
+        auth.get_credential()
 
         call_args = mock_credential_class.call_args[1]
         assert call_args["client_id"] == "test-client-id"
@@ -254,7 +254,7 @@ class TestAzureAuthentication:
 
         custom_scopes = ["User.Read", "Mail.Read"]
         auth = AzureAuthentication()
-        client = auth.get_graph_client(scopes=custom_scopes)
+        auth.get_graph_client(scopes=custom_scopes)
 
         mock_graph_client_class.assert_called_once_with(
             credentials=mock_credential, scopes=custom_scopes

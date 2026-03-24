@@ -31,7 +31,13 @@ class BudgetHints:
 # Global Graph payload cleanup
 # ---------------------------------------------------------------------------
 
-ODATA_KEYS = {"@odata.context", "@odata.etag", "@odata.type", "@odata.id", "@odata.count"}
+ODATA_KEYS = {
+    "@odata.context",
+    "@odata.etag",
+    "@odata.type",
+    "@odata.id",
+    "@odata.count",
+}
 NOISE_KEYS = {
     "changeKey",
     "parentFolderId",
@@ -101,7 +107,9 @@ def _extract_teams_join_url(event: dict[str, Any]) -> str | None:
         return om["joinUrl"]
     body = event.get("body", {})
     content = body.get("content", "")
-    m = re.search(r'href="(https://teams\.microsoft\.com/l/meetup-join/[^"]+)"', content)
+    m = re.search(
+        r'href="(https://teams\.microsoft\.com/l/meetup-join/[^"]+)"', content
+    )
     return m.group(1) if m else None
 
 
@@ -339,7 +347,11 @@ def shape_message_detail(raw: dict[str, Any]) -> dict[str, Any]:
 
     if raw.get("attachments"):
         shaped["attachments"] = [
-            {"id": a.get("id"), "name": a.get("name"), "contentType": a.get("contentType")}
+            {
+                "id": a.get("id"),
+                "name": a.get("name"),
+                "contentType": a.get("contentType"),
+            }
             for a in raw["attachments"]
         ]
 

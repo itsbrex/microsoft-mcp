@@ -50,9 +50,7 @@ def test_legacy_profile_allows_body_when_requested(mock_graph, monkeypatch):
     monkeypatch.delenv("MICROSOFT_MCP_RESPONSE_PROFILE", raising=False)
     from microsoft_mcp.tools import list_emails
 
-    mock_graph.request_paginated.return_value = iter(
-        [_make_raw_email_with_body("e-2")]
-    )
+    mock_graph.request_paginated.return_value = iter([_make_raw_email_with_body("e-2")])
 
     result = list_emails.fn(limit=5, include_body=True)
     assert "body" in result[0]
@@ -84,12 +82,13 @@ def _make_event_with_body():
         "start": {"dateTime": "2026-03-24T09:00:00", "timeZone": "UTC"},
         "end": {"dateTime": "2026-03-24T09:30:00", "timeZone": "UTC"},
         "location": {"displayName": "Room A"},
-        "organizer": {
-            "emailAddress": {"name": "Boss", "address": "boss@x.com"}
-        },
+        "organizer": {"emailAddress": {"name": "Boss", "address": "boss@x.com"}},
         "body": {"content": "<p>Standup details</p>", "contentType": "html"},
         "attendees": [
-            {"emailAddress": {"name": "Dev", "address": "dev@x.com"}, "status": {"response": "accepted"}}
+            {
+                "emailAddress": {"name": "Dev", "address": "dev@x.com"},
+                "status": {"response": "accepted"},
+            }
         ],
     }
 
@@ -126,7 +125,7 @@ def test_list_contacts_always_uses_shaped_summary(mock_graph, monkeypatch):
                 "displayName": "Alice",
                 "emailAddresses": [{"address": "alice@x.com"}],
                 "businessPhones": ["+1234"],
-                "@odata.etag": "W/\"etag1\"",
+                "@odata.etag": 'W/"etag1"',
                 "changeKey": "ck1",
             }
         ]

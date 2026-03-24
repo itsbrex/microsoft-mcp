@@ -77,7 +77,9 @@ def _load_outlook_creds_account_metadata(
         return None
 
     config_root = Path(
-        os.getenv("OUTLOOK_CREDS_CONFIG_DIR", str(Path.home() / "config" / "outlook-creds"))
+        os.getenv(
+            "OUTLOOK_CREDS_CONFIG_DIR", str(Path.home() / "config" / "outlook-creds")
+        )
     )
     account_info_path = (
         config_root

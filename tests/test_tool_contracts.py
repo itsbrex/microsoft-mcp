@@ -41,7 +41,13 @@ def test_check_availability_returns_compact_schedule(mock_graph):
                         }
                     ],
                     "workingHours": {
-                        "daysOfWeek": ["monday", "tuesday", "wednesday", "thursday", "friday"],
+                        "daysOfWeek": [
+                            "monday",
+                            "tuesday",
+                            "wednesday",
+                            "thursday",
+                            "friday",
+                        ],
                         "startTime": "09:00:00",
                         "endTime": "17:00:00",
                     },

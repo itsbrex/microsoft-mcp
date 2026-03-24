@@ -2,7 +2,7 @@
 
 import os
 import pytest
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
 import httpx
 
 from src.microsoft_mcp.graph import (
@@ -32,7 +32,9 @@ class TestGraphModule:
 
     @patch("src.microsoft_mcp.graph.load_dotenv")
     @patch("src.microsoft_mcp.auth.AzureAuthentication")
-    def test_get_auth_instance_creates_default(self, mock_auth_class, _mock_load_dotenv):
+    def test_get_auth_instance_creates_default(
+        self, mock_auth_class, _mock_load_dotenv
+    ):
         """Test that get_auth_instance uses the default Azure auth when env is unset."""
         # Reset global auth instance
         import src.microsoft_mcp.graph as graph_module

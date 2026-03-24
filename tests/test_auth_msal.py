@@ -5,7 +5,7 @@ import os
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import patch, MagicMock
 
 import pytest
 
@@ -13,8 +13,6 @@ from src.microsoft_mcp.auth_msal import (
     MSALRefreshTokenAuth,
     MICROSOFT_OFFICE_CLIENT_ID,
     DEFAULT_TENANT_ID,
-    DEFAULT_SCOPES,
-    TOKEN_EXPIRY_BUFFER_SECONDS,
 )
 from src.microsoft_mcp.auth_base import AuthProvider
 
@@ -33,7 +31,10 @@ class TestMSALRefreshTokenAuthInit:
                 assert auth.client_id == MICROSOFT_OFFICE_CLIENT_ID
                 assert auth.tenant_id == DEFAULT_TENANT_ID
                 assert auth.account_identifier == "default"
-                assert auth.authority == f"https://login.microsoftonline.com/{DEFAULT_TENANT_ID}"
+                assert (
+                    auth.authority
+                    == f"https://login.microsoftonline.com/{DEFAULT_TENANT_ID}"
+                )
                 assert auth._msal_app is None
 
     def test_init_custom_values(self):
@@ -144,7 +145,7 @@ class TestMSALRefreshTokenAuthInit:
         """Test that initialization creates the tokens directory."""
         with tempfile.TemporaryDirectory() as tmpdir:
             tokens_dir = Path(tmpdir) / "nested" / "tokens"
-            auth = MSALRefreshTokenAuth(tokens_dir=tokens_dir)
+            MSALRefreshTokenAuth(tokens_dir=tokens_dir)
 
             assert tokens_dir.exists()
             assert tokens_dir.is_dir()

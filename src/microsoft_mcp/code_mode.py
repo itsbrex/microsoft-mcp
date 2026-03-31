@@ -32,10 +32,11 @@ import logging
 import os
 import re
 import textwrap
+import warnings
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import Any, Literal
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +74,7 @@ Python code with direct access to the live tool registry.
 ### 1. Discover tools first
 - Use `search_tools()` to find relevant tools.
 - Use `list_tools()` to inspect the active registry.
-- Use `tools_info()` or `__interfaces` to understand exact contracts.
+- Use `tools_info()` or `interfaces` to understand exact contracts.
 
 ### 2. Execute code in one pass
 - Use `microsoft.<tool>(...)` for tool calls.
@@ -100,12 +101,15 @@ Python code with direct access to the live tool registry.
         default_timeout: float = 30.0,
         memory_limit: int | None = 128,
         excluded_tools: Sequence[str] = (),
+        tool_provider: Callable[[], Sequence[Any] | Awaitable[Sequence[Any]]]
+        | None = None,
     ) -> None:
         self._mcp = mcp
         self._namespace = namespace
         self._default_timeout = default_timeout
         self._memory_limit = memory_limit
         self._excluded_tools = frozenset(excluded_tools)
+        self._tool_provider = tool_provider
         self._tool_cache: dict[str, Any] = {}
         self._current_registry: list[Any] = []
         self._tool_summaries: list[CodeModeToolSummary] = []
@@ -152,7 +156,11 @@ Python code with direct access to the live tool registry.
             summary, detail = self._build_tool_metadata(tool)
             summaries.append(summary)
             details[summary.name] = detail
-            setattr(namespace, self._sanitize_identifier(summary.name), self._make_tool_wrapper(summary.name))
+            setattr(
+                namespace,
+                self._sanitize_identifier(summary.name),
+                self._make_tool_wrapper(summary.name),
+            )
 
         self._tool_summaries = summaries
         self._tool_details = details
@@ -293,14 +301,36 @@ Python code with direct access to the live tool registry.
 
         timeout = self._default_timeout if timeout is None else timeout
         sandbox = self._build_sandbox()
-        sandbox["__interfaces"] = await self.get_interfaces()
-        sandbox["__available_tools"] = [tool.name for tool in self._tool_summaries]
-        sandbox["__availableTools"] = [tool.access_pattern for tool in self._tool_summaries]
-        sandbox["__get_tool_interface"] = (
-            lambda name: self._resolve_detail(name).python_interface
-            if self._resolve_detail(name)
-            else None
-        )
+        interfaces = await self.get_interfaces()
+        available_tools = [tool.name for tool in self._tool_summaries]
+        available_access_patterns = [
+            tool.access_pattern for tool in self._tool_summaries
+        ]
+        interface_map = self._build_interface_lookup_map()
+        interface_map_json = json.dumps(interface_map, sort_keys=True)
+
+        def get_tool_interface(name: str) -> str | None:
+            detail = self._resolve_detail(name)
+            return detail.python_interface if detail else None
+
+        # Preferred names for RestrictedPython user code.
+        sandbox["interfaces"] = interfaces
+        sandbox["available_tools"] = available_tools
+        sandbox["availableTools"] = available_access_patterns
+        sandbox["get_tool_interface"] = get_tool_interface
+        sandbox["getToolInterface"] = get_tool_interface
+        sandbox["interface_map"] = interface_map
+        sandbox["interface_map_json"] = interface_map_json
+        sandbox["interfaceMapJson"] = interface_map_json
+
+        # Legacy aliases (kept for parity with code-mode conventions in non-Restricted environments).
+        sandbox["__interfaces"] = interfaces
+        sandbox["__available_tools"] = available_tools
+        sandbox["__availableTools"] = available_access_patterns
+        sandbox["__get_tool_interface"] = get_tool_interface
+        sandbox["__getToolInterface"] = get_tool_interface
+        sandbox["__interface_map_json"] = interface_map_json
+        sandbox["__interfaceMapJson"] = interface_map_json
         sandbox[self._namespace] = self._tool_namespace
 
         wrapped = self._wrap_user_code(code)
@@ -332,18 +362,25 @@ Python code with direct access to the live tool registry.
                 "result": result,
                 "logs": logs,
                 "trace": trace,
-                "interfaces": sandbox["__interfaces"],
+                "interfaces": interfaces,
+                "interface_map_json": interface_map_json,
+                "available_tools": available_tools,
+                "available_access_patterns": available_access_patterns,
             }
         except asyncio.TimeoutError as exc:
             logs.append(f"[ERROR] Code execution timed out after {timeout} seconds.")
-            raise TimeoutError(f"Code execution timed out after {timeout} seconds.") from exc
+            raise TimeoutError(
+                f"Code execution timed out after {timeout} seconds."
+            ) from exc
         except Exception as exc:
             logs.append(f"[ERROR] {exc}")
             raise
         finally:
             self._trace_sink = None
 
-    def _build_tool_metadata(self, tool: Any) -> tuple[CodeModeToolSummary, CodeModeToolDetails]:
+    def _build_tool_metadata(
+        self, tool: Any
+    ) -> tuple[CodeModeToolSummary, CodeModeToolDetails]:
         name = getattr(tool, "name", "")
         description = (getattr(tool, "description", "") or "").strip()
         tags_value = getattr(tool, "tags", ())
@@ -356,7 +393,9 @@ Python code with direct access to the live tool registry.
         input_schema = self._jsonish(getattr(tool, "parameters", None))
         output_schema = self._jsonish(getattr(tool, "output_schema", None))
         required_keys = self._extract_required_keys(tool)
-        python_interface = self._build_python_interface(name, description, input_schema, output_schema, access_pattern)
+        python_interface = self._build_python_interface(
+            name, description, input_schema, output_schema, access_pattern
+        )
 
         summary = CodeModeToolSummary(
             name=name,
@@ -436,10 +475,16 @@ Python code with direct access to the live tool registry.
 
         schema_type = schema.get("type")
         if isinstance(schema_type, list):
-            return " | ".join(self._map_json_type_to_python(part) for part in schema_type)
+            return " | ".join(
+                self._map_json_type_to_python(part) for part in schema_type
+            )
         if schema_type == "array":
             item_schema = schema.get("items")
-            return f"list[{self._schema_to_python_type(item_schema)}]" if item_schema else "list[Any]"
+            return (
+                f"list[{self._schema_to_python_type(item_schema)}]"
+                if item_schema
+                else "list[Any]"
+            )
         if schema_type == "object":
             return "dict[str, Any]"
         return self._map_json_type_to_python(schema_type)
@@ -467,7 +512,9 @@ Python code with direct access to the live tool registry.
             if isinstance(candidate, Mapping):
                 for key in ("required_keys", "required_env_keys", "env_keys"):
                     value = candidate.get(key)
-                    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+                    if isinstance(value, Sequence) and not isinstance(
+                        value, (str, bytes)
+                    ):
                         discovered.extend(str(item) for item in value)
 
         return tuple(dict.fromkeys(discovered))
@@ -483,7 +530,13 @@ Python code with direct access to the live tool registry.
             raise RuntimeError(
                 "RestrictedPython is required for call_tool_chain but is not installed."
             )
-        return compiler(wrapped_code, "<code-mode>", "exec")
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=r"Line \d+: Prints, but never reads 'printed' variable\.",
+                category=SyntaxWarning,
+            )
+            return compiler(wrapped_code, "<code-mode>", "exec")
 
     def _build_sandbox(self) -> dict[str, Any]:
         restricted_globals = self._load_restricted_python_globals()
@@ -583,6 +636,16 @@ Python code with direct access to the live tool registry.
         return importlib.import_module(name)
 
     async def _list_registered_tools(self) -> list[Any]:
+        if self._tool_provider is not None:
+            provided_tools = self._tool_provider()
+            if inspect.isawaitable(provided_tools):
+                provided_tools = await provided_tools
+            return [
+                tool
+                for tool in provided_tools
+                if getattr(tool, "name", None) not in self._excluded_tools
+            ]
+
         tools = await self._mcp._list_tools_middleware()
         return [
             tool
@@ -638,7 +701,9 @@ Python code with direct access to the live tool registry.
         ]
         detail = self._tool_details.get(tool.name)
         if detail and detail.input_schema:
-            haystack_parts.append(json.dumps(detail.input_schema, sort_keys=True).lower())
+            haystack_parts.append(
+                json.dumps(detail.input_schema, sort_keys=True).lower()
+            )
         haystack = " \n ".join(haystack_parts)
 
         score = 0.0
@@ -662,7 +727,11 @@ Python code with direct access to the live tool registry.
         if hasattr(value, "model_dump"):
             try:
                 dumped = value.model_dump()
-                return dumped if isinstance(dumped, dict) else json.loads(json.dumps(dumped))
+                return (
+                    dumped
+                    if isinstance(dumped, dict)
+                    else json.loads(json.dumps(dumped))
+                )
             except Exception:
                 pass
         if isinstance(value, Mapping):
@@ -678,13 +747,45 @@ Python code with direct access to the live tool registry.
             cleaned = f"_{cleaned}"
         return cleaned or "_tool"
 
+    def _build_interface_lookup_map(self) -> dict[str, str]:
+        interface_map: dict[str, str] = {}
+        for detail in self._tool_details.values():
+            interface_map[detail.name] = detail.python_interface
+            interface_map[detail.access_pattern] = detail.python_interface
+        return interface_map
+
     def _resolve_detail(self, name: str) -> CodeModeToolDetails | None:
-        detail = self._tool_details.get(name)
-        if detail is not None:
-            return detail
-        for candidate in self._tool_details.values():
-            if candidate.access_pattern == name:
-                return candidate
+        raw_name = str(name or "").strip()
+        if not raw_name:
+            return None
+
+        candidates: list[str] = []
+        seen: set[str] = set()
+
+        def add_candidate(value: str) -> None:
+            candidate = str(value).strip()
+            if candidate and candidate not in seen:
+                seen.add(candidate)
+                candidates.append(candidate)
+
+        add_candidate(raw_name)
+        if ":" in raw_name:
+            add_candidate(raw_name.split(":", 1)[1])
+
+        namespace_prefix = f"{self._namespace}."
+        for candidate in list(candidates):
+            if candidate.startswith(namespace_prefix):
+                add_candidate(candidate[len(namespace_prefix) :])
+
+        for candidate in candidates:
+            detail = self._tool_details.get(candidate)
+            if detail is not None:
+                return detail
+
+        for candidate in candidates:
+            for detail in self._tool_details.values():
+                if detail.access_pattern == candidate:
+                    return detail
         return None
 
     def _make_print(self, logs: list[str]) -> Callable[..., None]:
@@ -702,9 +803,14 @@ async def build_code_mode_runtime(
     mcp: Any,
     *,
     excluded_tools: Sequence[str] = (),
+    tool_provider: Callable[[], Sequence[Any] | Awaitable[Sequence[Any]]] | None = None,
 ) -> CodeModeRuntime:
     """Helper for callers that want a ready-to-use runtime."""
 
-    runtime = CodeModeRuntime(mcp, excluded_tools=excluded_tools)
+    runtime = CodeModeRuntime(
+        mcp,
+        excluded_tools=excluded_tools,
+        tool_provider=tool_provider,
+    )
     await runtime.refresh()
     return runtime

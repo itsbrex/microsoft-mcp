@@ -131,10 +131,16 @@ def test_chat_messages_include_chat_context(mock_graph):
 
 @pytest.fixture
 def load_tools_module(monkeypatch):
-    def _load(auth_method: str):
+    def _load(auth_method: str, tool_mode: str = "hybrid"):
         monkeypatch.setenv("MICROSOFT_MCP_AUTH_METHOD", auth_method)
+        monkeypatch.setenv("MICROSOFT_MCP_TOOL_MODE", tool_mode)
         if auth_method == "azure":
             monkeypatch.setenv("MICROSOFT_MCP_CLIENT_ID", "test-client-id")
+        else:
+            monkeypatch.setenv(
+                "MICROSOFT_MCP_CLIENT_ID",
+                "d3590ed6-52b3-4102-aeff-aad2292ab01c",
+            )
         sys.modules.pop("microsoft_mcp.tools", None)
         return importlib.import_module("microsoft_mcp.tools")
 

@@ -7,6 +7,8 @@ def test_readme_mentions_integrated_code_mode_surface():
     assert "call_tool_chain" in text
     assert "search_tools" in text
     assert "Integrated Code Mode Surface" in text
+    assert "MICROSOFT_MCP_TOOL_MODE" in text
+    assert "UTCP Bridge Config Generator" in text
 
 
 def test_code_mode_docs_and_examples_exist():

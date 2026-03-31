@@ -85,7 +85,9 @@ def main():
         account_id = os.getenv("MICROSOFT_MCP_ACCOUNT_ID")
         if account_id:
             print(f"Using account identifier: {account_id}")
-        tokens_dir = os.getenv("MICROSOFT_MCP_TOKENS_DIR", "~/.config/microsoft-mcp/tokens/")
+        tokens_dir = os.getenv(
+            "MICROSOFT_MCP_TOKENS_DIR", "~/.config/microsoft-mcp/tokens/"
+        )
         print(f"Token storage: {tokens_dir}")
     else:
         print("Authentication Method: Azure SDK (Browser Flow)")
@@ -131,7 +133,7 @@ def main():
                 token, expires_on = auth.get_token_with_details()
                 expires_dt = datetime.datetime.fromtimestamp(expires_on)
 
-                print(f"\n📋 Current Token Information:")
+                print("\n📋 Current Token Information:")
                 print(f"   Token (first 20 chars): {token[:20]}...")
                 print(f"   Expires on: {expires_dt.strftime('%Y-%m-%d %H:%M:%S')}")
                 print(f"   Expires in: {expires_dt - datetime.datetime.now()}")
@@ -175,8 +177,8 @@ def main():
         print("\nStarting authentication...")
 
         # Perform authentication
-        auth_result = auth.authenticate()
-        print(f"\n✓ Authentication successful!")
+        auth.authenticate()
+        print("\n✓ Authentication successful!")
 
         if auth_method == "msal":
             from microsoft_mcp.auth_msal import MSALRefreshTokenAuth
@@ -206,7 +208,7 @@ def main():
             token, expires_on = auth.get_token_with_details()
             expires_dt = datetime.datetime.fromtimestamp(expires_on)
 
-            print(f"\n📋 Token Information:")
+            print("\n📋 Token Information:")
             print(f"   Token (first 20 chars): {token[:20]}...")
             print(f"   Expires on: {expires_dt.strftime('%Y-%m-%d %H:%M:%S')}")
             print(f"   Expires in: {expires_dt - datetime.datetime.now()}")
@@ -221,7 +223,9 @@ def main():
     print("You can now use the Microsoft MCP tools.")
 
     if auth_method == "msal":
-        print("Future runs will use cached tokens, refreshing automatically when needed.")
+        print(
+            "Future runs will use cached tokens, refreshing automatically when needed."
+        )
     else:
         print(
             "Future runs will authenticate silently using the saved AuthenticationRecord."

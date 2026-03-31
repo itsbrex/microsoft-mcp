@@ -21,6 +21,7 @@ dependencies = [
 
 [project.scripts]
 microsoft-mcp = "microsoft_mcp.server:main"
+microsoft-mcp-utcp-config = "microsoft_mcp.utcp_bridge_config:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -32,3 +33,6 @@ dev = [
     "pytest>=8.4.0",
     "pytest-asyncio>=1.0.0",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

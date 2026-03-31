@@ -4,7 +4,7 @@ This document describes the key implementation concepts and architecture of the 
 
 ## Project Overview
 
-Microsoft MCP is a delegated-access MCP server for Microsoft 365 services including Outlook, Calendar, OneDrive, Contacts, and Teams. It now includes an integrated code-mode orchestration surface that operates over the live Microsoft tool registry.
+Microsoft MCP is a delegated-access MCP server for Microsoft 365 services including Outlook, Calendar, OneDrive, Contacts, and Teams. It includes an integrated code-mode orchestration surface and supports two public tool-surface modes: `codemode_only` by default and optional `hybrid`.
 
 ## Architecture
 
@@ -46,12 +46,15 @@ class AuthProvider(Protocol):
 
 - Uses `FastMCP` for tool registration and management.
 - Initializes auth based on `MICROSOFT_MCP_AUTH_METHOD`.
-- Exposes the Microsoft Graph tool surface: account, email, calendar, contacts, files, Teams, search, and inbox triage.
+- Builds an internal Microsoft business-tool registry: account, email, calendar, contacts, files, Teams, search, and inbox triage.
+- Exposes either:
+  - only the code-mode tools publicly when `MICROSOFT_MCP_TOOL_MODE=codemode_only`
+  - or both Graph tools and code-mode tools publicly when `MICROSOFT_MCP_TOOL_MODE=hybrid`
 - Keeps responses compact via `response_shaping.py`.
 
 #### 4. Integrated Code Mode Surface (`code_mode.py`)
 
-The integrated code-mode layer is a Python-native orchestration runtime that reflects the live FastMCP registry.
+The integrated code-mode layer is a Python-native orchestration runtime that reflects the internal auth-aware business-tool registry.
 
 It provides:
 - `search_tools` for discovery by task description.
@@ -62,8 +65,8 @@ It provides:
 - `utcp_codemode_usage` prompt guidance.
 
 The runtime should:
-- Build its registry view from the active FastMCP `FunctionTool` objects.
-- Preserve auth-aware visibility, including hidden Teams tools under MSAL.
+- Build its registry view from the internal auth-aware business-tool objects.
+- Preserve auth-aware visibility, including hidden Teams tools under MSAL, even when the public registry is `codemode_only`.
 - Generate stable interface text from live tool schemas.
 - Return `result` and captured `logs` from code execution.
 
@@ -73,12 +76,12 @@ The runtime should:
 
 The server acts on behalf of the authenticated user rather than with its own identity. That preserves user-scoped data access and avoids introducing a separate service identity.
 
-### Live Registry Reflection
+### Internal Registry Reflection
 
-The code-mode layer should not duplicate the Microsoft Graph tool list by hand. It should reflect the active FastMCP registry so:
+The code-mode layer should not duplicate the Microsoft Graph tool list by hand. It should reflect the internal business-tool registry so:
 - auth-mode-specific tool visibility remains correct
 - generated interfaces stay in sync with the actual tool schemas
-- discovery works over the same tool set exposed to MCP clients
+- discovery works over the same tool set available to `call_tool_chain`
 
 ### Sandbox Model
 
@@ -86,7 +89,7 @@ The code-mode runtime uses a cooperative Python sandbox. It should:
 - limit imports to safe modules
 - capture console output
 - enforce timeouts
-- expose `__interfaces` and `__get_tool_interface(...)`
+- expose `interfaces` and `get_tool_interface(...)` helpers
 - block obvious unsafe operations
 
 This is a practical agent execution sandbox, not hardened multi-tenant isolation.
@@ -109,7 +112,8 @@ The server-side shaping layer remains the first line of defense against token bl
 ### Compatibility Rules
 
 - Existing Graph tools must remain available unchanged.
-- Code mode must operate over the same active tool registry.
+- Code mode must operate over the same internal auth-aware tool registry.
+- Public exposure must support both `codemode_only` and `hybrid`.
 - Documentation should distinguish shaping from orchestration.
 - Tests should cover both the Graph tools and the code-mode surface.
 
@@ -174,7 +178,20 @@ The server-side shaping layer remains the first line of defense against token bl
 - `MICROSOFT_MCP_AUTH_METHOD`: `azure` or `msal`
 - `MICROSOFT_MCP_TOKENS_DIR`: MSAL token storage directory
 - `MICROSOFT_MCP_ACCOUNT_ID`: MSAL account selector and token-file identifier
+- `MICROSOFT_MCP_TOOL_MODE`: Public tool surface mode (`codemode_only` or `hybrid`)
 - `MICROSOFT_MCP_RESPONSE_PROFILE`: Response shaping profile
+
+## UTCP Bridge Conversion Utility
+
+The repo now ships a UTCP bridge-config generator in `utcp_bridge_config.py`.
+
+It should:
+- read an existing Claude Desktop config without modifying it
+- list available `mcpServers`
+- optionally include only named servers
+- optionally exclude named servers
+- optionally override env vars for wrapped servers, such as forcing `MICROSOFT_MCP_TOOL_MODE=hybrid` for a wrapped `microsoft-mcp`
+- write reviewable generated files for UTCP bridge usage
 
 ## Documentation Contract
 

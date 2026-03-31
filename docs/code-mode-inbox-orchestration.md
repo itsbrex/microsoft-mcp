@@ -2,6 +2,10 @@
 
 This document explains how to use the integrated code-mode surface in `microsoft-mcp` for multi-step inbox workflows.
 
+By default, `microsoft-mcp` exposes only the code-mode tools publicly. `call_tool_chain` still runs against the internal auth-aware Microsoft business-tool registry.
+
+If you wrap `microsoft-mcp` behind an external UTCP code-mode bridge, set the wrapped server to `MICROSOFT_MCP_TOOL_MODE=hybrid` so the bridge can discover the business tools.
+
 ## Core Principle
 
 The server still handles response shaping. The code-mode layer handles orchestration over the live Microsoft tool registry:

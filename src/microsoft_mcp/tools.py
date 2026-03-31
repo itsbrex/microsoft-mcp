@@ -111,6 +111,24 @@ CODE_MODE_TOOL_NAMES = (
     "get_required_keys_for_tool",
     "call_tool_chain",
 )
+VALID_TOOL_MODES = {"codemode_only", "hybrid"}
+
+
+def _resolve_tool_mode() -> str:
+    configured_tool_mode = os.getenv(
+        "MICROSOFT_MCP_TOOL_MODE",
+        "codemode_only",
+    ).lower()
+    if configured_tool_mode not in VALID_TOOL_MODES:
+        logger.warning(
+            "Unsupported MICROSOFT_MCP_TOOL_MODE=%s; falling back to codemode_only",
+            configured_tool_mode,
+        )
+        return "codemode_only"
+    return configured_tool_mode
+
+
+tool_mode = _resolve_tool_mode()
 
 _code_mode_runtime: CodeModeRuntime | None = None
 
@@ -133,12 +151,17 @@ def _get_code_mode_runtime() -> CodeModeRuntime:
 
     if _code_mode_runtime is None:
         _code_mode_runtime = _run_async(
-            build_code_mode_runtime(mcp, excluded_tools=CODE_MODE_TOOL_NAMES)
+            build_code_mode_runtime(
+                mcp,
+                excluded_tools=CODE_MODE_TOOL_NAMES,
+                tool_provider=_list_internal_business_tools,
+            )
         )
     else:
         _run_async(_code_mode_runtime.refresh())
 
     return _code_mode_runtime
+
 
 FOLDERS = {
     k.casefold(): v
@@ -459,8 +482,8 @@ def call_tool_chain(code: str, timeout: float = 30.0) -> dict[str, Any]:
     """Execute a multi-step Python workflow against the active Microsoft tool namespace.
 
     The sandbox exposes the active business tools as `microsoft.<tool>()`,
-    generated interfaces through `__interfaces`, and per-tool interface lookup
-    via `__get_tool_interface(name)`.
+    generated interfaces through `interfaces`, and per-tool interface lookup
+    via `get_tool_interface(name)`.
     """
 
     runtime = _get_code_mode_runtime()
@@ -2527,6 +2550,17 @@ TEAMS_TOOL_NAMES = (
 )
 
 
+def _list_internal_business_tools() -> list[Any]:
+    tools: list[Any] = []
+    for tool_name, tool in mcp._tool_manager._tools.items():
+        if tool_name in CODE_MODE_TOOL_NAMES:
+            continue
+        if auth_method == "msal" and tool_name in TEAMS_TOOL_NAMES:
+            continue
+        tools.append(tool)
+    return tools
+
+
 def _configure_teams_tools_for_auth_method() -> None:
     if auth_method != "msal":
         return
@@ -2545,6 +2579,19 @@ def _configure_teams_tools_for_auth_method() -> None:
 
 
 _configure_teams_tools_for_auth_method()
+
+
+def _configure_public_tool_mode() -> None:
+    if tool_mode == "hybrid":
+        logger.info("Using hybrid public tool mode")
+        return
+
+    for tool_name, tool in mcp._tool_manager._tools.items():
+        if tool_name in CODE_MODE_TOOL_NAMES:
+            continue
+        tool.disable()
+
+    logger.info("Enabled code-mode-only public tool mode")
 
 
 # ============================================================================
@@ -2691,3 +2738,6 @@ def get_inbox_item_detail(item_id: str, kind: str) -> dict[str, Any]:
         return detail
 
     raise ValueError(f"Unsupported kind: {kind}")
+
+
+_configure_public_tool_mode()

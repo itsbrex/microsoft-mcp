@@ -13,6 +13,7 @@ Powerful MCP server for Microsoft Graph API with dual Azure browser auth and MSA
 - **Teams Messages**: Read and search chat and channel messages
 - **Unified Search**: Search across supported Microsoft Graph content types
 - **Code Mode Surface**: Integrated discovery, interface introspection, and one-shot orchestration over the live Microsoft tool registry
+- **Tool Surface Modes**: `codemode_only` by default, with optional `hybrid` mode for direct Graph tool exposure
 - **Flexible Storage**: Configurable Azure credential storage and MSAL token directories
 
 ## Quick Start
@@ -39,13 +40,37 @@ claude mcp add microsoft-mcp \
   -e MICROSOFT_MCP_CLIENT_ID=d3590ed6-52b3-4102-aeff-aad2292ab01c \
   -- uvx --from git+https://github.com/marc-hanheide/microsoft-mcp.git microsoft-mcp
 
+# Use hybrid if you want the direct Graph tools publicly exposed as well
+claude mcp add microsoft-mcp-hybrid \
+  -e MICROSOFT_MCP_AUTH_METHOD=msal \
+  -e MICROSOFT_MCP_ACCOUNT_ID=your-email@example.com \
+  -e MICROSOFT_MCP_CLIENT_ID=d3590ed6-52b3-4102-aeff-aad2292ab01c \
+  -e MICROSOFT_MCP_TOOL_MODE=hybrid \
+  -- uvx --from git+https://github.com/marc-hanheide/microsoft-mcp.git microsoft-mcp
+
 # Or with Azure SDK (requires app registration)
 claude mcp add microsoft-mcp -e MICROSOFT_MCP_CLIENT_ID=your-app-id-here -- uvx --from git+https://github.com/marc-hanheide/microsoft-mcp.git microsoft-mcp
 ```
 
 ## Available Tools
 
-Microsoft MCP exposes the Graph tool surface plus an integrated code-mode surface.
+Microsoft MCP now has two public tool-surface modes controlled by `MICROSOFT_MCP_TOOL_MODE`.
+
+### Default: `codemode_only`
+
+By default, the public MCP registry exposes only the code-mode tools:
+
+- `search_tools`
+- `list_tools`
+- `tools_info`
+- `get_required_keys_for_tool`
+- `call_tool_chain`
+
+`call_tool_chain` still operates over the internal auth-aware Microsoft business-tool registry, so it can use mail, calendar, files, contacts, Teams, search, and inbox helpers even when those tools are not publicly exposed.
+
+### Optional: `hybrid`
+
+Set `MICROSOFT_MCP_TOOL_MODE=hybrid` if you want the public registry to expose both the Graph tools and the code-mode surface together.
 
 ### Graph Tools
 
@@ -61,7 +86,7 @@ Microsoft MCP exposes the Graph tool surface plus an integrated code-mode surfac
 
 ### Integrated Code Mode Surface
 
-The server now exposes a code-mode orchestration layer that operates over the live tool registry. Use it when you need discovery, tool inspection, or one-shot multi-step workflows.
+The server exposes a code-mode orchestration layer that operates over the internal live Microsoft tool registry. Use it when you need discovery, tool inspection, or one-shot multi-step workflows.
 
 - `search_tools` - find relevant Microsoft tools by natural language query
 - `list_tools` - list the active, auth-aware tool set
@@ -69,6 +94,14 @@ The server now exposes a code-mode orchestration layer that operates over the li
 - `get_required_keys_for_tool` - inspect required configuration for a tool
 - `call_tool_chain` - execute multi-step code against the active tool set and return `result` plus `logs`
 - `utcp_codemode_usage` - prompt that teaches discovery first, code second
+
+`call_tool_chain` executes Python and exposes runtime helpers as safe variable names:
+
+- `interfaces`
+- `available_tools`
+- `availableTools`
+- `get_tool_interface(name)` and `getToolInterface(name)`
+- `interface_map_json` and `interfaceMapJson`
 
 ## Code Mode
 
@@ -119,6 +152,17 @@ return {
 print(result["result"])
 print(result["logs"])
 ```
+
+## Python + TypeScript Code Mode Interop
+
+This repo supports both code-mode styles:
+
+- Integrated Python code mode (built into `microsoft-mcp`)
+- Standalone TypeScript UTCP bridge (`@utcp/code-mode-mcp`)
+
+They can run independently or together.
+
+When generating UTCP bridge configs from an existing Claude Desktop config, the converter now skips an existing bridge server (default name: `code-mode-mcp`) unless you explicitly include it. This prevents accidental self-wrapping.
 
 ## Manual Setup
 
@@ -212,6 +256,7 @@ uv run authenticate.py
 - `MICROSOFT_MCP_TENANT_ID`: Optional Azure AD tenant ID override
 - `MICROSOFT_MCP_TOKENS_DIR`: Token storage directory (defaults to `~/.config/microsoft-mcp/tokens/`)
 - `MICROSOFT_MCP_ACCOUNT_ID`: Account identifier used for token files, cached-account selection, and optional authority lookup
+- `MICROSOFT_MCP_TOOL_MODE`: Public tool surface mode (`codemode_only` or `hybrid`, default: `codemode_only`)
 - `MICROSOFT_MCP_RESPONSE_PROFILE`: Response shaping profile (`legacy` or `assistant`, default: `legacy`)
 
 If `MICROSOFT_MCP_TENANT_ID` is not set and `MICROSOFT_MCP_ACCOUNT_ID` matches an existing `outlook-creds` profile, the MSAL auth provider will reuse that profile's tenant-specific authority. This avoids tenant-specific device-code failures such as `AADSTS65002` on fresh login.
@@ -219,3 +264,41 @@ If `MICROSOFT_MCP_TENANT_ID` is not set and `MICROSOFT_MCP_ACCOUNT_ID` matches a
 ### Response Shaping
 
 Use the shaping parameters on the individual tools for raw payload control. Use the code-mode surface when you need orchestration and local reduction after the server has already trimmed the response.
+
+## UTCP Bridge Config Generator
+
+The repo includes a non-destructive converter that wraps an existing Claude Desktop `mcpServers` config into a UTCP code-mode bridge configuration.
+
+List the available servers in a Claude Desktop config:
+
+```bash
+PYTHONPATH=src python -m microsoft_mcp.utcp_bridge_config \
+  "$HOME/Library/Application Support/Claude/claude_desktop_config.json" \
+  --list-servers
+```
+
+Generate review files without touching the original config:
+
+```bash
+PYTHONPATH=src python -m microsoft_mcp.utcp_bridge_config \
+  "$HOME/Library/Application Support/Claude/claude_desktop_config.json" \
+  --output-dir ./tmp/claude-desktop-utcp-review \
+  --include-server microsoft-mcp \
+  --include-server notion-mcp \
+  --exclude-server attio-old \
+  --set-env microsoft-mcp MICROSOFT_MCP_TOOL_MODE hybrid
+```
+
+That command writes:
+
+- `.utcp_config.json`
+- `claude_desktop_config.utcp.json`
+- `manual_map.json`
+
+The original Claude Desktop config is only read, never modified.
+
+The generated bridge config defaults to:
+
+- server name: `code-mode-mcp`
+- command: `/Users/hack/.local/share/mise/shims/npx`
+- args: `["@utcp/code-mode-mcp"]`

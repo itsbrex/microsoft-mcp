@@ -66,3 +66,42 @@ def test_get_event_extracts_teams_meeting_info(mock_graph):
     assert "@odata.context" not in result
     assert result["attendees"][0]["name"] == "A <a@x.com>"
     assert result["attendees"][0]["status"] == "accepted"
+
+
+@patch("microsoft_mcp.tools.graph")
+def test_rsvp_to_event_defaults_to_not_emailing_organizer(mock_graph):
+    from microsoft_mcp.tools import rsvp_to_event
+
+    result = rsvp_to_event.fn("evt-3", response="accept")
+
+    mock_graph.request.assert_called_once_with(
+        "POST",
+        "/me/events/evt-3/accept",
+        json={"comment": None, "sendResponse": False},
+    )
+    assert result == {
+        "status": "responded",
+        "event_id": "evt-3",
+        "response": "accept",
+        "send_response": False,
+    }
+
+
+@patch("microsoft_mcp.tools.graph")
+def test_rsvp_to_event_supports_tentative_and_comment(mock_graph):
+    from microsoft_mcp.tools import rsvp_to_event
+
+    result = rsvp_to_event.fn(
+        "evt-4",
+        response="tentative",
+        comment="I may join late",
+        send_response=True,
+    )
+
+    mock_graph.request.assert_called_once_with(
+        "POST",
+        "/me/events/evt-4/tentativelyAccept",
+        json={"comment": "I may join late", "sendResponse": True},
+    )
+    assert result["response"] == "tentative"
+    assert result["send_response"] is True

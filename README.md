@@ -6,8 +6,8 @@ Powerful MCP server for Microsoft Graph API with dual Azure browser auth and MSA
 
 - **Dual Authentication**: Azure SDK browser flow or MSAL device code flow
 - **Account-Aware MSAL**: Per-account token files, cached-account selection, and optional tenant-specific authority reuse from `outlook-creds`
-- **Email Access**: List, inspect, search, and fetch attachments from Outlook mail
-- **Calendar Access**: List events, inspect event details, search calendars, and check availability
+- **Email Access**: List, inspect, search, fetch attachments, create reply/new-message drafts, discover/manage mail folders, manage Outlook master categories, manage Outlook inbox state, and clean up Outlook invite messages
+- **Calendar Access**: List events, inspect event details, search calendars, check availability, and RSVP quietly by default from events or invite messages
 - **OneDrive Access**: Browse, inspect, and search files
 - **Contacts**: List, inspect, and search contacts from your address book
 - **Teams Messages**: Read and search chat and channel messages
@@ -75,8 +75,11 @@ Set `MICROSOFT_MCP_TOOL_MODE=hybrid` if you want the public registry to expose b
 ### Graph Tools
 
 - `list_accounts`, `set_active_account`, `get_active_account`, `get_user_details`, `is_logged_in`, `login`
-- `list_emails`, `get_email`, `get_attachment`, `search_emails`
-- `list_events`, `get_event`, `check_availability`, `search_events`
+- `list_emails`, `get_email`, `get_attachment`, `search_emails`, `create_email_draft`
+- `list_mail_folders`, `get_mail_folder`, `create_mail_folder`, `rename_mail_folder`, `delete_mail_folder`
+- `list_master_categories`, `get_master_category`, `create_master_category`, `update_master_category`, `delete_master_category`, `ensure_master_categories`
+- `mark_email_read`, `set_email_categories`, `move_email`, `archive_email`, `delete_email`, `bulk_manage_emails`, `list_invite_messages`, `delete_invite_message`
+- `list_events`, `get_event`, `rsvp_to_event`, `rsvp_to_invite_message`, `check_availability`, `search_events`
 - `list_contacts`, `get_contact`, `search_contacts`
 - `list_files`, `get_file`, `search_files`
 - `list_chat_messages`, `get_chat_message`, `search_chat_messages`
@@ -117,6 +120,7 @@ The server-side code-mode layer is for batching follow-up calls, computing ranki
 ### What to use it for
 
 - Inbox triage where you hydrate only the top items
+- Inbox cleanup where you batch archive, delete, or mark mail as read after triage
 - Search-and-select flows over mail, calendar, files, or Teams
 - Cross-tool workflows that need ranking, grouping, or deduplication
 - Compact reports for assistants that should not see every intermediate payload
@@ -294,6 +298,8 @@ That command writes:
 - `.utcp_config.json`
 - `claude_desktop_config.utcp.json`
 - `manual_map.json`
+
+`manual_map.json` preserves source server names as stable manual aliases (sanitized for UTCP), for example `google-sheets` becomes `google_sheets`.
 
 The original Claude Desktop config is only read, never modified.
 

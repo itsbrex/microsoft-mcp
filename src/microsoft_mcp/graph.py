@@ -399,7 +399,10 @@ def search_query(
                             for hit in container["hits"]:
                                 if limit and items_returned >= limit:
                                     return
-                                yield hit["resource"]
+                                resource = dict(hit.get("resource", {}))
+                                if "id" not in resource and hit.get("hitId"):
+                                    resource["id"] = hit["hitId"]
+                                yield resource
                                 items_returned += 1
 
             # Check for more results

@@ -51,7 +51,7 @@ Use `list_inbox_items` to get normalized summaries ranked by urgency. Fields pre
 | Field | Type | Description |
 |---|---|---|
 | `id` | str | Opaque item identifier |
-| `kind` | str | `email` or `event` |
+| `kind` | str | `email`, `invite_message`, or `event` |
 | `source_tool` | str | Which Graph API tool produced the item |
 | `title` | str | Subject line or event title |
 | `snippet` | str | Short preview of the body |
@@ -65,7 +65,7 @@ Use `list_inbox_items` to get normalized summaries ranked by urgency. Fields pre
 
 ### Step 2: Optional Narrowing
 
-Use `search_emails` or `unified_search` when the user has a specific keyword, sender, or subject.
+Use `search_emails`, `list_invite_messages`, or `unified_search` when the user has a specific keyword, sender, subject, or needs to isolate Outlook meeting notices stored in the mailbox.
 Use `list_tools` and `tools_info` when you need to verify whether a tool is active or what arguments it expects.
 
 ### Step 3: Hydrate Only the Top Items
@@ -80,6 +80,20 @@ The report should be compact and decision-oriented:
 - one-sentence summary
 - suggested action
 - any deadline or time-sensitive signal
+
+### Step 5: Apply Cleanup Actions in Bulk
+
+Once triage decides what to keep, archive, or tag, use the inbox-management tools instead of iterating manual single-message workflows:
+
+- `bulk_manage_emails` for one action across many messages
+- `mark_email_read` for a single message read/unread toggle
+- `set_email_categories` for replacing category labels on one message
+- `ensure_master_categories` when Outlook needs those labels registered in the mailbox master category list with colors
+- `move_email` or `archive_email` for filing a message after review
+- `delete_email` for cleanup after confirmation
+- `delete_invite_message` for removing meeting notices that should not stay in the inbox
+- `rsvp_to_event` for event accepts, tentative holds, or declines without emailing the organizer unless `send_response=True`
+- `rsvp_to_invite_message` for responding from the invite message itself while still defaulting to `send_response=False`
 
 ## Example
 
@@ -117,6 +131,21 @@ return {
     )
 
     return result
+```
+
+## Cleanup Example
+
+```python
+async def clean_up_after_triage(mcp, ids_to_archive, ids_to_mark_read):
+    await mcp.bulk_manage_emails({
+        "email_ids": ids_to_archive,
+        "action": "archive",
+    })
+
+    await mcp.bulk_manage_emails({
+        "email_ids": ids_to_mark_read,
+        "action": "mark_read",
+    })
 ```
 
 ## What Code Mode Is Not

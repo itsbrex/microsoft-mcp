@@ -237,6 +237,34 @@ class TestGraphModule:
         assert results[1]["id"] == "2"
 
     @patch("src.microsoft_mcp.graph.request")
+    def test_search_query_falls_back_to_hit_id_when_resource_id_missing(
+        self, mock_request
+    ):
+        """Test that search_query preserves hitId when Graph omits resource.id."""
+        mock_request.return_value = {
+            "value": [
+                {
+                    "hitsContainers": [
+                        {
+                            "hits": [
+                                {
+                                    "hitId": "msg-hit-1",
+                                    "resource": {"subject": "Test email"},
+                                }
+                            ],
+                            "moreResultsAvailable": False,
+                        }
+                    ]
+                }
+            ]
+        }
+
+        results = list(search_query("test", ["message"], auth=self.mock_auth))
+
+        assert len(results) == 1
+        assert results[0]["id"] == "msg-hit-1"
+
+    @patch("src.microsoft_mcp.graph.request")
     def test_search_query_invalid_entity_types(self, mock_request):
         """Test search query with invalid entity types."""
         results = list(search_query("test", ["invalid_type"], auth=self.mock_auth))

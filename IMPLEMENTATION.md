@@ -47,6 +47,14 @@ class AuthProvider(Protocol):
 - Uses `FastMCP` for tool registration and management.
 - Initializes auth based on `MICROSOFT_MCP_AUTH_METHOD`.
 - Builds an internal Microsoft business-tool registry: account, email, calendar, contacts, files, Teams, search, and inbox triage.
+- Includes assistant-native inbox management helpers for email cleanup and organization:
+  read state, categories, folder moves, archive, delete, and bulk actions.
+- Includes mail-folder discovery and management helpers:
+  list folders, resolve custom folder IDs, create folders, rename folders, and delete folders.
+- Includes Outlook master-category helpers:
+  list categories, inspect category colors, create categories, update category colors, delete categories, and ensure required categories exist.
+- Includes draft-only compose support for Outlook mail:
+  create brand-new drafts plus reply and reply-all drafts without sending.
 - Exposes either:
   - only the code-mode tools publicly when `MICROSOFT_MCP_TOOL_MODE=codemode_only`
   - or both Graph tools and code-mode tools publicly when `MICROSOFT_MCP_TOOL_MODE=hybrid`
@@ -132,10 +140,32 @@ The server-side shaping layer remains the first line of defense against token bl
 - `get_email`
 - `get_attachment`
 - `search_emails`
+- `create_email_draft`
+- `list_mail_folders`
+- `get_mail_folder`
+- `create_mail_folder`
+- `rename_mail_folder`
+- `delete_mail_folder`
+- `list_master_categories`
+- `get_master_category`
+- `create_master_category`
+- `update_master_category`
+- `delete_master_category`
+- `ensure_master_categories`
+- `mark_email_read`
+- `set_email_categories`
+- `move_email`
+- `archive_email`
+- `delete_email`
+- `bulk_manage_emails`
+- `list_invite_messages`
+- `delete_invite_message`
 
 ### Calendar Tools
 - `list_events`
 - `get_event`
+- `rsvp_to_event`
+- `rsvp_to_invite_message`
 - `check_availability`
 - `search_events`
 
@@ -161,6 +191,8 @@ The server-side shaping layer remains the first line of defense against token bl
 - `unified_search`
 - `list_inbox_items`
 - `get_inbox_item_detail`
+
+`list_inbox_items` and `get_inbox_item_detail` support the `invite_message` kind in addition to standard email and calendar event entries so code-mode inbox triage can act on Outlook meeting notifications that live in the mailbox.
 
 ### Code Mode Tools
 - `search_tools`

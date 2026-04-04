@@ -8,11 +8,13 @@ import os
 import pathlib as pl
 from typing import Any
 from urllib.parse import quote
+import httpx
 from fastmcp import FastMCP
 from . import graph
 from .auth_base import AuthProvider
 from .response_shaping import (
     cleanup_graph_payload,
+    compact_location,
     shape_contact_detail,
     shape_contact_summary,
     shape_email_detail,
@@ -174,6 +176,180 @@ FOLDERS = {
         "archive": "archive",
     }.items()
 }
+
+MESSAGE_SUMMARY_SELECT_FIELDS = (
+    "id,subject,from,toRecipients,receivedDateTime,hasAttachments,"
+    "bodyPreview,conversationId,isRead,webLink"
+)
+MAIL_FOLDER_SELECT_FIELDS = (
+    "id,displayName,parentFolderId,childFolderCount,totalItemCount,"
+    "unreadItemCount,isHidden"
+)
+MASTER_CATEGORY_SELECT_FIELDS = "id,displayName,color"
+
+
+def _shape_mail_folder(raw: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": raw["id"],
+        "display_name": raw.get("displayName", ""),
+        "parent_folder_id": raw.get("parentFolderId"),
+        "child_folder_count": raw.get("childFolderCount", 0),
+        "total_item_count": raw.get("totalItemCount", 0),
+        "unread_item_count": raw.get("unreadItemCount", 0),
+        "is_hidden": bool(raw.get("isHidden", False)),
+    }
+
+
+def _shape_master_category(raw: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": raw.get("id"),
+        "display_name": raw.get("displayName", ""),
+        "color": raw.get("color", ""),
+    }
+
+
+def _list_master_category_rows(limit: int = 100) -> list[dict[str, Any]]:
+    return list(
+        graph.request_paginated(
+            "/me/outlook/masterCategories",
+            params={
+                "$top": min(limit, 100),
+                "$select": MASTER_CATEGORY_SELECT_FIELDS,
+            },
+            limit=limit,
+        )
+    )
+
+
+def _resolve_master_category(category: str) -> dict[str, Any]:
+    target = category.strip()
+    if not target:
+        raise ValueError("Category cannot be empty")
+
+    categories = _list_master_category_rows(limit=500)
+
+    for item in categories:
+        if item.get("id") == target:
+            return item
+
+    matches = [
+        item
+        for item in categories
+        if item.get("displayName", "").casefold() == target.casefold()
+    ]
+    if not matches:
+        raise ValueError(f"Master category '{category}' not found")
+    if len(matches) > 1:
+        raise ValueError(
+            f"Master category '{category}' is ambiguous; use the category ID instead"
+        )
+    return matches[0]
+
+
+def _list_mail_folder_children(
+    *,
+    parent_folder_id: str | None = None,
+    include_hidden: bool = False,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    endpoint = (
+        "/me/mailFolders"
+        if parent_folder_id is None
+        else f"/me/mailFolders/{parent_folder_id}/childFolders"
+    )
+    params: dict[str, Any] = {
+        "$top": min(limit, 100),
+        "$select": MAIL_FOLDER_SELECT_FIELDS,
+    }
+    if include_hidden:
+        params["includeHiddenFolders"] = "true"
+    return list(graph.request_paginated(endpoint, params=params, limit=limit))
+
+
+def _walk_mail_folders(
+    *,
+    parent_folder_id: str | None = None,
+    include_hidden: bool = False,
+    limit: int = 100,
+    recursive: bool = False,
+) -> list[dict[str, Any]]:
+    if not recursive:
+        return _list_mail_folder_children(
+            parent_folder_id=parent_folder_id,
+            include_hidden=include_hidden,
+            limit=limit,
+        )
+
+    results: list[dict[str, Any]] = []
+    queue: list[str | None] = [parent_folder_id]
+    seen_ids: set[str] = set()
+
+    while queue and len(results) < limit:
+        current_parent = queue.pop(0)
+        remaining = limit - len(results)
+        children = _list_mail_folder_children(
+            parent_folder_id=current_parent,
+            include_hidden=include_hidden,
+            limit=remaining,
+        )
+        for child in children:
+            folder_id = child.get("id")
+            if not folder_id or folder_id in seen_ids:
+                continue
+            seen_ids.add(folder_id)
+            results.append(child)
+            if child.get("childFolderCount", 0):
+                queue.append(folder_id)
+            if len(results) >= limit:
+                break
+
+    return results
+
+
+def _find_mail_folder(folder: str, include_hidden: bool = False) -> dict[str, Any]:
+    destination = folder.strip().strip("/")
+    if not destination:
+        raise ValueError("Mail folder cannot be empty")
+
+    matches = _walk_mail_folders(
+        include_hidden=include_hidden,
+        recursive=True,
+        limit=500,
+    )
+    normalized_destination = destination.casefold()
+
+    path_matches: list[dict[str, Any]] = []
+    name_matches: list[dict[str, Any]] = []
+    folders_by_id = {item["id"]: item for item in matches if item.get("id")}
+
+    def build_path(item: dict[str, Any]) -> str:
+        segments = [item.get("displayName", "")]
+        current_parent = item.get("parentFolderId")
+        while current_parent and current_parent in folders_by_id:
+            parent = folders_by_id[current_parent]
+            segments.append(parent.get("displayName", ""))
+            current_parent = parent.get("parentFolderId")
+        return "/".join(reversed([segment for segment in segments if segment]))
+
+    for item in matches:
+        display_name = item.get("displayName", "")
+        if display_name.casefold() == normalized_destination:
+            name_matches.append(item)
+        if "/" in destination and build_path(item).casefold() == normalized_destination:
+            path_matches.append(item)
+
+    resolved_matches = path_matches or name_matches
+
+    if not resolved_matches:
+        raise ValueError(f"Mail folder '{folder}' not found")
+    if len(resolved_matches) > 1:
+        options = sorted(build_path(item) for item in resolved_matches)
+        raise ValueError(
+            "Mail folder name is ambiguous. Use the full folder path instead: "
+            + ", ".join(options)
+        )
+    return resolved_matches[0]
+
 
 # ============================================================================
 # Account Management Tools (Multi-account support)
@@ -516,6 +692,404 @@ def login() -> str:
 
 
 @mcp.tool
+def list_mail_folders(
+    parent_folder: str | None = None,
+    recursive: bool = False,
+    include_hidden: bool = False,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    """List Outlook mail folders.
+
+    Args:
+        parent_folder: Optional folder alias, ID, name, or path whose children should be listed.
+            When omitted, lists top-level mail folders.
+        recursive: Whether to walk the folder tree beneath the selected parent.
+        include_hidden: Whether to include hidden folders when Graph permits it.
+        limit: Maximum number of folders to return.
+
+    Returns:
+        List of normalized folder objects containing IDs, display names, parent IDs,
+        child-folder counts, unread counts, and total-item counts.
+    """
+
+    logger.info(
+        "list_mail_folders called: parent_folder=%s, recursive=%s, include_hidden=%s, limit=%s",
+        parent_folder,
+        recursive,
+        include_hidden,
+        limit,
+    )
+
+    try:
+        parent_folder_id = None
+        if parent_folder:
+            parent_folder_id = _resolve_mail_folder(
+                parent_folder,
+                include_hidden=include_hidden,
+            )
+
+        raw_folders = _walk_mail_folders(
+            parent_folder_id=parent_folder_id,
+            include_hidden=include_hidden,
+            limit=min(limit, 500),
+            recursive=recursive,
+        )
+        return [_shape_mail_folder(folder) for folder in raw_folders]
+    except Exception as e:
+        logger.error("list_mail_folders failed: %s", str(e), exc_info=True)
+        raise
+
+
+@mcp.tool
+def get_mail_folder(folder: str, include_hidden: bool = False) -> dict[str, Any]:
+    """Get a mail folder by alias, ID, display name, or slash-delimited path."""
+
+    logger.info(
+        "get_mail_folder called: folder=%s, include_hidden=%s",
+        folder,
+        include_hidden,
+    )
+
+    try:
+        if folder.strip().casefold() in FOLDERS:
+            folder_id = FOLDERS[folder.strip().casefold()]
+            raw = graph.request(
+                "GET",
+                f"/me/mailFolders/{folder_id}",
+                params={"$select": MAIL_FOLDER_SELECT_FIELDS},
+            )
+            if not raw:
+                raise ValueError(f"Mail folder '{folder}' not found")
+            return _shape_mail_folder(raw)
+
+        return _shape_mail_folder(
+            _find_mail_folder(folder, include_hidden=include_hidden)
+        )
+    except Exception as e:
+        logger.error(
+            "get_mail_folder failed for folder=%s: %s", folder, str(e), exc_info=True
+        )
+        raise
+
+
+@mcp.tool
+def create_mail_folder(
+    display_name: str,
+    parent_folder: str | None = None,
+) -> dict[str, Any]:
+    """Create a new Outlook mail folder under the mailbox root or another folder."""
+
+    logger.info(
+        "create_mail_folder called: display_name=%s, parent_folder=%s",
+        display_name,
+        parent_folder,
+    )
+
+    folder_name = display_name.strip()
+    if not folder_name:
+        raise ValueError("display_name cannot be empty")
+
+    try:
+        endpoint = "/me/mailFolders"
+        if parent_folder:
+            parent_folder_id = _resolve_mail_folder(parent_folder)
+            endpoint = f"/me/mailFolders/{parent_folder_id}/childFolders"
+
+        raw = graph.request(
+            "POST",
+            endpoint,
+            json={"displayName": folder_name},
+        )
+        if not raw:
+            raise ValueError("Mail folder could not be created")
+        return _shape_mail_folder(raw)
+    except Exception as e:
+        logger.error("create_mail_folder failed: %s", str(e), exc_info=True)
+        raise
+
+
+@mcp.tool
+def rename_mail_folder(folder: str, new_display_name: str) -> dict[str, Any]:
+    """Rename an Outlook mail folder."""
+
+    logger.info(
+        "rename_mail_folder called: folder=%s, new_display_name=%s",
+        folder,
+        new_display_name,
+    )
+
+    folder_name = new_display_name.strip()
+    if not folder_name:
+        raise ValueError("new_display_name cannot be empty")
+
+    try:
+        folder_id = _resolve_mail_folder(folder)
+        raw = graph.request(
+            "PATCH",
+            f"/me/mailFolders/{folder_id}",
+            json={"displayName": folder_name},
+        )
+        if not raw:
+            raw = graph.request(
+                "GET",
+                f"/me/mailFolders/{folder_id}",
+                params={"$select": MAIL_FOLDER_SELECT_FIELDS},
+            )
+        if not raw:
+            raise ValueError(f"Mail folder '{folder}' not found")
+        return _shape_mail_folder(raw)
+    except Exception as e:
+        logger.error(
+            "rename_mail_folder failed for folder=%s: %s", folder, str(e), exc_info=True
+        )
+        raise
+
+
+@mcp.tool
+def delete_mail_folder(folder: str) -> dict[str, Any]:
+    """Delete an Outlook mail folder."""
+
+    logger.info("delete_mail_folder called: folder=%s", folder)
+
+    try:
+        folder_id = _resolve_mail_folder(folder)
+        graph.request("DELETE", f"/me/mailFolders/{folder_id}")
+        return {"status": "deleted", "folder_id": folder_id}
+    except Exception as e:
+        logger.error(
+            "delete_mail_folder failed for folder=%s: %s", folder, str(e), exc_info=True
+        )
+        raise
+
+
+@mcp.tool
+def list_master_categories(limit: int = 100) -> list[dict[str, Any]]:
+    """List Outlook master categories available in the signed-in mailbox.
+
+    These are the categories that appear in Outlook with colors and can be reused
+    across messages and events.
+
+    Args:
+        limit: Maximum number of categories to return.
+
+    Returns:
+        List of normalized master-category objects containing id, display_name, and color.
+    """
+
+    logger.info("list_master_categories called: limit=%s", limit)
+
+    try:
+        return [
+            _shape_master_category(item)
+            for item in _list_master_category_rows(limit=min(limit, 500))
+        ]
+    except Exception as e:
+        logger.error("list_master_categories failed: %s", str(e), exc_info=True)
+        raise
+
+
+@mcp.tool
+def get_master_category(category: str) -> dict[str, Any]:
+    """Get a master category by ID or display name."""
+
+    logger.info("get_master_category called: category=%s", category)
+
+    try:
+        return _shape_master_category(_resolve_master_category(category))
+    except Exception as e:
+        logger.error(
+            "get_master_category failed for category=%s: %s",
+            category,
+            str(e),
+            exc_info=True,
+        )
+        raise
+
+
+@mcp.tool
+def create_master_category(display_name: str, color: str) -> dict[str, Any]:
+    """Create an Outlook master category with a display name and color."""
+
+    logger.info(
+        "create_master_category called: display_name=%s, color=%s",
+        display_name,
+        color,
+    )
+
+    normalized_name = display_name.strip()
+    normalized_color = color.strip()
+    if not normalized_name:
+        raise ValueError("display_name cannot be empty")
+    if not normalized_color:
+        raise ValueError("color cannot be empty")
+
+    try:
+        raw = graph.request(
+            "POST",
+            "/me/outlook/masterCategories",
+            json={"displayName": normalized_name, "color": normalized_color},
+        )
+        if not raw:
+            raise ValueError("Master category could not be created")
+        return _shape_master_category(raw)
+    except Exception as e:
+        logger.error(
+            "create_master_category failed for display_name=%s: %s",
+            display_name,
+            str(e),
+            exc_info=True,
+        )
+        raise
+
+
+@mcp.tool
+def update_master_category(category: str, color: str) -> dict[str, Any]:
+    """Update the color of an existing Outlook master category."""
+
+    logger.info("update_master_category called: category=%s, color=%s", category, color)
+
+    normalized_color = color.strip()
+    if not normalized_color:
+        raise ValueError("color cannot be empty")
+
+    try:
+        resolved = _resolve_master_category(category)
+        category_id = resolved.get("id")
+        if not category_id:
+            raise ValueError(f"Master category '{category}' has no ID")
+
+        raw = graph.request(
+            "PATCH",
+            f"/me/outlook/masterCategories/{quote(category_id, safe='')}",
+            json={"color": normalized_color},
+        )
+        if not raw:
+            raw = {
+                **resolved,
+                "color": normalized_color,
+            }
+        return _shape_master_category(raw)
+    except Exception as e:
+        logger.error(
+            "update_master_category failed for category=%s: %s",
+            category,
+            str(e),
+            exc_info=True,
+        )
+        raise
+
+
+@mcp.tool
+def delete_master_category(category: str) -> dict[str, Any]:
+    """Delete an Outlook master category by ID or display name."""
+
+    logger.info("delete_master_category called: category=%s", category)
+
+    try:
+        resolved = _resolve_master_category(category)
+        category_id = resolved.get("id")
+        if not category_id:
+            raise ValueError(f"Master category '{category}' has no ID")
+        graph.request(
+            "DELETE",
+            f"/me/outlook/masterCategories/{quote(category_id, safe='')}",
+        )
+        return {
+            "status": "deleted",
+            "id": category_id,
+            "display_name": resolved.get("displayName", ""),
+        }
+    except Exception as e:
+        logger.error(
+            "delete_master_category failed for category=%s: %s",
+            category,
+            str(e),
+            exc_info=True,
+        )
+        raise
+
+
+@mcp.tool
+def ensure_master_categories(
+    categories: list[dict[str, str]],
+    update_colors: bool = False,
+) -> dict[str, Any]:
+    """Ensure a set of Outlook master categories exists.
+
+    Args:
+        categories: List of category specs with `display_name` and `color`.
+        update_colors: Whether to update the color of existing categories when the
+            requested color differs.
+
+    Returns:
+        Summary of created, updated, and already-existing categories.
+    """
+
+    logger.info(
+        "ensure_master_categories called: count=%s, update_colors=%s",
+        len(categories),
+        update_colors,
+    )
+
+    existing_rows = _list_master_category_rows(limit=500)
+    by_name = {
+        item.get("displayName", "").casefold(): item
+        for item in existing_rows
+        if item.get("displayName")
+    }
+
+    created: list[dict[str, Any]] = []
+    updated: list[dict[str, Any]] = []
+    existing: list[dict[str, Any]] = []
+
+    for spec in categories:
+        display_name = spec.get("display_name", "").strip()
+        color = spec.get("color", "").strip()
+        if not display_name:
+            raise ValueError("Each category spec requires a non-empty display_name")
+        if not color:
+            raise ValueError(
+                f"Category '{display_name}' requires a non-empty color value"
+            )
+
+        current = by_name.get(display_name.casefold())
+        if current is None:
+            created_category = create_master_category.fn(
+                display_name=display_name,
+                color=color,
+            )
+            created.append(created_category)
+            by_name[display_name.casefold()] = {
+                "id": created_category.get("id"),
+                "displayName": created_category["display_name"],
+                "color": created_category["color"],
+            }
+            continue
+
+        if update_colors and current.get("color") != color:
+            updated_category = update_master_category.fn(
+                category=current.get("id") or display_name,
+                color=color,
+            )
+            updated.append(updated_category)
+            by_name[display_name.casefold()] = {
+                "id": updated_category.get("id"),
+                "displayName": updated_category["display_name"],
+                "color": updated_category["color"],
+            }
+            continue
+
+        existing.append(_shape_master_category(current))
+
+    return {
+        "requested": len(categories),
+        "created": created,
+        "updated": updated,
+        "existing": existing,
+    }
+
+
+@mcp.tool
 def list_emails(
     folder: str = "inbox",
     limit: int = 10,
@@ -532,7 +1106,8 @@ def list_emails(
     or find recent messages.
 
     Args:
-        folder: Folder name to search in. Options: "inbox", "sent", "drafts", "deleted", "junk", "archive"
+        folder: Folder alias, ID, display name, or slash-delimited path to search in.
+            Supported aliases include "inbox", "sent", "drafts", "deleted", "junk", and "archive".
         limit: Maximum number of emails to retrieve (1-100, defaults to 10)
         body_max_length: Maximum characters for email body content (default 2000, will truncate if longer)
         include_body: Whether to include email body content (affects response size)
@@ -548,6 +1123,7 @@ def list_emails(
     Examples:
         - list_emails() - Get 10 most recent inbox emails
         - list_emails(folder="sent", limit=20) - Get 20 recent sent emails
+        - list_emails(folder="Cresa Deals of the Week", limit=20) - Get emails from a custom folder
         - list_emails(include_body=False) - Get emails without body content for faster response
         - list_emails(start_date="2024-09-01T00:00:00Z", end_date="2024-09-01T23:59:59Z") - Get emails received on September 1st, 2024
         - list_emails(start_date="2024-08-01T00:00:00Z") - Get emails from August 1st, 2024 onwards
@@ -562,7 +1138,7 @@ def list_emails(
     )
 
     try:
-        folder_path = FOLDERS.get(folder.casefold(), folder)
+        folder_path = _resolve_mail_folder(folder)
 
         if include_body:
             select_fields = "id,subject,from,toRecipients,ccRecipients,receivedDateTime,hasAttachments,body,conversationId,isRead"
@@ -706,6 +1282,714 @@ def get_email(
         raise
 
 
+def _normalize_draft_type(draft_type: str) -> str:
+    normalized = draft_type.strip().casefold()
+    normalized = {
+        "replyall": "reply_all",
+        "reply-all": "reply_all",
+        "reply all": "reply_all",
+    }.get(normalized, normalized)
+    normalized = normalized.replace("-", "_").replace(" ", "_")
+    if normalized not in {"new", "reply", "reply_all"}:
+        raise ValueError("draft_type must be one of: new, reply, reply_all")
+    return normalized
+
+
+def _normalize_body_content_type(body_content_type: str) -> str:
+    normalized = body_content_type.strip().casefold()
+    if normalized not in {"text", "html"}:
+        raise ValueError("body_content_type must be either 'text' or 'html'")
+    return normalized
+
+
+def _build_recipient_objects(
+    recipients: list[str] | None,
+) -> list[dict[str, Any]] | None:
+    if recipients is None:
+        return None
+
+    normalized_recipients = []
+    for recipient in recipients:
+        address = recipient.strip()
+        if address:
+            normalized_recipients.append({"emailAddress": {"address": address}})
+
+    return normalized_recipients
+
+
+def _build_message_update_payload(
+    *,
+    subject: str | None,
+    body: str | None,
+    body_content_type: str,
+    to_recipients: list[dict[str, Any]] | None,
+    cc_recipients: list[dict[str, Any]] | None,
+    bcc_recipients: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+
+    if subject is not None:
+        payload["subject"] = subject
+    if body is not None:
+        payload["body"] = {
+            "contentType": body_content_type,
+            "content": body,
+        }
+    if to_recipients is not None:
+        payload["toRecipients"] = to_recipients
+    if cc_recipients is not None:
+        payload["ccRecipients"] = cc_recipients
+    if bcc_recipients is not None:
+        payload["bccRecipients"] = bcc_recipients
+
+    return payload
+
+
+def _shape_email_draft(raw: dict[str, Any]) -> dict[str, Any]:
+    draft = shape_email_detail(raw)
+
+    if "bccRecipients" in raw:
+        draft["bcc"] = [flatten_email_address(r) for r in raw["bccRecipients"]]
+
+    if raw.get("createdDateTime"):
+        draft["created"] = raw["createdDateTime"]
+
+    if raw.get("lastModifiedDateTime"):
+        draft["last_modified"] = raw["lastModifiedDateTime"]
+
+    draft["is_draft"] = raw.get("isDraft", True)
+    return draft
+
+
+@mcp.tool
+def create_email_draft(
+    draft_type: str = "new",
+    email_id: str | None = None,
+    to_recipients: list[str] | None = None,
+    cc_recipients: list[str] | None = None,
+    bcc_recipients: list[str] | None = None,
+    subject: str | None = None,
+    body: str | None = None,
+    body_content_type: str = "text",
+) -> dict[str, Any]:
+    """Create an Outlook email draft without sending it.
+
+    Supports three draft modes:
+    - `new`: create a brand-new draft addressed to the supplied recipients
+    - `reply`: create a reply draft to the sender of an existing message
+    - `reply_all`: create a reply-all draft to an existing message thread
+
+    This tool never sends mail. It only creates or updates draft messages in the user's mailbox.
+
+    Args:
+        draft_type: Draft mode (`new`, `reply`, or `reply_all`)
+        email_id: Required for `reply` and `reply_all`; the source message ID being answered
+        to_recipients: Optional list of recipient email addresses
+        cc_recipients: Optional list of CC recipient email addresses
+        bcc_recipients: Optional list of BCC recipient email addresses
+        subject: Optional draft subject
+        body: Optional draft body content
+        body_content_type: Body format for the draft (`text` or `html`)
+
+    Returns:
+        Draft metadata containing the created draft ID plus a shaped draft message object.
+    """
+
+    logger.info(
+        "create_email_draft called: draft_type=%s, email_id=%s, subject=%s",
+        draft_type,
+        email_id,
+        subject,
+    )
+
+    try:
+        normalized_draft_type = _normalize_draft_type(draft_type)
+        normalized_body_type = _normalize_body_content_type(body_content_type)
+
+        to_objects = _build_recipient_objects(to_recipients)
+        cc_objects = _build_recipient_objects(cc_recipients)
+        bcc_objects = _build_recipient_objects(bcc_recipients)
+
+        payload = _build_message_update_payload(
+            subject=subject,
+            body=body,
+            body_content_type=normalized_body_type,
+            to_recipients=to_objects,
+            cc_recipients=cc_objects,
+            bcc_recipients=bcc_objects,
+        )
+
+        reply_to_message_id: str | None = None
+        raw: dict[str, Any] | None = None
+
+        if normalized_draft_type == "new":
+            if not any(
+                payload.get(key)
+                for key in ("toRecipients", "ccRecipients", "bccRecipients")
+            ):
+                raise ValueError(
+                    "New message drafts require at least one recipient in to_recipients, cc_recipients, or bcc_recipients"
+                )
+            raw = graph.request("POST", "/me/messages", json=payload)
+        else:
+            if not email_id:
+                raise ValueError("email_id is required for reply and reply_all drafts")
+
+            reply_to_message_id = email_id
+            action = (
+                "createReplyAll"
+                if normalized_draft_type == "reply_all"
+                else "createReply"
+            )
+            raw = graph.request("POST", f"/me/messages/{email_id}/{action}")
+
+            if not raw or not raw.get("id"):
+                raise ValueError("Draft could not be created")
+
+            if payload:
+                raw = _patch_email_message(raw["id"], payload)
+
+        if not raw or not raw.get("id"):
+            raise ValueError("Draft could not be created")
+
+        result = {
+            "status": "draft_created",
+            "draft_type": normalized_draft_type,
+            "draft_id": raw["id"],
+            "draft": _shape_email_draft(raw),
+        }
+        if reply_to_message_id is not None:
+            result["reply_to_message_id"] = reply_to_message_id
+
+        return result
+    except Exception as e:
+        logger.error(
+            "create_email_draft failed: draft_type=%s, email_id=%s, error=%s",
+            draft_type,
+            email_id,
+            str(e),
+            exc_info=True,
+        )
+        raise
+
+
+def _resolve_mail_folder(folder: str, include_hidden: bool = False) -> str:
+    destination = folder.strip()
+    if not destination:
+        raise ValueError("Destination folder cannot be empty")
+    if destination.casefold() in FOLDERS:
+        return FOLDERS[destination.casefold()]
+    return _find_mail_folder(destination, include_hidden=include_hidden)["id"]
+
+
+def _shape_email_management_result(raw: dict[str, Any]) -> dict[str, Any]:
+    email = shape_email_summary(raw)
+
+    if raw.get("categories") is not None:
+        email["categories"] = raw.get("categories", [])
+
+    flag_status = raw.get("flag", {}).get("flagStatus")
+    if flag_status:
+        email["flag_status"] = flag_status
+
+    return email
+
+
+def _looks_like_invite_message(raw: dict[str, Any]) -> bool:
+    meeting_message_type = raw.get("meetingMessageType")
+    if isinstance(meeting_message_type, str) and meeting_message_type != "none":
+        return True
+
+    odata_type = raw.get("@odata.type", "")
+    return isinstance(odata_type, str) and "eventMessage" in odata_type
+
+
+def _shape_invite_message(
+    raw: dict[str, Any], include_body: bool = False
+) -> dict[str, Any]:
+    shaped = shape_email_detail(raw) if include_body else shape_email_summary(raw)
+    shaped["kind"] = "invite_message"
+
+    meeting_message_type = raw.get("meetingMessageType")
+    if meeting_message_type:
+        shaped["meeting_message_type"] = meeting_message_type
+
+    if raw.get("responseRequested") is not None:
+        shaped["response_requested"] = raw["responseRequested"]
+
+    if raw.get("allowNewTimeProposals") is not None:
+        shaped["allow_new_time_proposals"] = raw["allowNewTimeProposals"]
+
+    if raw.get("isOutOfDate") is not None:
+        shaped["is_out_of_date"] = raw["isOutOfDate"]
+
+    if raw.get("startDateTime"):
+        shaped["start"] = raw["startDateTime"]
+
+    if raw.get("endDateTime"):
+        shaped["end"] = raw["endDateTime"]
+
+    location = compact_location(raw.get("location"))
+    if location:
+        shaped["location"] = location
+
+    if raw.get("webLink"):
+        shaped["web_url"] = raw["webLink"]
+
+    event = raw.get("event")
+    if isinstance(event, dict) and event.get("id"):
+        shaped["event"] = (
+            shape_event_detail(event) if include_body else shape_event_summary(event)
+        )
+
+    return shaped
+
+
+def _get_invite_message(
+    invite_message_id: str, *, include_body: bool = False, expand_event: bool = False
+) -> dict[str, Any]:
+    params: dict[str, Any] = {}
+    if expand_event:
+        params["$expand"] = "microsoft.graph.eventMessage/event"
+
+    raw = graph.request("GET", f"/me/messages/{invite_message_id}", params=params)
+    if not raw:
+        raise ValueError(f"Invite message with ID {invite_message_id} not found")
+    if not _looks_like_invite_message(raw):
+        raise ValueError(
+            f"Message with ID {invite_message_id} is not an invite message"
+        )
+    return raw
+
+
+def _resolve_event_response_endpoint(response: str) -> tuple[str, str]:
+    normalized_response = response.strip().casefold()
+    action_map = {
+        "accept": "accept",
+        "accepted": "accept",
+        "decline": "decline",
+        "declined": "decline",
+        "tentative": "tentativelyAccept",
+        "tentatively_accept": "tentativelyAccept",
+        "tentativelyaccept": "tentativelyAccept",
+    }
+    endpoint = action_map.get(normalized_response)
+    if endpoint is None:
+        raise ValueError("response must be one of: accept, decline, tentative")
+    normalized = "tentative" if endpoint == "tentativelyAccept" else endpoint
+    return endpoint, normalized
+
+
+def _patch_email_message(email_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    path = f"/me/messages/{email_id}"
+    raw = graph.request("PATCH", path, json=payload)
+    if not raw:
+        raw = graph.request("GET", path)
+    if not raw:
+        raise ValueError(f"Email with ID {email_id} not found")
+    return raw
+
+
+def _move_email_message(
+    email_id: str, destination_folder: str
+) -> tuple[dict[str, Any], str]:
+    resolved_destination = _resolve_mail_folder(destination_folder)
+    raw = graph.request(
+        "POST",
+        f"/me/messages/{email_id}/move",
+        json={"destinationId": resolved_destination},
+    )
+    if not raw:
+        raise ValueError(f"Email with ID {email_id} could not be moved")
+    return raw, resolved_destination
+
+
+def _delete_email_message(email_id: str) -> dict[str, Any]:
+    try:
+        graph.request("DELETE", f"/me/messages/{email_id}")
+        return {"status": "deleted", "email_id": email_id, "resource": "message"}
+    except httpx.HTTPStatusError as e:
+        status_code = e.response.status_code if e.response is not None else None
+        if status_code not in {400, 404}:
+            raise
+
+    graph.request("DELETE", f"/me/events/{email_id}")
+    return {"status": "deleted", "email_id": email_id, "resource": "event"}
+
+
+def _delete_invite_message(invite_message_id: str) -> dict[str, Any]:
+    graph.request("DELETE", f"/me/messages/{invite_message_id}")
+    return {
+        "status": "deleted",
+        "invite_message_id": invite_message_id,
+        "resource": "eventMessage",
+    }
+
+
+def _list_message_summaries(folder: str, limit: int) -> list[dict[str, Any]]:
+    params = {
+        "$top": min(limit, 100),
+        "$select": MESSAGE_SUMMARY_SELECT_FIELDS,
+        "$orderby": "receivedDateTime desc",
+    }
+    return list(
+        graph.request_paginated(
+            f"/me/mailFolders/{folder}/messages",
+            params=params,
+            limit=limit,
+        )
+    )
+
+
+def _hydrate_invite_messages_from_summaries(
+    raw_messages: list[dict[str, Any]],
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    invite_messages: list[dict[str, Any]] = []
+
+    for summary in raw_messages:
+        try:
+            raw = _get_invite_message(
+                summary["id"],
+                include_body=False,
+                expand_event=True,
+            )
+        except ValueError:
+            continue
+        except Exception as e:
+            logger.warning(
+                "invite message probe failed for message_id=%s: %s",
+                summary.get("id"),
+                str(e),
+            )
+            continue
+
+        invite_messages.append(raw)
+        if len(invite_messages) >= limit:
+            break
+
+    return invite_messages
+
+
+def _run_email_management_action(
+    email_id: str,
+    action: str,
+    destination_folder: str | None = None,
+    categories: list[str] | None = None,
+) -> dict[str, Any]:
+    if action == "mark_read":
+        raw = _patch_email_message(email_id, {"isRead": True})
+        return {"status": "updated", "email": _shape_email_management_result(raw)}
+    if action == "mark_unread":
+        raw = _patch_email_message(email_id, {"isRead": False})
+        return {"status": "updated", "email": _shape_email_management_result(raw)}
+    if action == "move":
+        if destination_folder is None:
+            raise ValueError("destination_folder is required for move")
+        raw, resolved_destination = _move_email_message(email_id, destination_folder)
+        return {
+            "status": "moved",
+            "destination_folder": resolved_destination,
+            "email": _shape_email_management_result(raw),
+        }
+    if action == "archive":
+        raw, resolved_destination = _move_email_message(email_id, "archive")
+        return {
+            "status": "moved",
+            "destination_folder": resolved_destination,
+            "email": _shape_email_management_result(raw),
+        }
+    if action == "delete":
+        return _delete_email_message(email_id)
+    if action == "set_categories":
+        if categories is None:
+            raise ValueError("categories are required for set_categories")
+        raw = _patch_email_message(email_id, {"categories": categories})
+        return {
+            "status": "updated",
+            "categories": raw.get("categories", []),
+            "email": _shape_email_management_result(raw),
+        }
+    raise ValueError(f"Unsupported action '{action}'")
+
+
+@mcp.tool
+def mark_email_read(email_id: str, is_read: bool = True) -> dict[str, Any]:
+    """Mark an email as read or unread.
+
+    Args:
+        email_id: Unique identifier of the email to update.
+        is_read: True to mark as read, False to mark as unread.
+
+    Returns:
+        Update result containing the refreshed compact email summary.
+    """
+
+    logger.info(f"mark_email_read called: email_id={email_id}, is_read={is_read}")
+
+    try:
+        raw = _patch_email_message(email_id, {"isRead": is_read})
+        return {
+            "status": "updated",
+            "email": _shape_email_management_result(raw),
+        }
+    except Exception as e:
+        logger.error(
+            f"mark_email_read failed for email_id={email_id}: {str(e)}",
+            exc_info=True,
+        )
+        raise
+
+
+@mcp.tool
+def set_email_categories(email_id: str, categories: list[str]) -> dict[str, Any]:
+    """Replace the category labels on an email.
+
+    Args:
+        email_id: Unique identifier of the email to update.
+        categories: Complete list of categories that should remain on the email.
+
+    Returns:
+        Update result containing the refreshed compact email summary.
+    """
+
+    logger.info(
+        f"set_email_categories called: email_id={email_id}, categories={categories}"
+    )
+
+    try:
+        raw = _patch_email_message(email_id, {"categories": categories})
+        return {
+            "status": "updated",
+            "categories": raw.get("categories", []),
+            "email": _shape_email_management_result(raw),
+        }
+    except Exception as e:
+        logger.error(
+            f"set_email_categories failed for email_id={email_id}: {str(e)}",
+            exc_info=True,
+        )
+        raise
+
+
+@mcp.tool
+def move_email(email_id: str, destination_folder: str) -> dict[str, Any]:
+    """Move an email into another mailbox folder.
+
+    Args:
+        email_id: Unique identifier of the email to move.
+        destination_folder: Folder alias, ID, display name, or slash-delimited path.
+            Supported aliases include inbox, sent, drafts, deleted, junk, and archive.
+
+    Returns:
+        Move result containing the refreshed compact email summary.
+    """
+
+    logger.info(
+        f"move_email called: email_id={email_id}, destination_folder={destination_folder}"
+    )
+
+    try:
+        raw, resolved_destination = _move_email_message(email_id, destination_folder)
+        return {
+            "status": "moved",
+            "destination_folder": resolved_destination,
+            "email": _shape_email_management_result(raw),
+        }
+    except Exception as e:
+        logger.error(
+            f"move_email failed for email_id={email_id}: {str(e)}",
+            exc_info=True,
+        )
+        raise
+
+
+@mcp.tool
+def archive_email(email_id: str) -> dict[str, Any]:
+    """Move an email into the archive folder."""
+
+    logger.info(f"archive_email called: email_id={email_id}")
+
+    try:
+        raw, resolved_destination = _move_email_message(email_id, "archive")
+        return {
+            "status": "moved",
+            "destination_folder": resolved_destination,
+            "email": _shape_email_management_result(raw),
+        }
+    except Exception as e:
+        logger.error(
+            f"archive_email failed for email_id={email_id}: {str(e)}",
+            exc_info=True,
+        )
+        raise
+
+
+@mcp.tool
+def delete_email(email_id: str) -> dict[str, Any]:
+    """Delete an email from the mailbox."""
+
+    logger.info(f"delete_email called: email_id={email_id}")
+
+    try:
+        return _delete_email_message(email_id)
+    except Exception as e:
+        logger.error(
+            f"delete_email failed for email_id={email_id}: {str(e)}",
+            exc_info=True,
+        )
+        raise
+
+
+@mcp.tool
+def bulk_manage_emails(
+    email_ids: list[str],
+    action: str,
+    destination_folder: str | None = None,
+    categories: list[str] | None = None,
+) -> dict[str, Any]:
+    """Apply one inbox-management action to many emails.
+
+    Supported actions:
+        - mark_read
+        - mark_unread
+        - move
+        - archive
+        - delete
+        - set_categories
+
+    Args:
+        email_ids: List of email IDs to update.
+        action: The action to apply to every email ID.
+        destination_folder: Required when action is "move".
+        categories: Required when action is "set_categories".
+
+    Returns:
+        Summary including per-email results and partial failures.
+    """
+
+    logger.info(
+        "bulk_manage_emails called: action=%s, count=%s, destination_folder=%s",
+        action,
+        len(email_ids),
+        destination_folder,
+    )
+
+    supported_actions = {
+        "mark_read",
+        "mark_unread",
+        "move",
+        "archive",
+        "delete",
+        "set_categories",
+    }
+    if action not in supported_actions:
+        raise ValueError(
+            f"Unsupported action '{action}'. Supported actions: {sorted(supported_actions)}"
+        )
+
+    results: list[dict[str, Any]] = []
+    succeeded = 0
+
+    for email_id in email_ids:
+        try:
+            result = _run_email_management_action(
+                email_id=email_id,
+                action=action,
+                destination_folder=destination_folder,
+                categories=categories,
+            )
+            result["email_id"] = email_id
+            results.append(result)
+            succeeded += 1
+        except Exception as e:
+            logger.error(
+                "bulk_manage_emails failed for action=%s email_id=%s: %s",
+                action,
+                email_id,
+                str(e),
+                exc_info=True,
+            )
+            results.append(
+                {
+                    "email_id": email_id,
+                    "status": "failed",
+                    "error": str(e),
+                }
+            )
+
+    return {
+        "action": action,
+        "requested": len(email_ids),
+        "succeeded": succeeded,
+        "failed": len(email_ids) - succeeded,
+        "results": results,
+    }
+
+
+@mcp.tool
+def list_invite_messages(
+    limit: int = 20, folder: str = "inbox"
+) -> list[dict[str, Any]]:
+    """List meeting invite-style messages from a mailbox folder.
+
+    This surfaces meeting requests, cancellations, and meeting response messages
+    that live in the mailbox as eventMessage objects.
+
+    Args:
+        limit: Maximum invite messages to return.
+        folder: Mail folder alias or ID to scan. Defaults to inbox.
+
+    Returns:
+        Compact invite-message summaries, including the associated event when Graph
+        has already materialized it.
+    """
+
+    logger.info("list_invite_messages called: limit=%s, folder=%s", limit, folder)
+
+    resolved_folder = _resolve_mail_folder(folder)
+    fetch_limit = max(limit * 5, min(limit + 20, 100))
+
+    try:
+        raw_messages = _list_message_summaries(
+            resolved_folder,
+            fetch_limit,
+        )
+        invite_messages = _hydrate_invite_messages_from_summaries(
+            raw_messages,
+            limit=limit,
+        )
+        invite_messages = [_shape_invite_message(raw) for raw in invite_messages]
+        return invite_messages[:limit]
+    except Exception as e:
+        logger.error(
+            "list_invite_messages failed for folder=%s: %s",
+            folder,
+            str(e),
+            exc_info=True,
+        )
+        raise
+
+
+@mcp.tool
+def delete_invite_message(invite_message_id: str) -> dict[str, Any]:
+    """Delete a meeting invite-style message from the mailbox."""
+
+    logger.info("delete_invite_message called: invite_message_id=%s", invite_message_id)
+
+    try:
+        return _delete_invite_message(invite_message_id)
+    except Exception as e:
+        logger.error(
+            "delete_invite_message failed for invite_message_id=%s: %s",
+            invite_message_id,
+            str(e),
+            exc_info=True,
+        )
+        raise
+
+
 @mcp.tool
 def list_events(
     days_ahead: int = 7,
@@ -827,6 +2111,122 @@ def get_event(event_id: str) -> dict[str, Any]:
     except Exception as e:
         logger.error(
             f"get_event failed for event_id={event_id}: {str(e)}", exc_info=True
+        )
+        raise
+
+
+@mcp.tool
+def rsvp_to_event(
+    event_id: str,
+    response: str,
+    comment: str | None = None,
+    send_response: bool = False,
+) -> dict[str, Any]:
+    """RSVP to a calendar event without emailing the organizer by default.
+
+    Args:
+        event_id: Unique identifier of the calendar event.
+        response: One of "accept", "decline", or "tentative".
+        comment: Optional organizer-facing message.
+        send_response: Whether to email the organizer. Defaults to False.
+
+    Returns:
+        Confirmation of the RSVP action that was submitted.
+    """
+
+    logger.info(
+        "rsvp_to_event called: event_id=%s, response=%s, send_response=%s",
+        event_id,
+        response,
+        send_response,
+    )
+
+    endpoint, normalized_response = _resolve_event_response_endpoint(response)
+
+    payload = {
+        "comment": comment,
+        "sendResponse": send_response,
+    }
+
+    try:
+        graph.request(
+            "POST",
+            f"/me/events/{event_id}/{endpoint}",
+            json=payload,
+        )
+        return {
+            "status": "responded",
+            "event_id": event_id,
+            "response": normalized_response,
+            "send_response": send_response,
+        }
+    except Exception as e:
+        logger.error(
+            f"rsvp_to_event failed for event_id={event_id}: {str(e)}",
+            exc_info=True,
+        )
+        raise
+
+
+@mcp.tool
+def rsvp_to_invite_message(
+    invite_message_id: str,
+    response: str,
+    comment: str | None = None,
+    send_response: bool = False,
+) -> dict[str, Any]:
+    """RSVP to a meeting invite message via its associated calendar event.
+
+    Args:
+        invite_message_id: Unique identifier of the invite message in the mailbox.
+        response: One of "accept", "decline", or "tentative".
+        comment: Optional organizer-facing message.
+        send_response: Whether to email the organizer. Defaults to False.
+
+    Returns:
+        Confirmation of the RSVP action that was submitted.
+    """
+
+    logger.info(
+        "rsvp_to_invite_message called: invite_message_id=%s, response=%s, send_response=%s",
+        invite_message_id,
+        response,
+        send_response,
+    )
+
+    endpoint, normalized_response = _resolve_event_response_endpoint(response)
+
+    try:
+        invite_message = _get_invite_message(
+            invite_message_id,
+            include_body=True,
+            expand_event=True,
+        )
+        event = invite_message.get("event")
+        if not isinstance(event, dict) or not event.get("id"):
+            raise ValueError(
+                f"Invite message with ID {invite_message_id} has no associated event"
+            )
+
+        graph.request(
+            "POST",
+            f"/me/events/{event['id']}/{endpoint}",
+            json={"comment": comment, "sendResponse": send_response},
+        )
+        return {
+            "status": "responded",
+            "invite_message_id": invite_message_id,
+            "event_id": event["id"],
+            "meeting_message_type": invite_message.get("meetingMessageType", "none"),
+            "response": normalized_response,
+            "send_response": send_response,
+        }
+    except Exception as e:
+        logger.error(
+            "rsvp_to_invite_message failed for invite_message_id=%s: %s",
+            invite_message_id,
+            str(e),
+            exc_info=True,
         )
         raise
 
@@ -1625,7 +3025,7 @@ def _process_search_hit(
         )
 
         result: dict[str, Any] = {
-            "id": resource.get("id", ""),
+            "id": resource.get("id") or hit.get("hitId", ""),
             "kind": kind,
             "title": title,
             "snippet": hit.get("summary", ""),
@@ -1745,7 +3145,8 @@ def search_emails(
     Args:
         query: Search terms (e.g., "meeting notes", "project update", sender name, subject keywords)
         limit: Maximum number of results to return (1-100, defaults to 50)
-        folder: Optional folder to search within ("inbox", "sent", "drafts", etc.). If None, searches all emails
+        folder: Optional folder alias, ID, display name, or slash-delimited path to search within.
+            If None, searches across all emails.
 
     Returns:
         List of matching email objects containing:
@@ -1758,6 +3159,7 @@ def search_emails(
     Examples:
         - search_emails("project alpha") - Find emails about "project alpha" anywhere
         - search_emails("meeting", folder="inbox") - Find meeting emails only in inbox
+        - search_emails("deals", folder="Cresa Deals of the Week") - Search inside a custom folder
         - search_emails("emails received today") - Finds emails from today
         - search_emails("john.doe@company.com") - Find emails from/to specific person
         - search_emails("budget approval") - Find emails about budget approvals
@@ -1768,7 +3170,7 @@ def search_emails(
 
     try:
         if folder:
-            folder_path = FOLDERS.get(folder.casefold(), folder)
+            folder_path = _resolve_mail_folder(folder)
             endpoint = f"/me/mailFolders/{folder_path}/messages"
 
             params = {
@@ -2623,6 +4025,41 @@ def _emails_to_inbox_items(raw_emails: list[dict[str, Any]]) -> list[InboxItem]:
     return items
 
 
+def _invite_messages_to_inbox_items(
+    raw_invite_messages: list[dict[str, Any]],
+) -> list[InboxItem]:
+    items = []
+    for message in raw_invite_messages:
+        from_addr = ""
+        if "from" in message:
+            from_addr = flatten_email_address(message["from"])
+
+        meeting_message_type = message.get("meetingMessageType", "")
+        action_hints = ["review"]
+        if meeting_message_type == "meetingRequest":
+            action_hints = ["rsvp", "delete"]
+        elif meeting_message_type == "meetingCancelled":
+            action_hints = ["delete"]
+
+        items.append(
+            InboxItem(
+                id=message["id"],
+                kind="invite_message",
+                source_tool="list_invite_messages",
+                title=message.get("subject", ""),
+                snippet=message.get("bodyPreview", "")[:200],
+                participants=[from_addr] if from_addr else [],
+                when=message.get("startDateTime", {}).get("dateTime")
+                or message.get("receivedDateTime"),
+                unread=not message.get("isRead", True),
+                state=meeting_message_type,
+                action_hints=action_hints,
+                web_url=message.get("webLink", ""),
+            )
+        )
+    return items
+
+
 def _events_to_inbox_items(raw_events: list[dict[str, Any]]) -> list[InboxItem]:
     items = []
     for ev in raw_events:
@@ -2650,12 +4087,12 @@ def list_inbox_items(
 ) -> dict[str, Any]:
     """Get a ranked, mixed-kind inbox summary across email and calendar.
 
-    Returns a priority-ranked list of inbox items (emails, events) scored by
+    Returns a priority-ranked list of inbox items (emails, invite messages, and events) scored by
     urgency signals like unread status, mentions, and meeting proximity.
 
     Args:
         limit: Maximum items to return (default 20)
-        include_kinds: Optional filter, e.g. ["email"], ["event"], or ["email","event"]
+        include_kinds: Optional filter, e.g. ["email"], ["event"], ["invite_message"], or a mix.
 
     Returns:
         Dictionary with 'items' (ranked list) and 'meta' (counts, sources).
@@ -2664,23 +4101,44 @@ def list_inbox_items(
         f"list_inbox_items called: limit={limit}, include_kinds={include_kinds}"
     )
     all_items: list[InboxItem] = []
-    kinds = set(include_kinds) if include_kinds else {"email", "event"}
+    kinds = (
+        set(include_kinds) if include_kinds else {"email", "event", "invite_message"}
+    )
 
-    try:
-        if "email" in kinds:
-            params = {
-                "$top": min(limit, 25),
-                "$select": "id,subject,from,toRecipients,receivedDateTime,hasAttachments,bodyPreview,conversationId,isRead",
-                "$orderby": "receivedDateTime desc",
-            }
-            raw = list(
-                graph.request_paginated(
-                    "/me/mailFolders/inbox/messages", params=params, limit=limit
-                )
+    if kinds & {"email", "invite_message"}:
+        try:
+            message_fetch_limit = (
+                max(limit * 5, min(limit + 20, 100))
+                if "invite_message" in kinds
+                else limit
             )
-            all_items.extend(_emails_to_inbox_items(raw))
+            raw_messages = _list_message_summaries("inbox", message_fetch_limit)
 
-        if "event" in kinds:
+            invite_messages: list[dict[str, Any]] = []
+            invite_ids: set[str] = set()
+            if "invite_message" in kinds:
+                invite_messages = _hydrate_invite_messages_from_summaries(
+                    raw_messages,
+                    limit=limit,
+                )
+                invite_ids = {message["id"] for message in invite_messages}
+                all_items.extend(_invite_messages_to_inbox_items(invite_messages))
+
+            if "email" in kinds:
+                all_items.extend(
+                    _emails_to_inbox_items(
+                        [
+                            message
+                            for message in raw_messages
+                            if message.get("id") not in invite_ids
+                        ]
+                    )
+                )
+        except Exception as e:
+            logger.error("list_inbox_items message fetch failed: %s", e, exc_info=True)
+
+    if "event" in kinds:
+        try:
             now = dt.datetime.now(dt.timezone.utc)
             params = {
                 "startDateTime": now.isoformat(),
@@ -2693,8 +4151,8 @@ def list_inbox_items(
                 graph.request_paginated("/me/calendarView", params=params, limit=limit)
             )
             all_items.extend(_events_to_inbox_items(raw))
-    except Exception as e:
-        logger.error(f"list_inbox_items data fetch failed: {e}", exc_info=True)
+        except Exception as e:
+            logger.error("list_inbox_items event fetch failed: %s", e, exc_info=True)
 
     ranked = rank_items(all_items)[:limit]
 
@@ -2714,7 +4172,7 @@ def get_inbox_item_detail(item_id: str, kind: str) -> dict[str, Any]:
 
     Args:
         item_id: The item ID from list_inbox_items results
-        kind: The item kind ("email" or "event")
+        kind: The item kind ("email", "invite_message", or "event")
 
     Returns:
         Full item detail with body content included.
@@ -2736,6 +4194,10 @@ def get_inbox_item_detail(item_id: str, kind: str) -> dict[str, Any]:
         detail = shape_event_detail(raw)
         detail["kind"] = "event"
         return detail
+
+    if kind == "invite_message":
+        raw = _get_invite_message(item_id, include_body=True, expand_event=True)
+        return _shape_invite_message(raw, include_body=True)
 
     raise ValueError(f"Unsupported kind: {kind}")
 

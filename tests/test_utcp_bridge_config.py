@@ -5,6 +5,7 @@ from microsoft_mcp.utcp_bridge_config import (
     build_bridge_claude_config,
     build_utcp_config,
     convert_claude_config,
+    derive_manual_name,
 )
 
 
@@ -71,6 +72,12 @@ def test_build_utcp_config_can_explicitly_include_bridge_server():
     assert [manual["name"] for manual in utcp_config["manual_call_templates"]] == [
         "code_mode_mcp"
     ]
+
+
+def test_derive_manual_name_prefers_concise_names():
+    assert derive_manual_name("google_sheets") == "google_sheets"
+    assert derive_manual_name("microsoft-mcp") == "microsoft_mcp"
+    assert derive_manual_name("code-mode-mcp") == "code_mode_mcp"
 
 
 def test_build_bridge_config_points_to_generated_utcp_file(tmp_path: Path):

@@ -48,6 +48,19 @@ def sanitize_manual_name(name: str) -> str:
     return sanitized
 
 
+def derive_manual_name(source_server_name: str) -> str:
+    """
+    Build a stable manual name from a source server name.
+
+    Examples:
+    - google_sheets      -> google_sheets
+    - microsoft-mcp      -> microsoft_mcp
+    - code-mode-mcp      -> code_mode_mcp
+    - browser-tools-mcp  -> browser_tools_mcp
+    """
+    return sanitize_manual_name(source_server_name)
+
+
 def _infer_transport(server_config: dict[str, Any]) -> str | None:
     transport = server_config.get("transport")
     if isinstance(transport, str) and transport.strip():
@@ -121,7 +134,7 @@ def build_manual_name_map(
     seen: set[str] = set()
 
     for source_server_name in selected_names:
-        base_name = sanitize_manual_name(source_server_name)
+        base_name = derive_manual_name(source_server_name)
         manual_name = base_name
         suffix = 2
         while manual_name in seen:

@@ -181,5 +181,35 @@ Tests use `unittest.mock` for mocking Azure auth and HTTP responses. The `confte
 
 - Keep `IMPLEMENTATION.md` updated with any architectural changes
 - Use virtual environment in `.venv` for all Python execution
-- Run `black` or `ruff format` on edited files
+- Run `black` or `ruff format` on edited files (a PostToolUse hook in `.claude/settings.json` does this automatically on `Write|Edit|MultiEdit`)
 - Logging goes to stderr only (MCP protocol uses stdout for JSON-RPC)
+
+## Claude Code Setup
+
+This repo ships a shared `.claude/` so every collaborator gets the same tooling:
+
+- `.claude/settings.json` — permissions allowlist, PostToolUse ruff hook, status line, PostCompact reminder. Committed.
+- `.claude/settings.local.json` — per-user overrides. Gitignored.
+- `.claude/commands/` — `/test`, `/lint`, `/format`, `/run`, `/auth`, `/commit-push-pr`, `/techdebt`, `/bridge-regen`.
+- `.claude/agents/` — `test-writer` (haiku), `code-simplifier` (haiku), `doc-sync` (haiku), `graph-reviewer` (sonnet).
+- `.claude/scripts/` — hook and statusline helpers (bash + jq).
+
+## Self-correcting learning loop
+
+When Claude makes a repeatable mistake, end the correction with:
+
+> "Update your CLAUDE.md so you don't make that mistake again."
+
+For PR reviews, use the `@claude` GitHub Action to let reviewers pin corrections into this file from inline comments, e.g.:
+
+```
+nit: don't construct `httpx.AsyncClient` directly, use graph.request
+@claude add to CLAUDE.md: all Graph calls must go through microsoft_mcp.graph.request so retry + pagination + auth headers are applied.
+```
+
+## Known gotchas
+
+- **Code-mode sandbox — no `_getiter_`.** `code_mode.CodeModeRuntime._build_sandbox` ships without RestrictedPython's `default_guarded_getiter`, so list/dict/set comprehensions and `for` loops fail inside `call_tool_chain` with `name '_getiter_' is not defined`. Until it's patched, agent-authored code must use explicit `while` loops or fold iteration into the returned tool call args.
+- **`action_hints` lives on `list_inbox_items` summary items, not `get_inbox_item_detail` output.** The example in `examples/code-mode/inbox_triage.py` reads `detail["action_hints"]` which is always absent — it falls through to the default. Read hints off the summary item before hydration.
+- **MSAL disables Teams tools.** See commit `7dae88f` — MSAL accounts lack the Teams delegated permissions, so those tools are unregistered under `MICROSOFT_MCP_AUTH_METHOD=msal`.
+- **`src/microsoft_mcp/server.py` is not a valid entry point.** Always use the `microsoft-mcp` console script.

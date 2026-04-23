@@ -43,3 +43,10 @@ tmp/
 
 creds/
 mcp-tool-responses/
+
+# Claude Code — commit .claude/settings.json, commands/, agents/, scripts/.
+# Keep per-user state local.
+.claude/settings.local.json
+.claude/.state/
+.claude/chain/
+

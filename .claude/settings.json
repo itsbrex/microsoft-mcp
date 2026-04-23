@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(uv run:*)",
+      "Bash(uv sync:*)",
+      "Bash(uv add:*)",
+      "Bash(uv lock:*)",
+      "Bash(uv tree:*)",
+      "Bash(uvx ruff:*)",
+      "Bash(uvx pyright:*)",
+      "Bash(uvx black:*)",
+      "Bash(ruff:*)",
+      "Bash(pyright:*)",
+      "Bash(pytest:*)",
+      "Bash(git status)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git branch:*)",
+      "Bash(git remote:*)",
+      "Bash(git rev-parse:*)",
+      "Bash(git worktree list)",
+      "Bash(git worktree list:*)",
+      "Bash(gh pr list:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr diff:*)",
+      "Bash(gh run list:*)",
+      "Bash(gh run view:*)",
+      "Bash(gh issue list:*)",
+      "Bash(gh issue view:*)",
+      "Bash(rg:*)",
+      "Bash(fd:*)",
+      "Bash(ls:*)",
+      "Bash(cat:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(wc:*)",
+      "Bash(jq:*)",
+      "Bash(find .:*)",
+      "Bash(tree:*)",
+      "Bash(python -m microsoft_mcp:*)",
+      "Bash(PYTHONPATH=src python -m microsoft_mcp.utcp_bridge_config:*)",
+      "Read(//Users/hack/github/microsoft-mcp/**)",
+      "Edit(//Users/hack/github/microsoft-mcp/**)",
+      "Write(//Users/hack/github/microsoft-mcp/**)"
+    ],
+    "deny": [
+      "Bash(rm -rf /*)",
+      "Bash(rm -rf ~*)",
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)",
+      "Bash(git reset --hard origin/master:*)",
+      "Bash(git reset --hard origin/main:*)",
+      "Read(//Users/hack/.config/microsoft-mcp/tokens/**)",
+      "Read(//Users/hack/.ms-graph-mcp-azure-auth-record.json)"
+    ],
+    "ask": [
+      "Bash(git push:*)",
+      "Bash(gh pr create:*)",
+      "Bash(gh pr merge:*)",
+      "Bash(uv publish:*)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash $CLAUDE_PROJECT_DIR/.claude/scripts/ruff-on-write.sh"
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "printf '\\n[context compacted] reminders: uv for Python, ruff for format, pytest in tests/, Graph calls go through microsoft_mcp.graph (pagination + 429 retry baked in), two code-mode paths (in-process sandbox in code_mode.py, UTCP bridge generator in utcp_bridge_config.py). Sandbox lacks _getiter_ so prefer while-loops over list comprehensions in call_tool_chain.\\n'"
+          }
+        ]
+      }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "bash $CLAUDE_PROJECT_DIR/.claude/scripts/statusline.sh"
+  },
+  "env": {
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTHONUNBUFFERED": "1"
+  },
+  "spinnerTipsEnabled": true,
+  "includeCoAuthoredBy": false
+}

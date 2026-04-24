@@ -56,6 +56,12 @@ if not logging.getLogger().hasHandlers():
 mcp = FastMCP("microsoft-graph-mcp")
 
 
+def _env_path(name: str) -> pl.Path | None:
+    """Return os.getenv(name) wrapped in Path, or None if unset/empty."""
+    value = os.getenv(name)
+    return pl.Path(value) if value else None
+
+
 def get_response_profile(override: str = "auto") -> str:
     """Return the active response profile.
 
@@ -87,7 +93,7 @@ if auth_method == "msal":
     # - tenant_id: "common" (or MICROSOFT_MCP_TENANT_ID)
     # - account_identifier: "default" (or MICROSOFT_MCP_ACCOUNT_ID)
     auth: AuthProvider = MSALRefreshTokenAuth(
-        tokens_dir=os.getenv("MICROSOFT_MCP_TOKENS_DIR"),
+        tokens_dir=_env_path("MICROSOFT_MCP_TOKENS_DIR"),
         client_id=os.getenv("MICROSOFT_MCP_CLIENT_ID"),
         tenant_id=os.getenv("MICROSOFT_MCP_TENANT_ID"),
         account_identifier=os.getenv("MICROSOFT_MCP_ACCOUNT_ID"),
@@ -98,8 +104,8 @@ else:
 
     logger.info("Using Azure SDK authentication method (browser flow)")
     auth: AuthProvider = AzureAuthentication(
-        auth_record_file=os.getenv("AZURE_CRED_CACHE_FILE"),
-        token_cache_file=os.getenv("AZURE_TOKEN_CACHE_FILE"),
+        auth_record_file=_env_path("AZURE_CRED_CACHE_FILE"),
+        token_cache_file=_env_path("AZURE_TOKEN_CACHE_FILE"),
     )
 
 # Set the auth instance for the graph module
@@ -163,6 +169,7 @@ def _get_code_mode_runtime() -> CodeModeRuntime:
     else:
         _run_async(_code_mode_runtime.refresh())
 
+    assert _code_mode_runtime is not None  # narrows for pyright
     return _code_mode_runtime
 
 
@@ -389,9 +396,11 @@ def list_accounts() -> list[dict[str, Any]]:
         logger.info("Token directory does not exist, returning empty list")
         return accounts
 
-    # Get current active account identifier
+    # Get current active account identifier (MSAL-only attribute)
+    from .auth_msal import MSALRefreshTokenAuth
+
     active_identifier = None
-    if hasattr(auth, "account_identifier"):
+    if isinstance(auth, MSALRefreshTokenAuth):
         active_identifier = auth.account_identifier
 
     for token_file in tokens_dir.glob("*_access_token.json"):
@@ -470,7 +479,7 @@ def set_active_account(account: str) -> dict[str, str]:
 
     # Create new auth instance for this account
     auth = MSALRefreshTokenAuth(
-        tokens_dir=os.getenv("MICROSOFT_MCP_TOKENS_DIR"),
+        tokens_dir=_env_path("MICROSOFT_MCP_TOKENS_DIR"),
         client_id=os.getenv("MICROSOFT_MCP_CLIENT_ID"),
         tenant_id=os.getenv("MICROSOFT_MCP_TENANT_ID"),
         account_identifier=account,
@@ -501,16 +510,18 @@ def get_active_account() -> dict[str, Any]:
 
     result: dict[str, Any] = {"auth_method": auth_method}
 
-    if hasattr(auth, "account_identifier"):
+    # MSAL-specific attributes (account_identifier, _load_access_token_data)
+    from .auth_msal import MSALRefreshTokenAuth
+
+    if isinstance(auth, MSALRefreshTokenAuth):
         result["identifier"] = auth.account_identifier
 
         # Try to load token data for more details
         try:
-            if hasattr(auth, "_load_access_token_data"):
-                token_data = auth._load_access_token_data()
-                if token_data:
-                    result["email"] = token_data.get("email", auth.account_identifier)
-                    result["expires_at"] = token_data.get("expires_at")
+            token_data = auth._load_access_token_data()
+            if token_data:
+                result["email"] = token_data.get("email", auth.account_identifier)
+                result["expires_at"] = token_data.get("expires_at")
         except Exception as e:
             logger.warning(f"Could not load token data: {e}")
             result["email"] = auth.account_identifier

@@ -25,7 +25,7 @@ NOISE_KEYS = {
 _EMPTY = (None, "", [], {})
 
 
-def cleanup_graph_payload(value: object) -> object:
+def cleanup_graph_payload(value: object) -> Any:
     if isinstance(value, dict):
         cleaned: dict = {}
         for key, child in value.items():

@@ -2,6 +2,7 @@ import os
 import threading
 import httpx
 import time
+from pathlib import Path
 from typing import Any, Iterator, Optional, TYPE_CHECKING
 from dotenv import load_dotenv
 
@@ -31,6 +32,12 @@ def set_auth_instance(auth: "AuthProvider") -> None:
         _global_auth = auth
 
 
+def _env_path(name: str) -> Path | None:
+    """Return os.getenv(name) wrapped in Path, or None if unset/empty."""
+    value = os.getenv(name)
+    return Path(value) if value else None
+
+
 def _construct_default_auth() -> "AuthProvider":
     """Construct the default auth provider based on environment configuration."""
     load_dotenv()
@@ -40,7 +47,7 @@ def _construct_default_auth() -> "AuthProvider":
         from .auth_msal import MSALRefreshTokenAuth
 
         return MSALRefreshTokenAuth(
-            tokens_dir=os.getenv("MICROSOFT_MCP_TOKENS_DIR"),
+            tokens_dir=_env_path("MICROSOFT_MCP_TOKENS_DIR"),
             client_id=os.getenv("MICROSOFT_MCP_CLIENT_ID"),
             tenant_id=os.getenv("MICROSOFT_MCP_TENANT_ID"),
             account_identifier=os.getenv("MICROSOFT_MCP_ACCOUNT_ID"),
@@ -49,8 +56,8 @@ def _construct_default_auth() -> "AuthProvider":
     from .auth import AzureAuthentication
 
     return AzureAuthentication(
-        auth_record_file=os.getenv("AZURE_CRED_CACHE_FILE"),
-        token_cache_file=os.getenv("AZURE_TOKEN_CACHE_FILE"),
+        auth_record_file=_env_path("AZURE_CRED_CACHE_FILE"),
+        token_cache_file=_env_path("AZURE_TOKEN_CACHE_FILE"),
     )
 
 

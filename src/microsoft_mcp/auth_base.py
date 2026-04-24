@@ -10,7 +10,7 @@ Implementations:
 - MSALRefreshTokenAuth (auth_msal.py) - MSAL device code flow with file-based tokens
 """
 
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 
 @runtime_checkable
@@ -58,7 +58,7 @@ class AuthProvider(Protocol):
         """
         ...
 
-    def authenticate(self) -> dict:
+    def authenticate(self) -> Any:
         """Perform initial authentication.
 
         This method triggers the interactive authentication flow

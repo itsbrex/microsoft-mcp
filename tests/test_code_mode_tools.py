@@ -130,7 +130,8 @@ return {
     "iface_present": iface is not None,
     "map_has_list_emails": "list_emails" in iface_map,
 }
-"""
+""",
+        include_interfaces=True,
     )
 
     assert result["result"]["available_count"] > 0
@@ -252,3 +253,24 @@ return total
 """
     )
     assert result["result"] == 10
+
+
+@pytest.mark.asyncio
+async def test_call_tool_chain_default_excludes_interface_catalog(mcp_with_runtime):
+    runtime = mcp_with_runtime
+    result = await runtime.call_tool_chain("return 42")
+    assert result["result"] == 42
+    assert "interfaces" not in result
+    assert "interface_map_json" not in result
+    assert "available_tools" not in result
+    assert "available_access_patterns" not in result
+
+
+@pytest.mark.asyncio
+async def test_call_tool_chain_include_interfaces_flag(mcp_with_runtime):
+    runtime = mcp_with_runtime
+    result = await runtime.call_tool_chain("return 1", include_interfaces=True)
+    assert "interfaces" in result
+    assert "interface_map_json" in result
+    assert "available_tools" in result
+    assert "available_access_patterns" in result

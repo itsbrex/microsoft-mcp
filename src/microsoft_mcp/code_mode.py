@@ -322,8 +322,15 @@ Python code with direct access to the live tool registry.
         self,
         code: str,
         timeout: float | None = None,
+        include_interfaces: bool = False,
     ) -> dict[str, Any]:
-        """Execute trusted code against the live tool registry in a sandbox."""
+        """Execute trusted code against the live tool registry in a sandbox.
+
+        By default the response contains only the user-code result, logs, and
+        trace. Pass ``include_interfaces=True`` to also embed the generated
+        TypedDict catalog (useful for first-run discovery, expensive in tokens
+        on every call).
+        """
 
         if not self._tool_details:
             await self.refresh()
@@ -387,15 +394,17 @@ Python code with direct access to the live tool registry.
                 if output:
                     for line in str(output).splitlines():
                         logs.append(line)
-            return {
+            response: dict[str, Any] = {
                 "result": result,
                 "logs": logs,
                 "trace": trace,
-                "interfaces": interfaces,
-                "interface_map_json": interface_map_json,
-                "available_tools": available_tools,
-                "available_access_patterns": available_access_patterns,
             }
+            if include_interfaces:
+                response["interfaces"] = interfaces
+                response["interface_map_json"] = interface_map_json
+                response["available_tools"] = available_tools
+                response["available_access_patterns"] = available_access_patterns
+            return response
         except asyncio.TimeoutError as exc:
             logs.append(f"[ERROR] Code execution timed out after {timeout} seconds.")
             raise TimeoutError(

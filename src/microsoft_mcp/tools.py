@@ -654,16 +654,27 @@ def get_required_keys_for_tool(tool_name: str) -> dict[str, Any]:
 
 
 @mcp.tool
-def call_tool_chain(code: str, timeout: float = 30.0) -> dict[str, Any]:
+def call_tool_chain(
+    code: str,
+    timeout: float = 30.0,
+    include_interfaces: bool = False,
+) -> dict[str, Any]:
     """Execute a multi-step Python workflow against the active Microsoft tool namespace.
 
     The sandbox exposes the active business tools as `microsoft.<tool>()`,
     generated interfaces through `interfaces`, and per-tool interface lookup
     via `get_tool_interface(name)`.
+
+    Set ``include_interfaces=True`` only when you need the generated TypedDict
+    catalog in the response (default False to keep token cost low).
     """
 
     runtime = _get_code_mode_runtime()
-    return _run_async(runtime.call_tool_chain(code, timeout=timeout))
+    return _run_async(
+        runtime.call_tool_chain(
+            code, timeout=timeout, include_interfaces=include_interfaces
+        )
+    )
 
 
 @mcp.tool

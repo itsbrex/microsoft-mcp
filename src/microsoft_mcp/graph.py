@@ -91,45 +91,36 @@ def request(
         params.setdefault("$count", "true")
 
     retry_count = 0
-    while retry_count <= max_retries:
-        try:
-            response = _client.request(
-                method=method,
-                url=f"{BASE_URL}{path}",
-                headers=headers,
-                params=params,
-                json=json,
-                content=data,
-            )
+    while True:
+        response = _client.request(
+            method=method,
+            url=f"{BASE_URL}{path}",
+            headers=headers,
+            params=params,
+            json=json,
+            content=data,
+        )
 
-            if response.status_code == 429:
-                retry_after = int(response.headers.get("Retry-After", "5"))
-                if retry_count < max_retries:
-                    time.sleep(min(retry_after, 60))
-                    retry_count += 1
-                    continue
+        if response.status_code == 429 and retry_count < max_retries:
+            retry_after_header = response.headers.get("Retry-After", "5")
+            try:
+                retry_after = int(retry_after_header)
+            except ValueError:
+                retry_after = 5
+            time.sleep(min(retry_after, 60))
+            retry_count += 1
+            continue
 
-            if response.status_code >= 500 and retry_count < max_retries:
-                wait_time = (2**retry_count) * 1
-                time.sleep(wait_time)
-                retry_count += 1
-                continue
+        if response.status_code >= 500 and retry_count < max_retries:
+            time.sleep((2**retry_count) * 1)
+            retry_count += 1
+            continue
 
-            response.raise_for_status()
+        response.raise_for_status()
 
-            if response.content:
-                return response.json()
-            return None
-
-        except httpx.HTTPStatusError as e:
-            if retry_count < max_retries and e.response.status_code >= 500:
-                wait_time = (2**retry_count) * 1
-                time.sleep(wait_time)
-                retry_count += 1
-                continue
-            raise
-
-    return None
+        if response.content:
+            return response.json()
+        return None
 
 
 def request_paginated(

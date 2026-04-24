@@ -130,6 +130,8 @@ class TestGraphModule:
         # First call returns 500, second call succeeds
         mock_error_response = Mock()
         mock_error_response.status_code = 500
+        mock_error_response.headers = {}
+        mock_error_response.content = b""
 
         mock_success_response = Mock()
         mock_success_response.status_code = 200
@@ -137,9 +139,7 @@ class TestGraphModule:
         mock_success_response.json.return_value = {"success": True}
 
         mock_client.request.side_effect = [
-            httpx.HTTPStatusError(
-                "Server error", request=Mock(), response=mock_error_response
-            ),
+            mock_error_response,
             mock_success_response,
         ]
 
@@ -354,3 +354,34 @@ class TestGraphModule:
 
         with pytest.raises(ConnectionError, match="Network error during search query"):
             list(search_query("test", ["message"], auth=self.mock_auth))
+
+
+def test_request_retries_exactly_max_retries_plus_one_on_persistent_500(mock_auth):
+    from unittest.mock import MagicMock
+
+    from microsoft_mcp import graph
+
+    graph.set_auth_instance(mock_auth)
+
+    call_count = {"n": 0}
+
+    def fake_request(method, url, headers=None, params=None, json=None, content=None):
+        call_count["n"] += 1
+        resp = MagicMock(spec=httpx.Response)
+        resp.status_code = 500
+        resp.headers = {}
+        resp.content = b""
+        resp.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "500", request=MagicMock(), response=resp
+        )
+        return resp
+
+    with (
+        patch.object(graph._client, "request", side_effect=fake_request),
+        patch("time.sleep", return_value=None),
+    ):
+        with pytest.raises(httpx.HTTPStatusError):
+            graph.request("GET", "/me", max_retries=3)
+
+    # Initial attempt + 3 retries = 4 total. No more.
+    assert call_count["n"] == 4

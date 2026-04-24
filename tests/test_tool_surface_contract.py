@@ -1,0 +1,189 @@
+"""Contract tests enforcing tool-surface audit invariants.
+
+Locks in the fixes from the 2026-04-23 audit so any future regression
+(missing response_profile, raw httpx call, unpopulated ranker signal,
+re-introduced envelope bloat, lost SCOPES dedupe, dropped exception
+chaining) fails CI.
+
+DO NOT remove an assertion in this file without first checking that the
+underlying invariant is intentionally being relaxed — many of these
+guards exist because the audit found a real production bug.
+"""
+
+import inspect
+import re
+
+from microsoft_mcp import auth, auth_msal, code_mode
+from microsoft_mcp import tools as tools_mod
+
+
+# ---------------------------------------------------------------------------
+# Tool registry invariants
+# ---------------------------------------------------------------------------
+
+LIST_OR_SEARCH_TOOLS = [
+    "list_emails",
+    "list_events",
+    "list_contacts",
+    "list_chat_messages",
+    "list_mail_folders",
+    "list_master_categories",
+    "list_invite_messages",
+    "list_files",
+    "unified_search",
+    "search_files",
+    "search_emails",
+    "search_events",
+    "search_contacts",
+    "list_channel_messages",
+    "search_chat_messages",
+    "search_channel_messages",
+    "list_inbox_items",
+]
+
+
+def test_all_list_search_tools_accept_response_profile():
+    """A1: Every list/search tool exposes response_profile = 'auto'."""
+    missing = []
+    for name in LIST_OR_SEARCH_TOOLS:
+        tool = getattr(tools_mod, name, None)
+        assert tool is not None, f"{name} not exported from tools module"
+        fn = getattr(tool, "fn", tool)
+        sig = inspect.signature(fn)
+        param = sig.parameters.get("response_profile")
+        if param is None:
+            missing.append(name)
+            continue
+        # The default must be 'auto' so MICROSOFT_MCP_RESPONSE_PROFILE env var resolves.
+        assert param.default == "auto", (
+            f"{name}.response_profile default is {param.default!r}, expected 'auto'"
+        )
+    assert not missing, f"tools missing response_profile: {missing}"
+
+
+def test_no_direct_httpx_calls_in_tools_module():
+    """B6/B7 spirit: tools.py must route every Graph call through graph.request.
+
+    Raw httpx.Client / httpx.get etc. bypass the retry, pagination, and auth
+    handling baked into microsoft_mcp.graph.
+    """
+    src = inspect.getsource(tools_mod)
+    assert not re.search(r"httpx\.(Async)?Client\(", src), (
+        "tools.py instantiates an httpx client directly; route through graph.request"
+    )
+    assert not re.search(r"httpx\.(get|post|put|delete|patch)\(", src), (
+        "tools.py has a raw httpx HTTP call; route through graph.request"
+    )
+
+
+def test_inbox_ranker_signals_are_populated():
+    """B3: Each ranker signal must have a populator in tools.py.
+
+    The signals exist in inbox_models.InboxItem but were dead code until
+    the audit. If a future change drops one of these populators, the
+    ranker silently regresses to unread-only scoring.
+    """
+    src = inspect.getsource(tools_mod)
+    for signal in ("mentioned=", "flagged=", "is_newsletter=", "starts_in_minutes="):
+        assert signal in src, (
+            f"inbox ranker signal {signal!r} has no populator in tools.py — "
+            "InboxItem dataclass field is unread"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Code-mode runtime invariants
+# ---------------------------------------------------------------------------
+
+
+def test_call_tool_chain_default_response_is_lean():
+    """B2: call_tool_chain must NOT include the catalog by default."""
+    tool = tools_mod.call_tool_chain
+    fn = getattr(tool, "fn", tool)
+    sig = inspect.signature(fn)
+    assert "include_interfaces" in sig.parameters, (
+        "call_tool_chain lost its include_interfaces parameter"
+    )
+    assert sig.parameters["include_interfaces"].default is False, (
+        "include_interfaces default must remain False to keep token cost low"
+    )
+
+
+def test_code_mode_sandbox_supports_iteration():
+    """B1: The sandbox's RestrictedPython guards must include _getiter_/_inplacevar_."""
+    src = inspect.getsource(code_mode)
+    for required_guard in ("_getiter_", "_iter_unpack_sequence_", "_inplacevar_"):
+        assert f'"{required_guard}"' in src or f"'{required_guard}'" in src, (
+            f"sandbox missing guard {required_guard!r} — list comprehensions / "
+            "for loops / += would fail inside call_tool_chain"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Auth invariants
+# ---------------------------------------------------------------------------
+
+
+def test_scopes_has_no_duplicates():
+    """B9: SCOPES must be unique."""
+    assert len(auth.SCOPES) == len(set(auth.SCOPES)), "auth.SCOPES contains duplicates"
+
+
+def test_no_bare_exception_raises_in_auth_modules():
+    """A11: Auth modules must not raise bare Exception (use RuntimeError + from e)."""
+    for module in (auth, auth_msal):
+        source = inspect.getsource(module)
+        offending = [
+            (i, line)
+            for i, line in enumerate(source.splitlines(), start=1)
+            if "raise Exception(" in line
+        ]
+        assert not offending, f"{module.__name__} raises bare Exception:\n" + "\n".join(
+            f"  L{i}: {line.strip()}" for i, line in offending
+        )
+
+
+def test_msal_account_identifier_assigned_exactly_once():
+    """B13: __init__ assigns self.account_identifier exactly once (not twice as a rebase artifact)."""
+    src = inspect.getsource(auth_msal.MSALRefreshTokenAuth.__init__)
+    occurrences = src.count("self.account_identifier =")
+    assert occurrences == 1, (
+        f"MSAL __init__ has {occurrences} account_identifier assignments; expected 1"
+    )
+
+
+def test_response_shaping_does_not_export_dead_types():
+    """A2: ResponseProfile enum and BudgetHints dataclass were unused; must stay removed."""
+    import microsoft_mcp.response_shaping as rs
+
+    assert not hasattr(rs, "ResponseProfile"), (
+        "ResponseProfile was unused and removed in A2; do not re-export"
+    )
+    assert not hasattr(rs, "BudgetHints"), (
+        "BudgetHints was unused and removed in A2; do not re-export"
+    )
+
+
+# ---------------------------------------------------------------------------
+# UTCP bridge invariants
+# ---------------------------------------------------------------------------
+
+
+def test_utcp_bridge_command_not_user_specific():
+    """A10: DEFAULT_BRIDGE_COMMAND must not hardcode any user's home directory.
+
+    Inspect the source rather than the resolved runtime value: the resolved
+    value may legitimately point at a user-specific install path (e.g. a mise
+    or nvm shim under ~/.local), which is fine because it came from
+    shutil.which / the env override — not from a hardcoded string literal.
+    """
+    from microsoft_mcp import utcp_bridge_config
+
+    src = inspect.getsource(utcp_bridge_config)
+    assert "/Users/hack/" not in src, (
+        "utcp_bridge_config.py contains a hardcoded /Users/hack/... path; "
+        "use shutil.which or the env override"
+    )
+    assert utcp_bridge_config.DEFAULT_BRIDGE_COMMAND, (
+        "DEFAULT_BRIDGE_COMMAND must not be empty"
+    )

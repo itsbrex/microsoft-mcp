@@ -380,3 +380,23 @@ def test_constructing_azure_auth_loads_dotenv(monkeypatch, tmp_path):
     assert mock_ld.called, "load_dotenv() must be invoked during __init__"
     # Called exactly once at init-time, no other side-effect invocations expected.
     assert mock_ld.call_count == 1
+
+
+def test_no_bare_exception_raises_in_auth_modules():
+    """Both auth modules should chain exceptions via RuntimeError(...) from e
+    instead of re-raising as bare Exception. Generic 'raise Exception(...)' is a smell."""
+    import inspect
+    from microsoft_mcp import auth, auth_msal
+
+    for module in (auth, auth_msal):
+        source = inspect.getsource(module)
+        # Allow `Exception` in type annotations / class definitions; only flag the raise pattern.
+        offending_lines = [
+            (i, line)
+            for i, line in enumerate(source.splitlines(), start=1)
+            if "raise Exception(" in line
+        ]
+        assert not offending_lines, (
+            f"{module.__name__} still raises bare Exception:\n"
+            + "\n".join(f"  L{i}: {line.strip()}" for i, line in offending_lines)
+        )

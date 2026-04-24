@@ -389,7 +389,7 @@ class MSALRefreshTokenAuth:
                 result = json.loads(response.read().decode("utf-8"))
 
                 if "access_token" not in result:
-                    raise Exception("No access_token in refresh response")
+                    raise RuntimeError("No access_token in refresh response")
 
                 logger.info("Access token refreshed successfully")
                 return result
@@ -402,11 +402,11 @@ class MSALRefreshTokenAuth:
                 error_desc = error_json.get(
                     "error_description", error_json.get("error", "Unknown")
                 )
-                raise Exception(f"Token refresh failed: {error_desc}")
+                raise RuntimeError(f"Token refresh failed: {error_desc}") from e
             except json.JSONDecodeError:
-                raise Exception(
+                raise RuntimeError(
                     f"Token refresh failed (HTTP {e.code}): {error_body[:200]}"
-                )
+                ) from e
 
     def authenticate(self) -> dict[str, Any]:
         """Perform device code flow authentication.
@@ -456,7 +456,7 @@ class MSALRefreshTokenAuth:
             error_msg = flow.get(
                 "error_description", flow.get("error", "Unknown error")
             )
-            raise Exception(f"Failed to create device flow: {error_msg}")
+            raise RuntimeError(f"Failed to create device flow: {error_msg}")
 
         # Display authentication instructions
         print()
@@ -504,10 +504,10 @@ class MSALRefreshTokenAuth:
 
         if "error" in result:
             error_desc = result.get("error_description", result.get("error", "Unknown"))
-            raise Exception(f"Authentication failed: {error_desc}")
+            raise RuntimeError(f"Authentication failed: {error_desc}")
 
         if "access_token" not in result:
-            raise Exception("No access_token in authentication response")
+            raise RuntimeError("No access_token in authentication response")
 
         # Extract email from ID token claims if available
         email = None
@@ -555,7 +555,7 @@ class MSALRefreshTokenAuth:
             refresh_token = self._load_refresh_token()
             if not refresh_token:
                 logger.error("No refresh token found. Authentication required.")
-                raise Exception(
+                raise RuntimeError(
                     "No refresh token found. Run authentication first: "
                     "MICROSOFT_MCP_AUTH_METHOD=msal uv run authenticate.py"
                 )
@@ -572,12 +572,12 @@ class MSALRefreshTokenAuth:
                 data = self._load_access_token_data()
                 if not data:
                     # Defensive — save should always produce a readable file.
-                    raise Exception("Token saved but could not be re-read")
+                    raise RuntimeError("Token saved but could not be re-read")
                 return data
             except Exception as e:
                 logger.error(f"Token refresh failed: {e}")
                 self.clear_cache()
-                raise Exception(
+                raise RuntimeError(
                     f"Token refresh failed: {e}. Please re-authenticate: "
                     "MICROSOFT_MCP_AUTH_METHOD=msal uv run authenticate.py"
                 ) from e

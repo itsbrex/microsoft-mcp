@@ -179,7 +179,7 @@ FOLDERS = {
 
 MESSAGE_SUMMARY_SELECT_FIELDS = (
     "id,subject,from,toRecipients,receivedDateTime,hasAttachments,"
-    "bodyPreview,conversationId,isRead,webLink,flag"
+    "bodyPreview,conversationId,isRead,webLink,flag,mentionsPreview"
 )
 MAIL_FOLDER_SELECT_FIELDS = (
     "id,displayName,parentFolderId,childFolderCount,totalItemCount,"
@@ -4067,6 +4067,7 @@ def _emails_to_inbox_items(raw_emails: list[dict[str, Any]]) -> list[InboxItem]:
                 participants=[from_addr] if from_addr else [],
                 when=e.get("receivedDateTime"),
                 unread=not e.get("isRead", True),
+                mentioned=bool((e.get("mentionsPreview") or {}).get("isMentioned")),
                 flagged=(e.get("flag") or {}).get("flagStatus") == "flagged",
                 is_newsletter=_is_newsletter_sender(e.get("from")),
                 web_url=f"https://outlook.office.com/mail/deeplink/readconv/{quote(e.get('conversationId', ''), safe='')}"

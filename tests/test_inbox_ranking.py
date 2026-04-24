@@ -202,3 +202,32 @@ def test_human_sender_not_newsletter():
     ]
     items = tools_mod._emails_to_inbox_items(raw)
     assert items[0].is_newsletter is False
+
+
+def test_mentioned_signal_fires_when_mentionspreview_present():
+    raw = [
+        {
+            "id": "m-ment",
+            "subject": "FYI",
+            "isRead": True,
+            "mentionsPreview": {"isMentioned": True},
+        }
+    ]
+    items = tools_mod._emails_to_inbox_items(raw)
+    assert items[0].mentioned is True
+    # mentioned (+15) only, not unread
+    assert _compute_score(items[0]) == 15.0
+
+
+def test_not_mentioned_when_field_absent_or_false():
+    raw = [
+        {"id": "m-nm1", "subject": "a", "isRead": True},
+        {
+            "id": "m-nm2",
+            "subject": "b",
+            "isRead": True,
+            "mentionsPreview": {"isMentioned": False},
+        },
+    ]
+    items = tools_mod._emails_to_inbox_items(raw)
+    assert all(not i.mentioned for i in items)

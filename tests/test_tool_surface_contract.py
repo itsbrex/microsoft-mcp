@@ -77,18 +77,78 @@ def test_no_direct_httpx_calls_in_tools_module():
 
 
 def test_inbox_ranker_signals_are_populated():
-    """B3: Each ranker signal must have a populator in tools.py.
+    """B3: Each ranker signal must be populated by its adapter helper.
 
-    The signals exist in inbox_models.InboxItem but were dead code until
-    the audit. If a future change drops one of these populators, the
-    ranker silently regresses to unread-only scoring.
+    Constructs raw inputs that exercise each signal and verifies the
+    InboxItem returned by the relevant _*_to_inbox_items helper has the
+    field set. This catches regressions where a populator is removed
+    even if the substring 'signal=' still appears elsewhere in the file.
     """
-    src = inspect.getsource(tools_mod)
-    for signal in ("mentioned=", "flagged=", "is_newsletter=", "starts_in_minutes="):
-        assert signal in src, (
-            f"inbox ranker signal {signal!r} has no populator in tools.py — "
-            "InboxItem dataclass field is unread"
-        )
+    import datetime as dt
+
+    # Email: mentioned, flagged, is_newsletter
+    raw_emails = [
+        {
+            "id": "m-mention",
+            "subject": "FYI",
+            "isRead": True,
+            "mentionsPreview": {"isMentioned": True},
+        },
+        {
+            "id": "m-flag",
+            "subject": "Action",
+            "isRead": True,
+            "flag": {"flagStatus": "flagged"},
+        },
+        {
+            "id": "m-news",
+            "subject": "Digest",
+            "isRead": False,
+            "from": {"emailAddress": {"address": "noreply@substack.com"}},
+        },
+    ]
+    items = tools_mod._emails_to_inbox_items(raw_emails)
+    by_id = {it.id: it for it in items}
+    assert by_id["m-mention"].mentioned is True, (
+        "_emails_to_inbox_items lost the mentioned signal populator (B3d)"
+    )
+    assert by_id["m-flag"].flagged is True, (
+        "_emails_to_inbox_items lost the flagged signal populator (B3b)"
+    )
+    assert by_id["m-news"].is_newsletter is True, (
+        "_emails_to_inbox_items lost the is_newsletter signal populator (B3c)"
+    )
+
+    # Invite: starts_in_minutes
+    future_iso = (
+        dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=10)
+    ).isoformat()
+    raw_invites = [
+        {
+            "id": "i-1",
+            "subject": "Meeting",
+            "meetingMessageType": "meetingRequest",
+            "startDateTime": {"dateTime": future_iso},
+            "isRead": False,
+        }
+    ]
+    invite_items = tools_mod._invite_messages_to_inbox_items(raw_invites)
+    assert invite_items[0].starts_in_minutes is not None, (
+        "_invite_messages_to_inbox_items lost the starts_in_minutes populator (B3a)"
+    )
+
+    # Event: starts_in_minutes
+    raw_events = [
+        {
+            "id": "e-1",
+            "subject": "Standup",
+            "start": {"dateTime": future_iso},
+        }
+    ]
+    event_items = tools_mod._events_to_inbox_items(raw_events)
+    assert event_items[0].starts_in_minutes is not None, (
+        "_events_to_inbox_items lost the starts_in_minutes populator (B3a)"
+    )
 
 
 # ---------------------------------------------------------------------------

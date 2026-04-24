@@ -240,6 +240,21 @@ class MSALRefreshTokenAuth:
         except Exception as e:
             logger.warning(f"Could not set file permissions for {path}: {e}")
 
+    def _secure_write_json(self, path: Path, payload: dict[str, Any]) -> None:
+        """Write JSON file with secure permissions (0o600) set at create time."""
+        fd = os.open(
+            str(path),
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+            TOKEN_FILE_MODE,
+        )
+        with os.fdopen(fd, "w") as f:
+            json.dump(payload, f, indent=2)
+        # Tighten mode in case the file pre-existed with wider permissions.
+        try:
+            path.chmod(TOKEN_FILE_MODE)
+        except Exception as e:
+            logger.warning(f"Could not set file permissions for {path}: {e}")
+
     def _load_access_token_data(self) -> Optional[dict[str, Any]]:
         """Load structured access token data from JSON file."""
         path = self._access_token_json_path()
@@ -295,12 +310,7 @@ class MSALRefreshTokenAuth:
             "api_type": "graph",
         }
 
-        with open(self._access_token_json_path(), "w") as f:
-            json.dump(access_token_data, f, indent=2)
-        try:
-            self._access_token_json_path().chmod(TOKEN_FILE_MODE)
-        except Exception:
-            pass
+        self._secure_write_json(self._access_token_json_path(), access_token_data)
 
         logger.info(f"Access token saved, expires at: {expires_at}")
 

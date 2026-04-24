@@ -123,3 +123,39 @@ def test_convert_to_markdown_is_private():
     assert hasattr(tools_mod, "_convert_to_markdown"), (
         "_convert_to_markdown should exist as the renamed helper"
     )
+
+
+def test_get_user_details_url_encodes_email(monkeypatch):
+    """Email path segment must be URL-encoded so + and other specials don't break the request."""
+    captured = {}
+
+    def fake_request(method, path, **kwargs):
+        captured["path"] = path
+        return {"id": "x"}
+
+    monkeypatch.setattr("microsoft_mcp.graph.request", fake_request)
+    from microsoft_mcp import tools as tools_mod
+
+    tools_mod.get_user_details.fn(email="weird+name@example.com")
+
+    # '+' must be percent-encoded.
+    assert "%2B" in captured["path"]
+    # The '@' should also be percent-encoded under safe='' but Graph accepts both —
+    # what matters is the '+' is not preserved literally.
+    assert "weird+name" not in captured["path"]
+
+
+def test_get_user_details_unset_email_uses_me_endpoint(monkeypatch):
+    """Default (no email) call still hits /me, not /users/None or similar."""
+    captured = {}
+
+    def fake_request(method, path, **kwargs):
+        captured["path"] = path
+        return {"id": "self"}
+
+    monkeypatch.setattr("microsoft_mcp.graph.request", fake_request)
+    from microsoft_mcp import tools as tools_mod
+
+    tools_mod.get_user_details.fn(email=None)
+
+    assert captured["path"] == "/me"

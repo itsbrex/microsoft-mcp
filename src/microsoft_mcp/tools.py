@@ -576,7 +576,7 @@ def get_user_details(email: str | None = None) -> dict[str, Any]:
         else:
             # Look up user by email address
             # Use the /users/{email} endpoint to get user by their email/UPN
-            result = graph.request("GET", f"/users/{email}")
+            result = graph.request("GET", f"/users/{quote(email, safe='')}")
             if not result:
                 logger.error(
                     f"get_user_details failed: User with email {email} not found"

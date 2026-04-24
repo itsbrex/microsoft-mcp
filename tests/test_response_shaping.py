@@ -241,3 +241,39 @@ def test_shape_message_summary_flattens_sender():
     assert shaped["from"] == "Alice"
     assert "snippet" in shaped
     assert len(shaped["snippet"]) <= 200
+
+
+import inspect
+from microsoft_mcp import tools as tools_mod
+
+LIST_OR_SEARCH_TOOLS_THAT_MUST_ACCEPT_PROFILE = [
+    "list_emails",
+    "list_events",
+    "list_contacts",
+    "list_chat_messages",
+    "list_mail_folders",
+    "list_master_categories",
+    "list_invite_messages",
+    "list_files",
+    "unified_search",
+    "search_files",
+    "search_emails",
+    "search_events",
+    "search_contacts",
+    "list_channel_messages",
+    "search_chat_messages",
+    "search_channel_messages",
+    "list_inbox_items",
+]
+
+
+def test_all_list_and_search_tools_accept_response_profile():
+    missing = []
+    for name in LIST_OR_SEARCH_TOOLS_THAT_MUST_ACCEPT_PROFILE:
+        tool = getattr(tools_mod, name, None)
+        assert tool is not None, f"{name} not exported"
+        fn = getattr(tool, "fn", tool)
+        sig = inspect.signature(fn)
+        if "response_profile" not in sig.parameters:
+            missing.append(name)
+    assert not missing, f"tools missing response_profile param: {missing}"

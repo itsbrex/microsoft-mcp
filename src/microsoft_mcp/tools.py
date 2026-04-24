@@ -708,6 +708,7 @@ def list_mail_folders(
     recursive: bool = False,
     include_hidden: bool = False,
     limit: int = 100,
+    response_profile: str = "auto",
 ) -> list[dict[str, Any]]:
     """List Outlook mail folders.
 
@@ -717,6 +718,7 @@ def list_mail_folders(
         recursive: Whether to walk the folder tree beneath the selected parent.
         include_hidden: Whether to include hidden folders when Graph permits it.
         limit: Maximum number of folders to return.
+        response_profile: Response shaping profile ("auto", "legacy", or "assistant"). "auto" defers to MICROSOFT_MCP_RESPONSE_PROFILE env var.
 
     Returns:
         List of normalized folder objects containing IDs, display names, parent IDs,
@@ -730,6 +732,7 @@ def list_mail_folders(
         include_hidden,
         limit,
     )
+    profile = get_response_profile(response_profile)
 
     try:
         parent_folder_id = None
@@ -745,6 +748,16 @@ def list_mail_folders(
             limit=min(limit, 500),
             recursive=recursive,
         )
+        if profile == "assistant":
+            return [
+                {
+                    "id": f["id"],
+                    "name": f.get("displayName") or "",
+                    "unread": f.get("unreadItemCount", 0),
+                    "total": f.get("totalItemCount", 0),
+                }
+                for f in raw_folders
+            ]
         return [_shape_mail_folder(folder) for folder in raw_folders]
     except Exception as e:
         logger.error("list_mail_folders failed: %s", str(e), exc_info=True)
@@ -874,7 +887,10 @@ def delete_mail_folder(folder: str) -> dict[str, Any]:
 
 
 @mcp.tool
-def list_master_categories(limit: int = 100) -> list[dict[str, Any]]:
+def list_master_categories(
+    limit: int = 100,
+    response_profile: str = "auto",
+) -> list[dict[str, Any]]:
     """List Outlook master categories available in the signed-in mailbox.
 
     These are the categories that appear in Outlook with colors and can be reused
@@ -882,18 +898,27 @@ def list_master_categories(limit: int = 100) -> list[dict[str, Any]]:
 
     Args:
         limit: Maximum number of categories to return.
+        response_profile: Response shaping profile ("auto", "legacy", or "assistant"). "auto" defers to MICROSOFT_MCP_RESPONSE_PROFILE env var.
 
     Returns:
         List of normalized master-category objects containing id, display_name, and color.
     """
 
     logger.info("list_master_categories called: limit=%s", limit)
+    profile = get_response_profile(response_profile)
 
     try:
-        return [
-            _shape_master_category(item)
-            for item in _list_master_category_rows(limit=min(limit, 500))
-        ]
+        rows = _list_master_category_rows(limit=min(limit, 500))
+        if profile == "assistant":
+            return [
+                {
+                    "id": c["id"],
+                    "name": c.get("displayName") or "",
+                    "color": c.get("color") or "",
+                }
+                for c in rows
+            ]
+        return [_shape_master_category(item) for item in rows]
     except Exception as e:
         logger.error("list_master_categories failed: %s", str(e), exc_info=True)
         raise
@@ -1941,7 +1966,9 @@ def bulk_manage_emails(
 
 @mcp.tool
 def list_invite_messages(
-    limit: int = 20, folder: str = "inbox"
+    limit: int = 20,
+    folder: str = "inbox",
+    response_profile: str = "auto",
 ) -> list[dict[str, Any]]:
     """List meeting invite-style messages from a mailbox folder.
 
@@ -1951,6 +1978,7 @@ def list_invite_messages(
     Args:
         limit: Maximum invite messages to return.
         folder: Mail folder alias or ID to scan. Defaults to inbox.
+        response_profile: Response shaping profile ("auto", "legacy", or "assistant"). "auto" defers to MICROSOFT_MCP_RESPONSE_PROFILE env var.
 
     Returns:
         Compact invite-message summaries, including the associated event when Graph
@@ -1958,6 +1986,7 @@ def list_invite_messages(
     """
 
     logger.info("list_invite_messages called: limit=%s, folder=%s", limit, folder)
+    profile = get_response_profile(response_profile)
 
     resolved_folder = _resolve_mail_folder(folder)
     fetch_limit = max(limit * 5, min(limit + 20, 100))
@@ -1971,6 +2000,18 @@ def list_invite_messages(
             raw_messages,
             limit=limit,
         )
+        if profile == "assistant":
+            assistant_results = [
+                {
+                    "id": m["id"],
+                    "subject": m.get("subject") or "",
+                    "from": flatten_email_address(m["from"]) if m.get("from") else "",
+                    "received": m.get("receivedDateTime"),
+                    "meeting_message_type": m.get("meetingMessageType"),
+                }
+                for m in invite_messages
+            ]
+            return assistant_results[:limit]
         invite_messages = [_shape_invite_message(raw) for raw in invite_messages]
         return invite_messages[:limit]
     except Exception as e:
@@ -2425,7 +2466,11 @@ def get_contact(contact_id: str) -> dict[str, Any]:
 
 
 @mcp.tool
-def list_files(path: str = "/", limit: int = 50) -> list[dict[str, Any]]:
+def list_files(
+    path: str = "/",
+    limit: int = 50,
+    response_profile: str = "auto",
+) -> list[dict[str, Any]]:
     """List files and folders in OneDrive at a specified path.
 
     Browse OneDrive contents to see what files and folders are available. Use this to navigate
@@ -2434,6 +2479,7 @@ def list_files(path: str = "/", limit: int = 50) -> list[dict[str, Any]]:
     Args:
         path: OneDrive path to browse (default "/" for root). Use forward slashes like "Documents/Projects"
         limit: Maximum number of items to retrieve (1-100, defaults to 50)
+        response_profile: Response shaping profile ("auto", "legacy", or "assistant"). "auto" defers to MICROSOFT_MCP_RESPONSE_PROFILE env var.
 
     Returns:
         List of file/folder objects containing:
@@ -2449,6 +2495,7 @@ def list_files(path: str = "/", limit: int = 50) -> list[dict[str, Any]]:
         - Check 'type' field to see if item is file or folder for navigation
     """
     logger.info(f"list_files called: path={path}, limit={limit}")
+    profile = get_response_profile(response_profile)
 
     try:
         endpoint = (
@@ -2463,17 +2510,29 @@ def list_files(path: str = "/", limit: int = 50) -> list[dict[str, Any]]:
 
         items = list(graph.request_paginated(endpoint, params=params, limit=limit))
 
-        result = [
-            {
-                "id": item["id"],
-                "name": item["name"],
-                "type": "folder" if "folder" in item else "file",
-                "size": item.get("size", 0),
-                "modified": item.get("lastModifiedDateTime"),
-                "download_url": item.get("@microsoft.graph.downloadUrl"),
-            }
-            for item in items
-        ]
+        if profile == "assistant":
+            result = [
+                {
+                    "id": item["id"],
+                    "name": item.get("name") or "",
+                    "type": "folder" if "folder" in item else "file",
+                    "size": item.get("size", 0),
+                    "modified": item.get("lastModifiedDateTime") or "",
+                }
+                for item in items
+            ]
+        else:
+            result = [
+                {
+                    "id": item["id"],
+                    "name": item["name"],
+                    "type": "folder" if "folder" in item else "file",
+                    "size": item.get("size", 0),
+                    "modified": item.get("lastModifiedDateTime"),
+                    "download_url": item.get("@microsoft.graph.downloadUrl"),
+                }
+                for item in items
+            ]
 
         logger.info(
             f"list_files successful: retrieved {len(result)} items from path {path}"
@@ -2699,6 +2758,7 @@ def unified_search(
     kql_filters: str | None = None,
     include_body: bool = False,
     body_max_length: int = 1000,
+    response_profile: str = "auto",
 ) -> dict[str, Any]:
     """Universal search across Microsoft 365 content using the Microsoft Search API.
 
@@ -2729,6 +2789,7 @@ def unified_search(
             - "author:\"John Smith\"" - Content authored by John Smith
         include_body: Whether to include full body/content (increases response size)
         body_max_length: Maximum characters for body content when included (default 1000)
+        response_profile: Response shaping profile ("auto", "legacy", or "assistant"). "auto" defers to MICROSOFT_MCP_RESPONSE_PROFILE env var.
 
     Returns:
         Search results containing:
@@ -2756,6 +2817,10 @@ def unified_search(
         f"unified_search called: query='{query}', entity_types={entity_types}, "
         f"kql_filters='{kql_filters}', limit={limit}, include_body={include_body}"
     )
+    profile = get_response_profile(response_profile)
+    if profile == "assistant":
+        # Assistant profile prefers no bodies regardless of include_body flag
+        include_body = False
 
     try:
         # Default to inbox-first entity types for assistant workflows
@@ -2963,9 +3028,17 @@ def unified_search(
             summary["degraded_reason"] = degraded_reason
             summary["data_freshness"] = get_global_cache().freshness_info()
 
+        trimmed_results = all_results[:limit]
+        if profile == "assistant":
+            # Drop body field regardless and keep the already-compact hit shape
+            trimmed_results = [
+                {k: v for k, v in item.items() if k != "body"}
+                for item in trimmed_results
+            ]
+
         response = {
             "summary": summary,
-            "results": all_results[:limit],
+            "results": trimmed_results,
         }
 
         logger.info(
@@ -3092,6 +3165,7 @@ def _process_search_hit(
 def search_files(
     query: str,
     limit: int = 50,
+    response_profile: str = "auto",
 ) -> list[dict[str, Any]]:
     """Search for files and folders in OneDrive using text queries.
 
@@ -3101,6 +3175,7 @@ def search_files(
     Args:
         query: Search terms to find files (e.g., "budget report", "vacation photos", "presentation")
         limit: Maximum number of results to return (1-100, defaults to 50)
+        response_profile: Response shaping profile ("auto", "legacy", or "assistant"). "auto" defers to MICROSOFT_MCP_RESPONSE_PROFILE env var.
 
     Returns:
         List of matching file/folder objects containing:
@@ -3115,21 +3190,34 @@ def search_files(
         - search_files(".pdf report") - Find PDF files containing "report"
     """
     logger.info(f"search_files called: query='{query}', limit={limit}")
+    profile = get_response_profile(response_profile)
 
     try:
         items = list(graph.search_query(query, ["driveItem"], limit))
 
-        result = [
-            {
-                "id": item["id"],
-                "name": item["name"],
-                "type": "folder" if "folder" in item else "file",
-                "size": item.get("size", 0),
-                "modified": item.get("lastModifiedDateTime"),
-                "download_url": item.get("@microsoft.graph.downloadUrl"),
-            }
-            for item in items
-        ]
+        if profile == "assistant":
+            result = [
+                {
+                    "id": item["id"],
+                    "name": item.get("name") or "",
+                    "type": "folder" if "folder" in item else "file",
+                    "size": item.get("size", 0),
+                    "modified": item.get("lastModifiedDateTime") or "",
+                }
+                for item in items
+            ]
+        else:
+            result = [
+                {
+                    "id": item["id"],
+                    "name": item["name"],
+                    "type": "folder" if "folder" in item else "file",
+                    "size": item.get("size", 0),
+                    "modified": item.get("lastModifiedDateTime"),
+                    "download_url": item.get("@microsoft.graph.downloadUrl"),
+                }
+                for item in items
+            ]
 
         logger.info(
             f"search_files successful: found {len(result)} files matching '{query}'"
@@ -3147,6 +3235,7 @@ def search_emails(
     query: str,
     limit: int = 50,
     folder: str | None = None,
+    response_profile: str = "auto",
 ) -> list[dict[str, Any]]:
     """Search for emails using text queries across subjects, content, and metadata.
 
@@ -3158,6 +3247,7 @@ def search_emails(
         limit: Maximum number of results to return (1-100, defaults to 50)
         folder: Optional folder alias, ID, display name, or slash-delimited path to search within.
             If None, searches across all emails.
+        response_profile: Response shaping profile ("auto", "legacy", or "assistant"). "auto" defers to MICROSOFT_MCP_RESPONSE_PROFILE env var.
 
     Returns:
         List of matching email objects containing:
@@ -3178,6 +3268,8 @@ def search_emails(
     logger.info(
         f"search_emails called: query='{query}', limit={limit}, folder={folder}"
     )
+    # profile resolution (shape is already summary; parameter accepted for contract uniformity)
+    _ = get_response_profile(response_profile)
 
     try:
         if folder:
@@ -3212,6 +3304,7 @@ def search_emails(
 def search_events(
     query: str,
     limit: int = 50,
+    response_profile: str = "auto",
 ) -> list[dict[str, Any]]:
     """Search for calendar events using text queries across titles, content, and metadata.
 
@@ -3221,6 +3314,7 @@ def search_events(
     Args:
         query: Search terms (e.g., "team meeting", "conference room", "project review", attendee names)
         limit: Maximum number of results to return (1-100, defaults to 50)
+        response_profile: Response shaping profile ("auto", "legacy", or "assistant"). "auto" defers to MICROSOFT_MCP_RESPONSE_PROFILE env var.
 
     Returns:
         List of matching calendar event objects containing:
@@ -3237,6 +3331,7 @@ def search_events(
         - search_events("quarterly review") - Find quarterly review meetings
     """
     logger.info(f"search_events called: query='{query}', limit={limit}")
+    _ = get_response_profile(response_profile)
 
     try:
         raw_events = list(graph.search_query(query, ["event"], limit))
@@ -3257,6 +3352,7 @@ def search_events(
 def search_contacts(
     query: str,
     limit: int = 50,
+    response_profile: str = "auto",
 ) -> list[dict[str, Any]]:
     """Search for contacts using text queries across names, email addresses, and other fields.
 
@@ -3266,6 +3362,7 @@ def search_contacts(
     Args:
         query: Search terms (e.g., person name, email address, company name, phone number)
         limit: Maximum number of results to return (1-100, defaults to 50)
+        response_profile: Response shaping profile ("auto", "legacy", or "assistant"). "auto" defers to MICROSOFT_MCP_RESPONSE_PROFILE env var.
 
     Returns:
         List of matching contact objects containing:
@@ -3282,6 +3379,7 @@ def search_contacts(
         - search_contacts("555-0123") - Find contact with specific phone number
     """
     logger.info(f"search_contacts called: query='{query}', limit={limit}")
+    _ = get_response_profile(response_profile)
 
     try:
         params = {
@@ -3467,6 +3565,7 @@ def list_channel_messages(
     include_body: bool = True,
     start_date: str | None = None,
     end_date: str | None = None,
+    response_profile: str = "auto",
 ) -> list[dict[str, Any]]:
     """List recent messages from Microsoft Teams channels.
 
@@ -3482,6 +3581,7 @@ def list_channel_messages(
         include_body: Whether to include message body content (affects response size)
         start_date: Optional start date in ISO format (UTC timezone, e.g., "2024-09-01T00:00:00Z") to filter messages from this date onwards
         end_date: Optional end date in ISO format (UTC timezone, e.g., "2024-09-30T23:59:59Z") to filter messages up to this date
+        response_profile: Response shaping profile ("auto", "legacy", or "assistant"). "auto" defers to MICROSOFT_MCP_RESPONSE_PROFILE env var.
 
     Returns:
         List of message objects containing:
@@ -3500,6 +3600,7 @@ def list_channel_messages(
     logger.info(
         f"list_channel_messages called: team_id={team_id}, channel_id={channel_id}, limit={limit}, include_body={include_body}"
     )
+    profile = get_response_profile(response_profile)
 
     try:
         all_messages = []
@@ -3614,6 +3715,9 @@ def list_channel_messages(
         # Sort all messages by creation time (most recent first) and limit results
         all_messages.sort(key=lambda x: x.get("createdDateTime", ""), reverse=True)
         result = all_messages[:limit]
+
+        if profile == "assistant":
+            result = [shape_message_summary(m) for m in result]
 
         logger.info(
             f"list_channel_messages successful: retrieved {len(result)} messages from {len(teams_channels)} channels"
@@ -3796,6 +3900,7 @@ def get_channel_message(
 def search_chat_messages(
     query: str,
     limit: int = 50,
+    response_profile: str = "auto",
 ) -> list[dict[str, Any]]:
     """Search for chat messages using text queries across message content and metadata.
 
@@ -3806,6 +3911,7 @@ def search_chat_messages(
     Args:
         query: Search terms (e.g., "project update", "meeting notes", sender name, keywords)
         limit: Maximum number of results to return (1-100, defaults to 50)
+        response_profile: Response shaping profile ("auto", "legacy", or "assistant"). "auto" defers to MICROSOFT_MCP_RESPONSE_PROFILE env var.
 
     Returns:
         List of matching message objects containing:
@@ -3822,6 +3928,7 @@ def search_chat_messages(
         - search_chat_messages("budget approval") - Find chat messages about budget approvals
     """
     logger.info(f"search_chat_messages called: query='{query}', limit={limit}")
+    profile = get_response_profile(response_profile)
 
     try:
         # Use Microsoft Graph search API to search across chat messages
@@ -3851,6 +3958,9 @@ def search_chat_messages(
                     )
                     message["body"]["contentType"] = "text/markdown"
 
+        if profile == "assistant":
+            result = [shape_message_summary(m) for m in result]
+
         logger.info(
             f"search_chat_messages successful: found {len(result)} messages matching '{query}'"
         )
@@ -3867,6 +3977,7 @@ def search_channel_messages(
     query: str,
     team_id: str | None = None,
     limit: int = 50,
+    response_profile: str = "auto",
 ) -> list[dict[str, Any]]:
     """Search for channel messages using text queries across message content and metadata.
 
@@ -3878,6 +3989,7 @@ def search_channel_messages(
         query: Search terms (e.g., "project update", "announcement", sender name, keywords)
         team_id: Optional ID of specific team to search within (searches all teams if not provided)
         limit: Maximum number of results to return (1-100, defaults to 50)
+        response_profile: Response shaping profile ("auto", "legacy", or "assistant"). "auto" defers to MICROSOFT_MCP_RESPONSE_PROFILE env var.
 
     Returns:
         List of matching message objects containing:
@@ -3895,6 +4007,7 @@ def search_channel_messages(
     logger.info(
         f"search_channel_messages called: query='{query}', team_id={team_id}, limit={limit}"
     )
+    profile = get_response_profile(response_profile)
 
     try:
         # Use Microsoft Graph search API to search across channel messages
@@ -3939,6 +4052,9 @@ def search_channel_messages(
 
         # Limit results
         result = channel_messages[:limit]
+
+        if profile == "assistant":
+            result = [shape_message_summary(m) for m in result]
 
         logger.info(
             f"search_channel_messages successful: found {len(result)} channel messages matching '{query}'"
@@ -4174,6 +4290,7 @@ def _events_to_inbox_items(raw_events: list[dict[str, Any]]) -> list[InboxItem]:
 def list_inbox_items(
     limit: int = 20,
     include_kinds: list[str] | None = None,
+    response_profile: str = "auto",
 ) -> dict[str, Any]:
     """Get a ranked, mixed-kind inbox summary across email and calendar.
 
@@ -4183,6 +4300,7 @@ def list_inbox_items(
     Args:
         limit: Maximum items to return (default 20)
         include_kinds: Optional filter, e.g. ["email"], ["event"], ["invite_message"], or a mix.
+        response_profile: Response shaping profile ("auto", "legacy", or "assistant"). "auto" defers to MICROSOFT_MCP_RESPONSE_PROFILE env var.
 
     Returns:
         Dictionary with 'items' (ranked list) and 'meta' (counts, sources).
@@ -4190,6 +4308,7 @@ def list_inbox_items(
     logger.info(
         f"list_inbox_items called: limit={limit}, include_kinds={include_kinds}"
     )
+    profile = get_response_profile(response_profile)
     all_items: list[InboxItem] = []
     kinds = (
         set(include_kinds) if include_kinds else {"email", "event", "invite_message"}
@@ -4246,8 +4365,18 @@ def list_inbox_items(
 
     ranked = rank_items(all_items)[:limit]
 
+    items = [item.to_dict() for item in ranked]
+    if profile == "assistant":
+        trimmed: list[dict[str, Any]] = []
+        for it in items:
+            shaped = {k: v for k, v in it.items() if k != "web_url"}
+            if "participants" in shaped and isinstance(shaped["participants"], list):
+                shaped["participants"] = shaped["participants"][:1]
+            trimmed.append(shaped)
+        items = trimmed
+
     return {
-        "items": [item.to_dict() for item in ranked],
+        "items": items,
         "meta": {
             "total_fetched": len(all_items),
             "returned": len(ranked),

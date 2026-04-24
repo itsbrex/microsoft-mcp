@@ -1,5 +1,13 @@
+import datetime as dt
+
 from microsoft_mcp.inbox_models import InboxItem
 from microsoft_mcp.inbox_ranking import rank_items
+
+
+def _future_iso(minutes: int) -> str:
+    return (
+        dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=minutes)
+    ).isoformat()
 
 
 def test_inbox_item_creation():
@@ -91,3 +99,56 @@ def test_inbox_item_to_dict():
     assert d["kind"] == "email"
     assert d["title"] == "Test"
     assert "snippet" in d
+
+
+def test_invite_message_populates_starts_in_minutes_under_15():
+    from microsoft_mcp import tools as tools_mod
+    from microsoft_mcp.inbox_ranking import _compute_score
+
+    raw = [
+        {
+            "id": "msg-1",
+            "subject": "Imminent standup",
+            "meetingMessageType": "meetingRequest",
+            "startDateTime": {"dateTime": _future_iso(5)},
+            "isRead": False,
+        }
+    ]
+    items = tools_mod._invite_messages_to_inbox_items(raw)
+    assert items[0].starts_in_minutes is not None
+    assert items[0].starts_in_minutes <= 15
+    # Ranker awards +25 (<=15 min meeting) on top of unread (+10) = >=35
+    assert _compute_score(items[0]) >= 35
+
+
+def test_event_populates_starts_in_minutes_1_to_2_hours():
+    from microsoft_mcp import tools as tools_mod
+    from microsoft_mcp.inbox_ranking import _compute_score
+
+    raw = [
+        {
+            "id": "evt-1",
+            "subject": "Later meeting",
+            "start": {"dateTime": _future_iso(90)},
+        }
+    ]
+    items = tools_mod._events_to_inbox_items(raw)
+    assert items[0].starts_in_minutes is not None
+    assert 60 < items[0].starts_in_minutes <= 120
+    assert _compute_score(items[0]) == 5.0
+
+
+def test_past_events_have_none_starts_in_minutes():
+    from microsoft_mcp import tools as tools_mod
+    from microsoft_mcp.inbox_ranking import _compute_score
+
+    raw = [
+        {
+            "id": "evt-past",
+            "subject": "Already happened",
+            "start": {"dateTime": _future_iso(-30)},
+        }
+    ]
+    items = tools_mod._events_to_inbox_items(raw)
+    assert items[0].starts_in_minutes is None
+    assert _compute_score(items[0]) == 0.0

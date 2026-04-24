@@ -4036,6 +4036,39 @@ def _emails_to_inbox_items(raw_emails: list[dict[str, Any]]) -> list[InboxItem]:
     return items
 
 
+def _parse_graph_datetime(value: Any) -> dt.datetime | None:
+    """Parse a Graph-supplied ISO datetime string into an aware UTC datetime.
+
+    Graph returns formats like "2026-05-06T16:00:00.0000000" (no tz, fractional
+    seconds beyond 6 digits) or "2026-05-06T16:00:00Z". Both must parse.
+    """
+    if not value or not isinstance(value, str):
+        return None
+    cleaned = value.rstrip("Z")
+    if "." in cleaned:
+        base, frac = cleaned.split(".", 1)
+        frac = frac[:6]
+        cleaned = f"{base}.{frac}"
+    try:
+        parsed = dt.datetime.fromisoformat(cleaned)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    return parsed
+
+
+def _minutes_until(value: Any) -> float | None:
+    """Minutes from now until the given datetime (UTC). None if past or unparseable."""
+    parsed = _parse_graph_datetime(value)
+    if parsed is None:
+        return None
+    delta = (parsed - dt.datetime.now(dt.timezone.utc)).total_seconds()
+    if delta < 0:
+        return None
+    return delta / 60.0
+
+
 def _invite_messages_to_inbox_items(
     raw_invite_messages: list[dict[str, Any]],
 ) -> list[InboxItem]:
@@ -4066,6 +4099,9 @@ def _invite_messages_to_inbox_items(
                 state=meeting_message_type,
                 action_hints=action_hints,
                 web_url=message.get("webLink", ""),
+                starts_in_minutes=_minutes_until(
+                    message.get("startDateTime", {}).get("dateTime")
+                ),
             )
         )
     return items
@@ -4086,6 +4122,7 @@ def _events_to_inbox_items(raw_events: list[dict[str, Any]]) -> list[InboxItem]:
                 title=ev.get("subject", ""),
                 participants=[organizer] if organizer else [],
                 when=start_dt,
+                starts_in_minutes=_minutes_until(start_dt),
             )
         )
     return items

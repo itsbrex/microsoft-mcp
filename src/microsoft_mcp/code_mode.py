@@ -24,6 +24,7 @@ agent-generated code, not as a security boundary for hostile code.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import dataclasses
 import importlib
 import inspect
@@ -91,7 +92,7 @@ def _inplace_var(op: str, x: Any, y: Any) -> Any:
     raise ValueError(f"Unsupported inplace operator: {op}")
 
 
-def _run_coroutine_sync(coro: Awaitable[Any]) -> Any:
+def _run_coroutine_sync(coro: Any) -> Any:
     """Run a coroutine to completion whether or not a loop is already running.
 
     Mirrors tools._run_async so sandboxed user code can invoke async

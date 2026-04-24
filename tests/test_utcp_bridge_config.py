@@ -88,10 +88,12 @@ def test_build_bridge_config_points_to_generated_utcp_file(tmp_path: Path):
         bridge_name="code-mode-mcp",
     )
 
+    from microsoft_mcp.utcp_bridge_config import DEFAULT_BRIDGE_COMMAND
+
     assert list(bridge_config["mcpServers"]) == ["code-mode-mcp"]
     assert (
         bridge_config["mcpServers"]["code-mode-mcp"]["command"]
-        == "/Users/hack/.local/share/mise/shims/npx"
+        == DEFAULT_BRIDGE_COMMAND
     )
     assert bridge_config["mcpServers"]["code-mode-mcp"]["env"][
         "UTCP_CONFIG_FILE"
@@ -164,3 +166,40 @@ def test_build_utcp_config_preserves_explicit_transport():
         "microsoft-mcp"
     ]
     assert wrapped_server["transport"] == "stdio"
+
+
+def test_default_bridge_command_does_not_hardcode_user_path(monkeypatch):
+    """The default bridge command must not be a hardcoded user-specific path.
+
+    Simulate a clean environment (no override, npx not on PATH) so the
+    constant cannot accidentally pick up a developer-specific path.
+    """
+    monkeypatch.delenv("MICROSOFT_MCP_UTCP_BRIDGE_COMMAND", raising=False)
+    monkeypatch.setenv("PATH", "")
+    import importlib
+    import microsoft_mcp.utcp_bridge_config as mod
+
+    importlib.reload(mod)
+    try:
+        assert "/Users/hack/" not in mod.DEFAULT_BRIDGE_COMMAND, (
+            "DEFAULT_BRIDGE_COMMAND contains a hardcoded user path; use shutil.which"
+        )
+        assert mod.DEFAULT_BRIDGE_COMMAND, "DEFAULT_BRIDGE_COMMAND must not be empty"
+    finally:
+        importlib.reload(mod)
+
+
+def test_bridge_command_can_be_overridden_by_env(monkeypatch):
+    """An env override should win over auto-discovery."""
+    monkeypatch.setenv("MICROSOFT_MCP_UTCP_BRIDGE_COMMAND", "/custom/path/to/npx")
+    # Re-import to re-evaluate the module-level constant.
+    import importlib
+    import microsoft_mcp.utcp_bridge_config as mod
+
+    importlib.reload(mod)
+    try:
+        assert mod.DEFAULT_BRIDGE_COMMAND == "/custom/path/to/npx"
+    finally:
+        # Restore original module state for other tests.
+        monkeypatch.delenv("MICROSOFT_MCP_UTCP_BRIDGE_COMMAND", raising=False)
+        importlib.reload(mod)

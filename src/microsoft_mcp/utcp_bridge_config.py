@@ -3,13 +3,34 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import os
 import re
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
 DEFAULT_BRIDGE_NAME = "code-mode-mcp"
-DEFAULT_BRIDGE_COMMAND = "/Users/hack/.local/share/mise/shims/npx"
+
+
+def _resolve_default_bridge_command() -> str:
+    """Resolve the npx command path to use for the UTCP bridge.
+
+    Resolution order:
+    1. MICROSOFT_MCP_UTCP_BRIDGE_COMMAND environment variable.
+    2. shutil.which("npx") — looks up npx on the current PATH.
+    3. The literal string "npx" — relies on PATH at exec time.
+    """
+    override = os.getenv("MICROSOFT_MCP_UTCP_BRIDGE_COMMAND")
+    if override:
+        return override
+    discovered = shutil.which("npx")
+    if discovered:
+        return discovered
+    return "npx"
+
+
+DEFAULT_BRIDGE_COMMAND = _resolve_default_bridge_command()
 DEFAULT_BRIDGE_ARGS = ["@utcp/code-mode-mcp"]
 
 

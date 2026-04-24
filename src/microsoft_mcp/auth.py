@@ -53,6 +53,7 @@ from azure.identity import (
     AuthenticationRecord,
 )
 from azure.core.credentials import AccessToken
+from azure.core.exceptions import ClientAuthenticationError
 from msgraph import GraphServiceClient
 
 # Configure logging
@@ -232,16 +233,14 @@ class AzureAuthentication:
             logger.info("Access token acquired successfully")
             return token.token, token.expires_on
 
-        except Exception as e:
-            logger.error(f"Failed to acquire access token: {e}")
-            # If authentication fails and we don't have an auth record, try interactive auth
+        except ClientAuthenticationError as e:
+            logger.error(f"Client authentication failed (terminal): {e}")
             if not self.auth_record_file.exists():
                 logger.info(
                     "No AuthenticationRecord found, attempting interactive authentication"
                 )
                 try:
                     self.authenticate()
-                    # Retry token acquisition after authentication
                     token: AccessToken = credential.get_token(*SCOPES)
                     logger.info(
                         "Access token acquired after interactive authentication"
@@ -252,12 +251,15 @@ class AzureAuthentication:
                         f"Failed to acquire token after interactive authentication: {retry_e}"
                     )
                     raise
-            else:
-                # Auth record exists but token acquisition failed, clear cache and retry
-                logger.info("Clearing cached data and retrying authentication")
-                self.clear_cache()
-                self._credential_instance = None
-                raise Exception(f"Failed to acquire access token: {str(e)}")
+            logger.info("Clearing cached data after terminal auth failure")
+            self.clear_cache()
+            self._credential_instance = None
+            raise RuntimeError(f"Client authentication failed: {e}") from e
+        except Exception as e:
+            logger.error(
+                f"Transient token acquisition failure (not clearing cache): {e}"
+            )
+            raise
 
     def get_token(self) -> str:
         """
@@ -278,16 +280,14 @@ class AzureAuthentication:
             logger.info("Access token acquired successfully")
             return token.token
 
-        except Exception as e:
-            logger.error(f"Failed to acquire access token: {e}")
-            # If authentication fails and we don't have an auth record, try interactive auth
+        except ClientAuthenticationError as e:
+            logger.error(f"Client authentication failed (terminal): {e}")
             if not self.auth_record_file.exists():
                 logger.info(
                     "No AuthenticationRecord found, attempting interactive authentication"
                 )
                 try:
                     self.authenticate()
-                    # Retry token acquisition after authentication
                     token: AccessToken = credential.get_token(*SCOPES)
                     logger.info(
                         "Access token acquired after interactive authentication"
@@ -298,12 +298,15 @@ class AzureAuthentication:
                         f"Failed to acquire token after interactive authentication: {retry_e}"
                     )
                     raise
-            else:
-                # Auth record exists but token acquisition failed, clear cache and retry
-                logger.info("Clearing cached data and retrying authentication")
-                self.clear_cache()
-                self._credential_instance = None
-                raise Exception(f"Failed to acquire access token: {str(e)}")
+            logger.info("Clearing cached data after terminal auth failure")
+            self.clear_cache()
+            self._credential_instance = None
+            raise RuntimeError(f"Client authentication failed: {e}") from e
+        except Exception as e:
+            logger.error(
+                f"Transient token acquisition failure (not clearing cache): {e}"
+            )
+            raise
 
     def get_graph_client(
         self, scopes: Optional[list[str]] = None

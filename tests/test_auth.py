@@ -271,3 +271,65 @@ def test_scopes_has_no_duplicates():
 def test_scopes_contains_required_delegated_permissions():
     for required in ("User.Read", "Mail.Read", "Calendars.Read", "Files.Read"):
         assert required in SCOPES
+
+
+from unittest.mock import MagicMock, patch
+from azure.core.exceptions import ClientAuthenticationError, ServiceRequestError
+
+
+def test_transient_service_error_does_not_clear_auth_record(tmp_path, monkeypatch):
+    from microsoft_mcp.auth import AzureAuthentication
+
+    record_file = tmp_path / "auth.json"
+    record_file.write_text('{"version": "1.0"}')
+
+    auth = AzureAuthentication(auth_record_file=record_file)
+
+    fake_cred = MagicMock()
+    fake_cred.get_token.side_effect = ServiceRequestError("DNS blip")
+    monkeypatch.setattr(auth, "get_credential", lambda: fake_cred)
+
+    with pytest.raises(ServiceRequestError):
+        auth.get_token()
+
+    # Record must survive the transient failure.
+    assert record_file.exists()
+
+
+def test_client_auth_error_clears_record(tmp_path, monkeypatch):
+    from microsoft_mcp.auth import AzureAuthentication
+
+    record_file = tmp_path / "auth.json"
+    record_file.write_text('{"version": "1.0"}')
+
+    auth = AzureAuthentication(auth_record_file=record_file)
+
+    fake_cred = MagicMock()
+    fake_cred.get_token.side_effect = ClientAuthenticationError("invalid_grant")
+    monkeypatch.setattr(auth, "get_credential", lambda: fake_cred)
+
+    with pytest.raises(Exception):
+        auth.get_token()
+
+    # invalid_grant is terminal; cache should be cleared for re-auth.
+    assert not record_file.exists()
+
+
+def test_transient_service_error_does_not_clear_on_get_token_with_details(
+    tmp_path, monkeypatch
+):
+    from microsoft_mcp.auth import AzureAuthentication
+
+    record_file = tmp_path / "auth.json"
+    record_file.write_text('{"version": "1.0"}')
+
+    auth = AzureAuthentication(auth_record_file=record_file)
+
+    fake_cred = MagicMock()
+    fake_cred.get_token.side_effect = ServiceRequestError("DNS blip")
+    monkeypatch.setattr(auth, "get_credential", lambda: fake_cred)
+
+    with pytest.raises(ServiceRequestError):
+        auth.get_token_with_details()
+
+    assert record_file.exists()

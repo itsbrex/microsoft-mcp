@@ -194,6 +194,8 @@ This repo ships a shared `.claude/` so every collaborator gets the same tooling:
 - `.claude/agents/` — `test-writer` (haiku), `code-simplifier` (haiku), `doc-sync` (haiku), `graph-reviewer` (sonnet).
 - `.claude/scripts/` — hook and statusline helpers (bash + jq).
 
+Run `/weekly-audit` monthly (or after a sweep of new tools) to guard against regression of the 2026-04-23 audit findings.
+
 ## Self-correcting learning loop
 
 When Claude makes a repeatable mistake, end the correction with:

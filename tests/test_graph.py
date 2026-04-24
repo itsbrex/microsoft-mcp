@@ -385,3 +385,33 @@ def test_request_retries_exactly_max_retries_plus_one_on_persistent_500(mock_aut
 
     # Initial attempt + 3 retries = 4 total. No more.
     assert call_count["n"] == 4
+
+
+def test_request_does_not_mutate_caller_params(mock_auth, monkeypatch):
+    from unittest.mock import MagicMock
+
+    from microsoft_mcp import graph
+
+    graph.set_auth_instance(mock_auth)
+
+    captured = {}
+
+    def fake_request(method, url, headers=None, params=None, json=None, content=None):
+        captured["params"] = dict(params) if params else {}
+        resp = MagicMock(spec=httpx.Response)
+        resp.status_code = 200
+        resp.content = b"{}"
+        resp.json.return_value = {}
+        resp.raise_for_status = lambda: None
+        return resp
+
+    monkeypatch.setattr(graph._client, "request", fake_request)
+
+    user_params = {"$search": "foo"}
+    before = dict(user_params)
+    graph.request("GET", "/me/messages", params=user_params)
+
+    # The caller's dict must be unchanged.
+    assert user_params == before
+    # But the request must still have gone out with $count=true.
+    assert captured["params"].get("$count") == "true"

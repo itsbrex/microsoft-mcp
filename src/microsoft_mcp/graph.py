@@ -67,6 +67,7 @@ def request(
     max_retries: int = 3,
     auth: Optional["AuthProvider"] = None,
 ) -> dict[str, Any] | None:
+    params = dict(params) if params else None
     auth_instance = auth or get_auth_instance()
     headers = {
         "Authorization": f"Bearer {auth_instance.get_token()}",

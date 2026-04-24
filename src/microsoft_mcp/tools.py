@@ -527,7 +527,7 @@ def get_active_account() -> dict[str, Any]:
 # ============================================================================
 
 
-def convert_to_markdown(html: str, mimetype: str = "text/html") -> str:
+def _convert_to_markdown(html: str, mimetype: str = "text/html") -> str:
     """Convert HTML content to Markdown format."""
     # Use MarkItDown to convert HTML to Markdown
     stream = BytesIO()
@@ -1292,7 +1292,7 @@ def get_email(
         # Convert HTML to markdown and truncate body if needed
         if include_body and "body" in raw and "content" in raw["body"]:
             if raw["body"]["contentType"].lower() == "html":
-                raw["body"]["content"] = convert_to_markdown(raw["body"]["content"])
+                raw["body"]["content"] = _convert_to_markdown(raw["body"]["content"])
                 raw["body"]["contentType"] = "text/markdown"
 
             content = raw["body"]["content"]
@@ -3167,7 +3167,7 @@ def _process_search_hit(
                 body_content = body.get("content", "")
                 content_type = body.get("contentType", "")
                 if content_type.lower() == "html" and body_content:
-                    body_content = convert_to_markdown(body_content)
+                    body_content = _convert_to_markdown(body_content)
                 if body_content and len(body_content) > body_max_length:
                     body_content = body_content[:body_max_length] + "...[truncated]"
                 result["body"] = body_content
@@ -3548,7 +3548,7 @@ def list_chat_messages(
                     ):
                         content = message["body"]["content"]
                         if message["body"].get("contentType") == "html":
-                            content = convert_to_markdown(content)
+                            content = _convert_to_markdown(content)
                             message["body"]["contentType"] = "text/markdown"
                             message["body"]["content"] = content
 
@@ -3723,7 +3723,7 @@ def list_channel_messages(
                     ):
                         content = message["body"]["content"]
                         if message["body"].get("contentType") == "html":
-                            content = convert_to_markdown(content)
+                            content = _convert_to_markdown(content)
                             message["body"]["contentType"] = "text/markdown"
                             message["body"]["content"] = content
 
@@ -3815,7 +3815,7 @@ def get_chat_message(chat_id: str, message_id: str) -> dict[str, Any]:
         # Convert HTML body to markdown if needed
         if "body" in message and "content" in message["body"]:
             if message["body"].get("contentType") == "html":
-                message["body"]["content"] = convert_to_markdown(
+                message["body"]["content"] = _convert_to_markdown(
                     message["body"]["content"]
                 )
                 message["body"]["contentType"] = "text/markdown"
@@ -3904,7 +3904,7 @@ def get_channel_message(
         # Convert HTML body to markdown if needed
         if "body" in message and "content" in message["body"]:
             if message["body"].get("contentType") == "html":
-                message["body"]["content"] = convert_to_markdown(
+                message["body"]["content"] = _convert_to_markdown(
                     message["body"]["content"]
                 )
                 message["body"]["contentType"] = "text/markdown"
@@ -3989,7 +3989,7 @@ def search_chat_messages(
             # Convert HTML to markdown if needed
             if "body" in message and "content" in message["body"]:
                 if message["body"].get("contentType") == "html":
-                    message["body"]["content"] = convert_to_markdown(
+                    message["body"]["content"] = _convert_to_markdown(
                         message["body"]["content"]
                     )
                     message["body"]["contentType"] = "text/markdown"
@@ -4079,7 +4079,7 @@ def search_channel_messages(
                     # Convert HTML to markdown if needed
                     if "body" in message and "content" in message["body"]:
                         if message["body"].get("contentType") == "html":
-                            message["body"]["content"] = convert_to_markdown(
+                            message["body"]["content"] = _convert_to_markdown(
                                 message["body"]["content"]
                             )
                             message["body"]["contentType"] = "text/markdown"

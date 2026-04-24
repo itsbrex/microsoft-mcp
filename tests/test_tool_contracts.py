@@ -111,3 +111,15 @@ def test_get_contact_returns_detailed_shape(mock_graph):
     assert "@odata.context" not in result
     assert result["email_addresses"] == ["alice@x.com"]
     assert result["businessAddress"]["city"] == "NYC"
+
+
+def test_convert_to_markdown_is_private():
+    """Helper that isn't @mcp.tool-decorated must have a leading underscore to signal intent."""
+    from microsoft_mcp import tools as tools_mod
+
+    assert not hasattr(tools_mod, "convert_to_markdown"), (
+        "convert_to_markdown should be renamed to _convert_to_markdown (no leading underscore implies MCP tool)"
+    )
+    assert hasattr(tools_mod, "_convert_to_markdown"), (
+        "_convert_to_markdown should exist as the renamed helper"
+    )

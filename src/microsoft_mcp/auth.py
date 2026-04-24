@@ -61,32 +61,21 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 # Delegated permissions (scopes) for accessing user data on behalf of the signed-in user
-SCOPES = [
-    "User.Read",
-    "User.ReadBasic.All",
-    "Chat.Read",
-    "Mail.Read",
-    "Team.ReadBasic.All",
-    "TeamMember.ReadWrite.All",
-    "Calendars.Read",
-    "Files.Read",
-    "Chat.Read",
-    "ChannelMessage.Read.All",
-    "Sites.Read.All",
-    "Files.Read.All",
-]
-
-# Scopes useful for full search:
-# Chat.Read
-# ChannelMessage.Read.All
-# Mail.Read
-# Calendars.Read
-# Files.Read.All
-# Sites.Read.All
-# User.Read
-# User.ReadBasic.All
-# Team.ReadBasic.All
-# TeamMember.ReadWrite.All
+SCOPES: list[str] = sorted(
+    {
+        "User.Read",
+        "User.ReadBasic.All",
+        "Chat.Read",
+        "Mail.Read",
+        "Team.ReadBasic.All",
+        "TeamMember.ReadWrite.All",
+        "Calendars.Read",
+        "Files.Read",
+        "ChannelMessage.Read.All",
+        "Sites.Read.All",
+        "Files.Read.All",
+    }
+)
 
 
 class AzureAuthentication:

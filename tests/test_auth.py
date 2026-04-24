@@ -259,3 +259,15 @@ class TestAzureAuthentication:
         mock_graph_client_class.assert_called_once_with(
             credentials=mock_credential, scopes=custom_scopes
         )
+
+
+from microsoft_mcp.auth import SCOPES
+
+
+def test_scopes_has_no_duplicates():
+    assert len(SCOPES) == len(set(SCOPES))
+
+
+def test_scopes_contains_required_delegated_permissions():
+    for required in ("User.Read", "Mail.Read", "Calendars.Read", "Files.Read"):
+        assert required in SCOPES

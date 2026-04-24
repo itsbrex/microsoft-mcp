@@ -642,10 +642,8 @@ Python code with direct access to the live tool registry.
 
         # Iteration + subscripting + augmented-assignment guards.
         # Without these, comprehensions, `for` loops, and `+=` all fail.
-        safe_globals["_getiter_"] = getattr(eval_mod, "default_guarded_getiter", iter)
-        safe_globals["_getitem_"] = getattr(
-            eval_mod, "default_guarded_getitem", lambda obj, key: obj[key]
-        )
+        safe_globals["_getiter_"] = eval_mod.default_guarded_getiter
+        safe_globals["_getitem_"] = eval_mod.default_guarded_getitem
         safe_globals["_iter_unpack_sequence_"] = getattr(
             guards,
             "guarded_iter_unpack_sequence",

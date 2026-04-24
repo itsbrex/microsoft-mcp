@@ -123,7 +123,7 @@ For manual MCP server configuration (Cursor, Claude Desktop, etc.), use the foll
 ```
 
 **Important:**
-- Use `microsoft-mcp` entry point (NOT `src/microsoft_mcp/server.py` directly - causes ImportError)
+- Use `microsoft-mcp` entry point (preferred); `python -m microsoft_mcp.server` and `python src/microsoft_mcp/server.py` also work
 - Use full path to `uv` executable (find with `which uv`)
 - `MICROSOFT_MCP_CLIENT_ID` must be set to `d3590ed6-52b3-4102-aeff-aad2292ab01c` (Microsoft Office client ID)
 - `MICROSOFT_MCP_ACCOUNT_ID` identifies which account's tokens to use
@@ -212,3 +212,4 @@ nit: don't construct `httpx.AsyncClient` directly, use graph.request
 ## Known gotchas
 
 - **MSAL disables Teams tools.** See commit `7dae88f` — MSAL uses the Microsoft Office public client ID (`d3590ed6-…`) which lacks Teams delegated permissions, so Teams tools are unregistered under `MICROSOFT_MCP_AUTH_METHOD=msal`. If you need Teams, register your own Azure AD app with the required Teams delegated permissions and switch to `MICROSOFT_MCP_AUTH_METHOD=azure` with your app's client ID.
+- **`server.py` invocation forms (all three work).** `microsoft-mcp` (console script, preferred), `python -m microsoft_mcp.server`, and `python src/microsoft_mcp/server.py` are all valid entry points. See `tests/test_server_entry.py` for regression coverage.

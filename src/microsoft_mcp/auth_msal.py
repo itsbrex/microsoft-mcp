@@ -269,10 +269,6 @@ class MSALRefreshTokenAuth:
         now = datetime.now(timezone.utc)
         expires_at = now + timedelta(seconds=expires_in)
 
-        # Update account identifier if email provided
-        if email and self.account_identifier == "default":
-            self.account_identifier = email
-
         # 1. Save structured access token JSON
         access_token_data = {
             "email": email or self.account_identifier,

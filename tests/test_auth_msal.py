@@ -862,3 +862,59 @@ def test_serial_get_token_calls_still_work(tmp_path, monkeypatch):
     assert calls["n"] == 1
     assert first == "fresh-1"
     assert second == "fresh-1"
+
+
+def test_account_identifier_immutable_after_save_with_default(tmp_path):
+    """Default-initialized instance must NOT rewrite account_identifier during save."""
+    from microsoft_mcp.auth_msal import MSALRefreshTokenAuth
+
+    auth = MSALRefreshTokenAuth(tokens_dir=tmp_path)
+    assert auth.account_identifier == "default"
+
+    auth._save_tokens(
+        access_token="t",
+        refresh_token="r",
+        expires_in=3600,
+        scopes="Mail.Read offline_access",
+        email="new@example.com",
+    )
+
+    # Identifier must remain "default" — path stability for any caller that cached a path.
+    assert auth.account_identifier == "default"
+
+
+def test_account_identifier_immutable_after_save_with_explicit(tmp_path):
+    """Explicit identifier must survive a save that discovers a different email."""
+    from microsoft_mcp.auth_msal import MSALRefreshTokenAuth
+
+    auth = MSALRefreshTokenAuth(
+        tokens_dir=tmp_path, account_identifier="explicit@x.com"
+    )
+    assert auth.account_identifier == "explicit@x.com"
+
+    auth._save_tokens(
+        access_token="t",
+        refresh_token="r",
+        expires_in=3600,
+        scopes="Mail.Read offline_access",
+        email="different@y.com",
+    )
+
+    assert auth.account_identifier == "explicit@x.com"
+
+
+def test_save_preserves_email_in_payload(tmp_path):
+    """The email is still recorded in access_token.json even though the identifier doesn't change."""
+    from microsoft_mcp.auth_msal import MSALRefreshTokenAuth
+
+    auth = MSALRefreshTokenAuth(tokens_dir=tmp_path)
+    auth._save_tokens(
+        access_token="t",
+        refresh_token="r",
+        expires_in=3600,
+        scopes="Mail.Read offline_access",
+        email="payload@example.com",
+    )
+
+    payload = _json.loads((tmp_path / "default_access_token.json").read_text())
+    assert payload["email"] == "payload@example.com"

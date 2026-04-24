@@ -50,3 +50,6 @@ mcp-tool-responses/
 .claude/.state/
 .claude/chain/
 
+# Claude Code session transcripts (autosaved, dated)
+20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]-*.txt
+

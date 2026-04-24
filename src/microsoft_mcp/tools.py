@@ -23,7 +23,7 @@ from .response_shaping import (
     shape_event_summary,
     flatten_email_address,
 )
-from .search_cache import get_global_cache
+from .search_cache import get_global_cache, normalize_for_cache
 from .inbox_models import InboxItem
 from .inbox_ranking import rank_items
 from .code_mode import CodeModeRuntime, build_code_mode_runtime
@@ -1205,6 +1205,11 @@ def list_emails(
             )
         )
 
+        get_global_cache().store(
+            "message",
+            [normalize_for_cache("message", e) for e in raw_emails],
+        )
+
         if include_body:
             # Detail mode: include body, truncate if needed
             results = []
@@ -2109,6 +2114,11 @@ def list_events(
 
         # Use calendarView to get recurring event instances
         raw_events = list(graph.request_paginated("/me/calendarView", params=params))
+
+        get_global_cache().store(
+            "event",
+            [normalize_for_cache("event", e) for e in raw_events],
+        )
 
         if include_details:
             # truncate the body content if it exceeds max_body_length
@@ -3561,6 +3571,11 @@ def list_chat_messages(
         all_messages.sort(key=lambda x: x.get("createdDateTime", ""), reverse=True)
         result = all_messages[:limit]
 
+        get_global_cache().store(
+            "chatMessage",
+            [normalize_for_cache("chatMessage", m) for m in result],
+        )
+
         logger.info(
             f"list_chat_messages successful: retrieved {len(result)} messages from {len(chats)} chats"
         )
@@ -3730,6 +3745,11 @@ def list_channel_messages(
         # Sort all messages by creation time (most recent first) and limit results
         all_messages.sort(key=lambda x: x.get("createdDateTime", ""), reverse=True)
         result = all_messages[:limit]
+
+        get_global_cache().store(
+            "chatMessage",
+            [normalize_for_cache("chatMessage", m) for m in result],
+        )
 
         if profile == "assistant":
             result = [shape_message_summary(m) for m in result]

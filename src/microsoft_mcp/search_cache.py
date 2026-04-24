@@ -62,6 +62,38 @@ class SearchCache:
         return info
 
 
+def normalize_for_cache(kind: str, raw: dict[str, Any]) -> dict[str, Any]:
+    """Normalize a raw Graph item into the cache's {id, kind, title, snippet} schema."""
+    if kind == "message":
+        return {
+            "id": raw.get("id", ""),
+            "kind": "message",
+            "title": raw.get("subject") or "",
+            "snippet": (raw.get("bodyPreview") or "")[:200],
+        }
+    if kind == "event":
+        return {
+            "id": raw.get("id", ""),
+            "kind": "event",
+            "title": raw.get("subject") or "",
+            "snippet": (raw.get("bodyPreview") or "")[:200],
+        }
+    if kind == "chatMessage":
+        body = raw.get("body") or {}
+        return {
+            "id": raw.get("id", ""),
+            "kind": "chatMessage",
+            "title": raw.get("subject") or (body.get("content") or "")[:60],
+            "snippet": (body.get("content") or "")[:200],
+        }
+    return {
+        "id": raw.get("id", ""),
+        "kind": kind,
+        "title": raw.get("subject") or raw.get("displayName") or "",
+        "snippet": (raw.get("bodyPreview") or "")[:200],
+    }
+
+
 # Module-level singleton
 _global_cache = SearchCache()
 

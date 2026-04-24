@@ -772,3 +772,93 @@ def test_is_token_valid_returns_false_for_unparseable(tmp_path):
     path = tmp_path / "x@y.com_access_token.json"
     path.write_text(_json.dumps(data))
     assert auth._is_token_valid() is False
+
+
+import threading
+
+
+def test_concurrent_get_token_refreshes_exactly_once(tmp_path, monkeypatch):
+    from microsoft_mcp.auth_msal import MSALRefreshTokenAuth
+
+    auth = MSALRefreshTokenAuth(tokens_dir=tmp_path, account_identifier="x@y.com")
+    (tmp_path / "x@y.com_refresh_only.txt").write_text("rt-1")
+    past = datetime.now(timezone.utc) - timedelta(minutes=5)
+    (tmp_path / "x@y.com_access_token.json").write_text(
+        _json.dumps(
+            {
+                "access_token": "stale",
+                "expires_at": past.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "scopes": "Mail.Read offline_access",
+            }
+        )
+    )
+
+    calls = {"n": 0}
+    inner_lock = threading.Lock()
+
+    def fake_refresh(refresh_token):
+        with inner_lock:
+            calls["n"] += 1
+        return {
+            "access_token": "fresh",
+            "refresh_token": refresh_token,
+            "expires_in": 3600,
+            "scope": "Mail.Read offline_access",
+        }
+
+    monkeypatch.setattr(auth, "_refresh_access_token", fake_refresh)
+
+    tokens: list[str] = []
+
+    def worker():
+        tokens.append(auth.get_token())
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert calls["n"] == 1, f"expected 1 refresh, got {calls['n']}"
+    assert all(t == "fresh" for t in tokens)
+    assert len(tokens) == 8
+
+
+def test_serial_get_token_calls_still_work(tmp_path, monkeypatch):
+    """Single-threaded use path must remain unaffected."""
+    from microsoft_mcp.auth_msal import MSALRefreshTokenAuth
+
+    auth = MSALRefreshTokenAuth(tokens_dir=tmp_path, account_identifier="x@y.com")
+    (tmp_path / "x@y.com_refresh_only.txt").write_text("rt-serial")
+    past = datetime.now(timezone.utc) - timedelta(minutes=5)
+    (tmp_path / "x@y.com_access_token.json").write_text(
+        _json.dumps(
+            {
+                "access_token": "stale",
+                "expires_at": past.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "scopes": "Mail.Read offline_access",
+            }
+        )
+    )
+
+    calls = {"n": 0}
+
+    def fake_refresh(refresh_token):
+        calls["n"] += 1
+        return {
+            "access_token": f"fresh-{calls['n']}",
+            "refresh_token": refresh_token,
+            "expires_in": 3600,
+            "scope": "Mail.Read offline_access",
+        }
+
+    monkeypatch.setattr(auth, "_refresh_access_token", fake_refresh)
+
+    first = auth.get_token()
+    # Second call should find the fresh token valid (its expires_at was just written)
+    # and NOT trigger another refresh.
+    second = auth.get_token()
+
+    assert calls["n"] == 1
+    assert first == "fresh-1"
+    assert second == "fresh-1"

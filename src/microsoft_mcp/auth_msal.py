@@ -29,6 +29,7 @@ import logging
 import os
 import stat
 import subprocess
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -175,6 +176,7 @@ class MSALRefreshTokenAuth:
 
         # MSAL app instance (lazy initialized)
         self._msal_app: Optional[PublicClientApplication] = None
+        self._refresh_lock = threading.Lock()
 
         # Ensure token directory exists with secure permissions
         self._ensure_token_dir()
@@ -522,53 +524,47 @@ class MSALRefreshTokenAuth:
         return result
 
     def get_token(self) -> str:
-        """Get a valid access token, refreshing if needed.
-
-        Returns:
-            Valid access token string.
-
-        Raises:
-            Exception: If token acquisition fails.
-        """
+        """Get a valid access token, refreshing if needed."""
         logger.info("Getting access token")
 
-        # Check if cached token is valid
+        # Fast path: no lock needed if token is already valid.
         if self._is_token_valid():
             token_data = self._load_access_token_data()
             if token_data and token_data.get("access_token"):
                 return token_data["access_token"]
 
-        # Need to refresh - get refresh token
-        refresh_token = self._load_refresh_token()
-        if not refresh_token:
-            logger.error("No refresh token found. Authentication required.")
-            raise Exception(
-                "No refresh token found. Run authentication first: "
-                "MICROSOFT_MCP_AUTH_METHOD=msal uv run authenticate.py"
-            )
+        with self._refresh_lock:
+            # Re-check inside the lock: another thread may have refreshed
+            # while this one was waiting.
+            if self._is_token_valid():
+                token_data = self._load_access_token_data()
+                if token_data and token_data.get("access_token"):
+                    return token_data["access_token"]
 
-        # Refresh the token
-        try:
-            result = self._refresh_access_token(refresh_token)
+            refresh_token = self._load_refresh_token()
+            if not refresh_token:
+                logger.error("No refresh token found. Authentication required.")
+                raise Exception(
+                    "No refresh token found. Run authentication first: "
+                    "MICROSOFT_MCP_AUTH_METHOD=msal uv run authenticate.py"
+                )
 
-            # Save new tokens
-            self._save_tokens(
-                access_token=result["access_token"],
-                refresh_token=result.get("refresh_token", refresh_token),
-                expires_in=result.get("expires_in", 3600),
-                scopes=result.get("scope", "https://graph.microsoft.com/.default"),
-            )
-
-            return result["access_token"]
-
-        except Exception as e:
-            logger.error(f"Token refresh failed: {e}")
-            # Clear cache and prompt for re-authentication
-            self.clear_cache()
-            raise Exception(
-                f"Token refresh failed: {e}. Please re-authenticate: "
-                "MICROSOFT_MCP_AUTH_METHOD=msal uv run authenticate.py"
-            )
+            try:
+                result = self._refresh_access_token(refresh_token)
+                self._save_tokens(
+                    access_token=result["access_token"],
+                    refresh_token=result.get("refresh_token", refresh_token),
+                    expires_in=result.get("expires_in", 3600),
+                    scopes=result.get("scope", "https://graph.microsoft.com/.default"),
+                )
+                return result["access_token"]
+            except Exception as e:
+                logger.error(f"Token refresh failed: {e}")
+                self.clear_cache()
+                raise Exception(
+                    f"Token refresh failed: {e}. Please re-authenticate: "
+                    "MICROSOFT_MCP_AUTH_METHOD=msal uv run authenticate.py"
+                ) from e
 
     def get_token_with_details(self) -> tuple[str, int]:
         """Get access token with expiration timestamp.

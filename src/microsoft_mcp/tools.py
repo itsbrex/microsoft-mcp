@@ -752,9 +752,9 @@ def list_mail_folders(
             return [
                 {
                     "id": f["id"],
-                    "name": f.get("displayName") or "",
-                    "unread": f.get("unreadItemCount", 0),
-                    "total": f.get("totalItemCount", 0),
+                    "display_name": f.get("displayName") or "",
+                    "unread_item_count": f.get("unreadItemCount", 0),
+                    "total_item_count": f.get("totalItemCount", 0),
                 }
                 for f in raw_folders
             ]
@@ -913,7 +913,7 @@ def list_master_categories(
             return [
                 {
                     "id": c["id"],
-                    "name": c.get("displayName") or "",
+                    "display_name": c.get("displayName") or "",
                     "color": c.get("color") or "",
                 }
                 for c in rows
@@ -2001,17 +2001,24 @@ def list_invite_messages(
             limit=limit,
         )
         if profile == "assistant":
-            assistant_results = [
-                {
-                    "id": m["id"],
+            trimmed: list[dict[str, Any]] = []
+            for m in invite_messages:
+                event = m.get("event") if isinstance(m.get("event"), dict) else {}
+                compact: dict[str, Any] = {
+                    "id": m.get("id"),
                     "subject": m.get("subject") or "",
                     "from": flatten_email_address(m["from"]) if m.get("from") else "",
                     "received": m.get("receivedDateTime"),
                     "meeting_message_type": m.get("meetingMessageType"),
+                    "start": m.get("startDateTime") or (event or {}).get("start"),
+                    "end": m.get("endDateTime") or (event or {}).get("end"),
                 }
-                for m in invite_messages
-            ]
-            return assistant_results[:limit]
+                if event and event.get("id"):
+                    compact["event_id"] = event["id"]
+                if m.get("responseRequested") is not None:
+                    compact["response_requested"] = m["responseRequested"]
+                trimmed.append({k: v for k, v in compact.items() if v is not None})
+            return trimmed[:limit]
         invite_messages = [_shape_invite_message(raw) for raw in invite_messages]
         return invite_messages[:limit]
     except Exception as e:
@@ -3268,8 +3275,7 @@ def search_emails(
     logger.info(
         f"search_emails called: query='{query}', limit={limit}, folder={folder}"
     )
-    # profile resolution (shape is already summary; parameter accepted for contract uniformity)
-    _ = get_response_profile(response_profile)
+    profile = get_response_profile(response_profile)
 
     try:
         if folder:
@@ -3287,6 +3293,9 @@ def search_emails(
             raw = list(graph.search_query(query, ["message"], limit))
 
         result = [shape_email_summary(e) for e in raw]
+        if profile == "assistant":
+            # Already summary-shaped via shape_email_summary; no further trimming needed.
+            pass
 
         logger.info(
             f"search_emails successful: found {len(result)} emails matching '{query}'"
@@ -3331,11 +3340,14 @@ def search_events(
         - search_events("quarterly review") - Find quarterly review meetings
     """
     logger.info(f"search_events called: query='{query}', limit={limit}")
-    _ = get_response_profile(response_profile)
+    profile = get_response_profile(response_profile)
 
     try:
         raw_events = list(graph.search_query(query, ["event"], limit))
         events = [shape_event_summary(e) for e in raw_events]
+        if profile == "assistant":
+            # Already summary-shaped via shape_event_summary; no further trimming needed.
+            pass
 
         logger.info(
             f"search_events successful: found {len(events)} events matching '{query}'"
@@ -3379,7 +3391,7 @@ def search_contacts(
         - search_contacts("555-0123") - Find contact with specific phone number
     """
     logger.info(f"search_contacts called: query='{query}', limit={limit}")
-    _ = get_response_profile(response_profile)
+    profile = get_response_profile(response_profile)
 
     try:
         params = {
@@ -3391,6 +3403,9 @@ def search_contacts(
             graph.request_paginated("/me/contacts", params=params, limit=limit)
         )
         contacts = [shape_contact_summary(c) for c in raw_contacts]
+        if profile == "assistant":
+            # Already summary-shaped via shape_contact_summary; no further trimming needed.
+            pass
 
         logger.info(
             f"search_contacts successful: found {len(contacts)} contacts matching '{query}'"

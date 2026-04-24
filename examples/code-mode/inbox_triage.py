@@ -34,17 +34,21 @@ async def run_inbox_triage(mcp: Any) -> dict[str, Any]:
         """
 summary = microsoft.list_inbox_items({"limit": 20})
 top_items = summary["items"][:3]
-details = [
-    microsoft.get_inbox_item_detail({"item_id": item["id"], "kind": item["kind"]})
-    for item in top_items
-]
+
+hints = []
+for item in top_items:
+    action_hints = item.get("action_hints") or []
+    hints.append(action_hints[0] if action_hints else "review")
+
+details = []
+for item in top_items:
+    details.append(
+        microsoft.get_inbox_item_detail({"item_id": item["id"], "kind": item["kind"]})
+    )
 
 return {
     "titles": [item["title"] for item in top_items],
-    "actions": [
-        detail["action_hints"][0] if detail["action_hints"] else "review"
-        for detail in details
-    ],
+    "actions": hints,
     "scores": [item["score"] for item in top_items],
 }
 """,

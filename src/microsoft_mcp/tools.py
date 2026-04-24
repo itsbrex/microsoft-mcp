@@ -4012,6 +4012,45 @@ def _configure_public_tool_mode() -> None:
 # ============================================================================
 
 
+_NEWSLETTER_LOCAL_PARTS = frozenset(
+    {
+        "noreply",
+        "no-reply",
+        "donotreply",
+        "do-not-reply",
+        "newsletter",
+        "news",
+        "digest",
+        "notifications",
+        "notification",
+        "updates",
+        "mailer",
+        "hello",
+        "team",
+    }
+)
+
+
+def _is_newsletter_sender(raw_from: dict[str, Any] | None) -> bool:
+    if not raw_from:
+        return False
+    address = (raw_from.get("emailAddress") or {}).get("address") or ""
+    if "@" not in address:
+        return False
+    local, _, _domain = address.lower().partition("@")
+    if local in _NEWSLETTER_LOCAL_PARTS:
+        return True
+    # Common variants like "marketing+id@domain", "news-updates@domain"
+    for token in _NEWSLETTER_LOCAL_PARTS:
+        if (
+            local.startswith(token + "-")
+            or local.startswith(token + "+")
+            or local.startswith(token + ".")
+        ):
+            return True
+    return False
+
+
 def _emails_to_inbox_items(raw_emails: list[dict[str, Any]]) -> list[InboxItem]:
     items = []
     for e in raw_emails:
@@ -4029,6 +4068,7 @@ def _emails_to_inbox_items(raw_emails: list[dict[str, Any]]) -> list[InboxItem]:
                 when=e.get("receivedDateTime"),
                 unread=not e.get("isRead", True),
                 flagged=(e.get("flag") or {}).get("flagStatus") == "flagged",
+                is_newsletter=_is_newsletter_sender(e.get("from")),
                 web_url=f"https://outlook.office.com/mail/deeplink/readconv/{quote(e.get('conversationId', ''), safe='')}"
                 if e.get("conversationId")
                 else "",

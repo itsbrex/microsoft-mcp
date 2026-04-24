@@ -172,3 +172,33 @@ def test_email_not_flagged_when_status_missing_or_none():
     ]
     items = tools_mod._emails_to_inbox_items(raw)
     assert all(not i.flagged for i in items)
+
+
+def test_newsletter_sender_heuristic_flags_item():
+    raw = [
+        {
+            "id": "m-news",
+            "subject": "Weekly digest",
+            "isRead": False,
+            "from": {
+                "emailAddress": {"address": "noreply@substack.com", "name": "Substack"}
+            },
+        }
+    ]
+    items = tools_mod._emails_to_inbox_items(raw)
+    assert items[0].is_newsletter is True
+    # unread(+10) + newsletter(-20) = -10
+    assert _compute_score(items[0]) == -10.0
+
+
+def test_human_sender_not_newsletter():
+    raw = [
+        {
+            "id": "m-human",
+            "subject": "Hey",
+            "isRead": False,
+            "from": {"emailAddress": {"address": "alice@company.com", "name": "Alice"}},
+        }
+    ]
+    items = tools_mod._emails_to_inbox_items(raw)
+    assert items[0].is_newsletter is False

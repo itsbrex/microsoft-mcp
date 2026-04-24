@@ -269,3 +269,28 @@ def test_response_shaping_does_not_export_dead_types():
     assert not hasattr(rs, "BudgetHints"), (
         "BudgetHints dataclass was unused and should be removed"
     )
+
+
+from microsoft_mcp.response_shaping import _clean_body_text
+
+
+def test_clean_body_strips_safelinks_wrapper_and_decodes_target():
+    wrapped = (
+        "See https://eur01.safelinks.protection.outlook.com/?url=https%3A%2F%2Fexample.com%2Fpath"
+        "&data=abc for details."
+    )
+    cleaned = _clean_body_text(wrapped)
+    assert "safelinks" not in cleaned.lower()
+    assert "https://example.com/path" in cleaned
+
+
+def test_clean_body_strips_mimecast_url():
+    wrapped = "Read https://url.ca1.mimecast.com/v1/token now."
+    cleaned = _clean_body_text(wrapped)
+    assert "mimecast" not in cleaned.lower()
+
+
+def test_clean_body_preserves_normal_text():
+    normal = "Just a plain message with https://example.com/docs link."
+    cleaned = _clean_body_text(normal)
+    assert cleaned == normal.strip()

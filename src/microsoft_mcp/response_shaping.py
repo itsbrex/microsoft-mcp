@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 
 # ---------------------------------------------------------------------------
@@ -104,8 +104,24 @@ def extract_teams_meeting_info(event: dict[str, Any]) -> dict[str, Any] | None:
     return info
 
 
+def _unwrap_safelinks(text: str) -> str:
+    """Replace Outlook Safelinks wrappers with their decoded target URL."""
+
+    def _replace(match: re.Match[str]) -> str:
+        return unquote(match.group(1))
+
+    return _SAFE_LINK_RE.sub(_replace, text)
+
+
+def _strip_mimecast(text: str) -> str:
+    """Remove Mimecast wrapper URLs entirely — the target is opaque inside the token."""
+    return _MIMECAST_RE.sub("", text)
+
+
 def _clean_body_text(text: str) -> str:
     text = _SECURITY_BANNER_RE.sub("", text)
+    text = _unwrap_safelinks(text)
+    text = _strip_mimecast(text)
     return text.strip()
 
 

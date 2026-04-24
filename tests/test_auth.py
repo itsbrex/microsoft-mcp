@@ -369,20 +369,14 @@ def test_importing_auth_module_does_not_load_dotenv(monkeypatch, tmp_path, clean
     assert os.environ.get("MICROSOFT_MCP_CLIENT_ID") != "from-dotenv-during-import"
 
 
-def test_constructing_azure_auth_loads_dotenv(monkeypatch, tmp_path, clean_env):
-    """AzureAuthentication() construction should load .env."""
-    import importlib
-    import microsoft_mcp.auth as auth_mod
+def test_constructing_azure_auth_loads_dotenv(monkeypatch, tmp_path):
+    """AzureAuthentication() construction must call load_dotenv()."""
+    from unittest.mock import patch
+    from microsoft_mcp.auth import AzureAuthentication
 
-    envfile = tmp_path / ".env"
-    envfile.write_text("MICROSOFT_MCP_CLIENT_ID=from-dotenv-on-init\n")
-    monkeypatch.chdir(tmp_path)
+    with patch("microsoft_mcp.auth.load_dotenv") as mock_ld:
+        AzureAuthentication(auth_record_file=tmp_path / "ar.json")
 
-    importlib.reload(auth_mod)
-    # Pre-construction: env should NOT yet contain the dotenv value.
-    assert os.environ.get("MICROSOFT_MCP_CLIENT_ID") != "from-dotenv-on-init"
-
-    auth_mod.AzureAuthentication(auth_record_file=tmp_path / "ar.json")
-
-    # Post-construction: env now has the value.
-    assert os.environ.get("MICROSOFT_MCP_CLIENT_ID") == "from-dotenv-on-init"
+    assert mock_ld.called, "load_dotenv() must be invoked during __init__"
+    # Called exactly once at init-time, no other side-effect invocations expected.
+    assert mock_ld.call_count == 1

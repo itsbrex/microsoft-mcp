@@ -21,6 +21,7 @@ from .response_shaping import (
     shape_email_summary,
     shape_event_detail,
     shape_event_summary,
+    shape_message_summary,
     flatten_email_address,
 )
 from .search_cache import get_global_cache, normalize_for_cache

@@ -7,7 +7,7 @@ def main() -> None:
     # Load local development configuration before importing modules that read env.
     load_dotenv()
 
-    from .tools import auth, auth_method, mcp
+    from microsoft_mcp.tools import auth, auth_method, mcp
 
     if not os.getenv("MICROSOFT_MCP_CLIENT_ID"):
         print(

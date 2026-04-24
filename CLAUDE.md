@@ -211,7 +211,4 @@ nit: don't construct `httpx.AsyncClient` directly, use graph.request
 
 ## Known gotchas
 
-- **Code-mode sandbox — no `_getiter_`.** `code_mode.CodeModeRuntime._build_sandbox` ships without RestrictedPython's `default_guarded_getiter`, so list/dict/set comprehensions and `for` loops fail inside `call_tool_chain` with `name '_getiter_' is not defined`. Until it's patched, agent-authored code must use explicit `while` loops or fold iteration into the returned tool call args.
-- **`action_hints` lives on `list_inbox_items` summary items, not `get_inbox_item_detail` output.** The example in `examples/code-mode/inbox_triage.py` reads `detail["action_hints"]` which is always absent — it falls through to the default. Read hints off the summary item before hydration.
-- **MSAL disables Teams tools.** See commit `7dae88f` — MSAL accounts lack the Teams delegated permissions, so those tools are unregistered under `MICROSOFT_MCP_AUTH_METHOD=msal`.
-- **`src/microsoft_mcp/server.py` is not a valid entry point.** Always use the `microsoft-mcp` console script.
+- **MSAL disables Teams tools.** See commit `7dae88f` — MSAL uses the Microsoft Office public client ID (`d3590ed6-…`) which lacks Teams delegated permissions, so Teams tools are unregistered under `MICROSOFT_MCP_AUTH_METHOD=msal`. If you need Teams, register your own Azure AD app with the required Teams delegated permissions and switch to `MICROSOFT_MCP_AUTH_METHOD=azure` with your app's client ID.

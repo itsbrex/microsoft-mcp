@@ -600,7 +600,6 @@ import json as _json
 from urllib.parse import parse_qs
 
 
-
 def test_msal_refresh_preserves_saved_scopes(tmp_path, monkeypatch):
     auth = MSALRefreshTokenAuth(tokens_dir=tmp_path, account_identifier="x@y.com")
     (tmp_path / "x@y.com_refresh_only.txt").write_text("rt-123")
@@ -715,3 +714,61 @@ def test_msal_refresh_appends_offline_access_if_missing(tmp_path, monkeypatch):
     # offline_access must be appended so refresh tokens keep working.
     assert "Mail.Read" in captured["scope"]
     assert "offline_access" in captured["scope"]
+
+
+def test_is_token_valid_accepts_microseconds_format(tmp_path):
+    from datetime import datetime, timedelta, timezone
+    from microsoft_mcp.auth_msal import MSALRefreshTokenAuth
+
+    auth = MSALRefreshTokenAuth(tokens_dir=tmp_path, account_identifier="x@y.com")
+    future = datetime.now(timezone.utc) + timedelta(hours=1)
+    # microseconds variant
+    data = {
+        "access_token": "tok",
+        "expires_at": future.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+    }
+    path = tmp_path / "x@y.com_access_token.json"
+    path.write_text(_json.dumps(data))
+    assert auth._is_token_valid()
+
+
+def test_is_token_valid_accepts_offset_format(tmp_path):
+    from datetime import datetime, timedelta, timezone
+    from microsoft_mcp.auth_msal import MSALRefreshTokenAuth
+
+    auth = MSALRefreshTokenAuth(tokens_dir=tmp_path, account_identifier="x@y.com")
+    future = datetime.now(timezone.utc) + timedelta(hours=1)
+    # +00:00 offset variant
+    data = {
+        "access_token": "tok",
+        "expires_at": future.strftime("%Y-%m-%dT%H:%M:%S+00:00"),
+    }
+    path = tmp_path / "x@y.com_access_token.json"
+    path.write_text(_json.dumps(data))
+    assert auth._is_token_valid()
+
+
+def test_is_token_valid_accepts_legacy_z_format(tmp_path):
+    """The historical format we write must continue to parse."""
+    from datetime import datetime, timedelta, timezone
+    from microsoft_mcp.auth_msal import MSALRefreshTokenAuth
+
+    auth = MSALRefreshTokenAuth(tokens_dir=tmp_path, account_identifier="x@y.com")
+    future = datetime.now(timezone.utc) + timedelta(hours=1)
+    data = {
+        "access_token": "tok",
+        "expires_at": future.strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    path = tmp_path / "x@y.com_access_token.json"
+    path.write_text(_json.dumps(data))
+    assert auth._is_token_valid()
+
+
+def test_is_token_valid_returns_false_for_unparseable(tmp_path):
+    from microsoft_mcp.auth_msal import MSALRefreshTokenAuth
+
+    auth = MSALRefreshTokenAuth(tokens_dir=tmp_path, account_identifier="x@y.com")
+    data = {"access_token": "tok", "expires_at": "not-a-datetime"}
+    path = tmp_path / "x@y.com_access_token.json"
+    path.write_text(_json.dumps(data))
+    assert auth._is_token_valid() is False

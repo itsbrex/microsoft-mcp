@@ -315,21 +315,18 @@ class MSALRefreshTokenAuth:
             return False
 
         try:
-            expires_at = datetime.strptime(expires_at_str, "%Y-%m-%dT%H:%M:%SZ")
-            expires_at = expires_at.replace(tzinfo=timezone.utc)
+            raw = expires_at_str.replace("Z", "+00:00")
+            expires_at = datetime.fromisoformat(raw)
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
             now = datetime.now(timezone.utc)
-
-            # Check with buffer
             remaining = (expires_at - now).total_seconds()
             if remaining > TOKEN_EXPIRY_BUFFER_SECONDS:
                 logger.info(f"Token valid for {remaining:.0f} more seconds")
                 return True
-            else:
-                logger.info(
-                    f"Token expired or expiring soon ({remaining:.0f}s remaining)"
-                )
-                return False
-        except Exception as e:
+            logger.info(f"Token expired or expiring soon ({remaining:.0f}s remaining)")
+            return False
+        except ValueError as e:
             logger.warning(f"Error parsing token expiration: {e}")
             return False
 

@@ -866,7 +866,7 @@ Expected:
 - Ruff formatting and lint pass cleanly
 
 Additional manual checks:
-- Verify [mcp-tool-responses/v1](/Users/hack/github/microsoft-mcp/mcp-tool-responses/v1) fixtures can be re-generated and still satisfy compact contracts.
+- Verify [mcp-tool-responses/v1](../../mcp-tool-responses/v1) fixtures can be re-generated and still satisfy compact contracts.
 - Verify `list_inbox_items` returns mixed email/event/Teams items with stable `kind`, `score`, and `action_hints`.
 - Verify `search_events` returns actionable IDs and `get_event` extracts Teams meeting metadata.
 - Verify `list_emails` summary/detail output no longer includes common external-mail warning banners, unreadable wrapped URLs, or full quoted reply chains unless raw/full-thread mode is requested.

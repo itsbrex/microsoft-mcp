@@ -156,6 +156,6 @@ async def clean_up_after_triage(mcp, ids_to_archive, ids_to_mark_read):
 
 ## Related Files
 
-- [`README.md`](/Users/hack/github/microsoft-mcp/README.md)
-- [`IMPLEMENTATION.md`](/Users/hack/github/microsoft-mcp/IMPLEMENTATION.md)
-- [`examples/code-mode/inbox_triage.py`](/Users/hack/github/microsoft-mcp/examples/code-mode/inbox_triage.py)
+- [`README.md`](../README.md)
+- [`IMPLEMENTATION.md`](../IMPLEMENTATION.md)
+- [`examples/code-mode/inbox_triage.py`](../examples/code-mode/inbox_triage.py)

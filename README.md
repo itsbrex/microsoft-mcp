@@ -306,5 +306,5 @@ The original Claude Desktop config is only read, never modified.
 The generated bridge config defaults to:
 
 - server name: `code-mode-mcp`
-- command: `/Users/hack/.local/share/mise/shims/npx`
+- command: resolved via `shutil.which("npx")`, with `MICROSOFT_MCP_UTCP_BRIDGE_COMMAND` env var as override (falls back to literal `"npx"` for PATH lookup at exec time)
 - args: `["@utcp/code-mode-mcp"]`

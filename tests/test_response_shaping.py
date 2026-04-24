@@ -1,6 +1,4 @@
 from microsoft_mcp.response_shaping import (
-    ResponseProfile,
-    BudgetHints,
     cleanup_graph_payload,
     flatten_email_address,
     shape_email_summary,
@@ -11,24 +9,6 @@ from microsoft_mcp.response_shaping import (
     shape_contact_detail,
     shape_message_summary,
 )
-
-
-def test_response_profile_defaults_to_assistant_summary():
-    assert ResponseProfile.default_for_operation("list") == ResponseProfile.SUMMARY
-
-
-def test_response_profile_defaults_to_detail_for_get():
-    assert ResponseProfile.default_for_operation("get") == ResponseProfile.DETAIL
-
-
-def test_response_profile_defaults_to_summary_for_search():
-    assert ResponseProfile.default_for_operation("search") == ResponseProfile.SUMMARY
-
-
-def test_budget_hints_exposes_body_and_item_limits():
-    hints = BudgetHints.for_operation("list_emails")
-    assert hints.include_body is False
-    assert hints.max_items <= 25
 
 
 # --- Task 2: cleanup_graph_payload ---
@@ -277,3 +257,15 @@ def test_all_list_and_search_tools_accept_response_profile():
         if "response_profile" not in sig.parameters:
             missing.append(name)
     assert not missing, f"tools missing response_profile param: {missing}"
+
+
+import microsoft_mcp.response_shaping as rs
+
+
+def test_response_shaping_does_not_export_dead_types():
+    assert not hasattr(rs, "ResponseProfile"), (
+        "ResponseProfile enum was unused and should be removed"
+    )
+    assert not hasattr(rs, "BudgetHints"), (
+        "BudgetHints dataclass was unused and should be removed"
+    )

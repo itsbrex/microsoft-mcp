@@ -571,3 +571,25 @@ class TestMSALRefreshTokenAuthDeviceCodeFlow:
             mock_app.acquire_token_silent.assert_called_once()
             # Device flow should not be initiated
             mock_app.initiate_device_flow.assert_not_called()
+
+
+import inspect
+from microsoft_mcp.auth_msal import MSALRefreshTokenAuth
+
+
+def test_init_assigns_account_identifier_exactly_once():
+    source = inspect.getsource(MSALRefreshTokenAuth.__init__)
+    occurrences = source.count("self.account_identifier =")
+    assert occurrences == 1, f"expected 1 assignment, found {occurrences}"
+
+
+def test_init_uses_default_when_no_identifier_given(tmp_path):
+    auth = MSALRefreshTokenAuth(tokens_dir=tmp_path, client_id="test-cid")
+    assert auth.account_identifier == "default"
+
+
+def test_init_preserves_explicit_identifier(tmp_path):
+    auth = MSALRefreshTokenAuth(
+        tokens_dir=tmp_path, client_id="test-cid", account_identifier="user@example.com"
+    )
+    assert auth.account_identifier == "user@example.com"

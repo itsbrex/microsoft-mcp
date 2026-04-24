@@ -173,9 +173,6 @@ class MSALRefreshTokenAuth:
                 if explicit_client_id is None:
                     self.client_id = account_metadata["client_id"]
 
-        # Account identifier for file naming
-        self.account_identifier = account_identifier or "default"
-
         # MSAL app instance (lazy initialized)
         self._msal_app: Optional[PublicClientApplication] = None
 

@@ -2,6 +2,8 @@ from unittest.mock import call, patch
 
 import httpx
 
+from microsoft_mcp.tools import MESSAGE_SUMMARY_SELECT_FIELDS
+
 
 def _invite_message(invite_id: str, **overrides):
     raw = {
@@ -115,10 +117,7 @@ def test_list_invite_messages_filters_event_messages(mock_graph):
         "/me/mailFolders/inbox/messages",
         params={
             "$top": 50,
-            "$select": (
-                "id,subject,from,toRecipients,receivedDateTime,hasAttachments,"
-                "bodyPreview,conversationId,isRead,webLink,flag"
-            ),
+            "$select": MESSAGE_SUMMARY_SELECT_FIELDS,
             "$orderby": "receivedDateTime desc",
         },
         limit=50,

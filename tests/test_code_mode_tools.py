@@ -274,3 +274,32 @@ async def test_call_tool_chain_include_interfaces_flag(mcp_with_runtime):
     assert "interface_map_json" in result
     assert "available_tools" in result
     assert "available_access_patterns" in result
+
+
+@pytest.mark.asyncio
+async def test_async_tool_invocation_from_sandbox(mcp_with_runtime):
+    """Simulate a tool whose .fn returns a coroutine and verify it works
+    when call_tool_chain is driven from a live event loop."""
+    runtime = mcp_with_runtime
+
+    async def fake_fn(**kwargs):
+        return {"echo": kwargs}
+
+    class _FakeTool:
+        fn = staticmethod(fake_fn)
+
+    runtime._tool_cache["echo"] = _FakeTool()
+    setattr(runtime._tool_namespace, "echo", runtime._make_tool_wrapper("echo"))
+    # Populate _tool_details so call_tool_chain does not trigger a refresh
+    # that would clear the ad-hoc namespace registration above.
+    from microsoft_mcp.code_mode import CodeModeToolDetails
+
+    runtime._tool_details["echo"] = CodeModeToolDetails(
+        name="echo",
+        access_pattern="microsoft.echo",
+        description="fake echo tool",
+        tags=(),
+    )
+
+    result = await runtime.call_tool_chain('return microsoft.echo({"x": 1})')
+    assert result["result"] == {"echo": {"x": 1}}

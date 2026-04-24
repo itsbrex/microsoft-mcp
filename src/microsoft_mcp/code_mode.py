@@ -91,6 +91,20 @@ def _inplace_var(op: str, x: Any, y: Any) -> Any:
     raise ValueError(f"Unsupported inplace operator: {op}")
 
 
+def _run_coroutine_sync(coro: Awaitable[Any]) -> Any:
+    """Run a coroutine to completion whether or not a loop is already running.
+
+    Mirrors tools._run_async so sandboxed user code can invoke async
+    tools regardless of how call_tool_chain itself was driven.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        return executor.submit(lambda: asyncio.run(coro)).result()
+
+
 class CodeModeRuntime:
     """Runtime adapter for the active Microsoft MCP FastMCP registry."""
 
@@ -716,22 +730,15 @@ Python code with direct access to the live tool registry.
                 self._tool_cache[tool_name] = tool
             payload = dict(args or {})
             payload.update(kwargs)
-            trace_entry = {
-                "tool": tool_name,
-                "args": payload,
-            }
             if isinstance(self._trace_sink, list):
-                self._trace_sink.append(trace_entry)
+                self._trace_sink.append({"tool": tool_name, "args": payload})
 
             result = tool.fn(**payload)
             if inspect.isawaitable(result):
-                return asyncio.run(self._await_result(result))
+                return _run_coroutine_sync(result)
             return result
 
         return call_tool
-
-    async def _await_result(self, value: Awaitable[Any]) -> Any:
-        return await value
 
     def _lookup_tool(self, tool_name: str) -> Any:
         for tool in getattr(self, "_current_registry", []):

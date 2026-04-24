@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 from microsoft_mcp.utcp_bridge_config import (
@@ -181,8 +182,14 @@ def test_default_bridge_command_does_not_hardcode_user_path(monkeypatch):
 
     importlib.reload(mod)
     try:
-        assert "/Users/hack/" not in mod.DEFAULT_BRIDGE_COMMAND, (
-            "DEFAULT_BRIDGE_COMMAND contains a hardcoded user path; use shutil.which"
+        # Match any hardcoded user home (/Users/<name>/ or /home/<name>/) so
+        # the guard catches leaks from any contributor's machine.
+        hardcoded_home = re.search(
+            r"/(?:Users|home)/[A-Za-z0-9_.-]+/", mod.DEFAULT_BRIDGE_COMMAND
+        )
+        assert hardcoded_home is None, (
+            f"DEFAULT_BRIDGE_COMMAND contains a hardcoded user path "
+            f"({hardcoded_home.group(0)!r}); use shutil.which"
         )
         assert mod.DEFAULT_BRIDGE_COMMAND, "DEFAULT_BRIDGE_COMMAND must not be empty"
     finally:

@@ -236,13 +236,19 @@ def test_utcp_bridge_command_not_user_specific():
     value may legitimately point at a user-specific install path (e.g. a mise
     or nvm shim under ~/.local), which is fine because it came from
     shutil.which / the env override — not from a hardcoded string literal.
+
+    The guard matches any `/Users/<name>/` or `/home/<name>/` literal, so it
+    catches leaks from any developer's machine (not just the one who wrote
+    the test).
     """
     from microsoft_mcp import utcp_bridge_config
 
     src = inspect.getsource(utcp_bridge_config)
-    assert "/Users/hack/" not in src, (
-        "utcp_bridge_config.py contains a hardcoded /Users/hack/... path; "
-        "use shutil.which or the env override"
+    hardcoded_home = re.search(r"/(?:Users|home)/[A-Za-z0-9_.-]+/", src)
+    assert hardcoded_home is None, (
+        f"utcp_bridge_config.py contains a hardcoded user home path "
+        f"({hardcoded_home.group(0)!r}); use shutil.which, Path.home(), "
+        f"or the env override"
     )
     assert utcp_bridge_config.DEFAULT_BRIDGE_COMMAND, (
         "DEFAULT_BRIDGE_COMMAND must not be empty"

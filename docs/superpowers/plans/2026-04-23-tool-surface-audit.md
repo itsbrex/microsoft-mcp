@@ -2290,7 +2290,7 @@ DEFAULT_BRIDGE_COMMAND = (
 )
 ```
 
-Add a test that asserts `DEFAULT_BRIDGE_COMMAND` is not a hardcoded user path (e.g. `assert "/Users/hack/" not in DEFAULT_BRIDGE_COMMAND`).
+Add a test that asserts `DEFAULT_BRIDGE_COMMAND` is not a hardcoded user path. Use a regex like `re.search(r"/(?:Users|home)/[A-Za-z0-9_.-]+/", DEFAULT_BRIDGE_COMMAND)` so the guard catches any contributor's home dir (e.g. `~/…` → `/Users/<name>/…` or `/home/<name>/…`), not just one developer's.
 
 - [ ] **Step 5: Commit**
 

@@ -35,6 +35,10 @@ async def run_inbox_triage(mcp: Any) -> dict[str, Any]:
 summary = microsoft.list_inbox_items({"limit": 20})
 top_items = summary["items"][:3]
 
+# Ranker signals (mentioned, flagged, is_newsletter, starts_in_minutes)
+# are populated in _emails_to_inbox_items / _invite_messages_to_inbox_items /
+# _events_to_inbox_items. See tests/test_tool_surface_contract.py ::
+# test_inbox_ranker_signals_are_populated for the guard.
 hints = []
 for item in top_items:
     action_hints = item.get("action_hints") or []

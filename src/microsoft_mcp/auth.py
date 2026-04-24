@@ -233,7 +233,6 @@ class AzureAuthentication:
                 return token
             logger.info("Clearing cached data after terminal auth failure")
             self.clear_cache()
-            self._credential_instance = None
             raise RuntimeError(f"Client authentication failed: {e}") from e
         except Exception as e:
             logger.error(
@@ -276,9 +275,6 @@ class AzureAuthentication:
         This doesn't guarantee the token is valid, but indicates if silent auth is possible.
         """
         try:
-            # if not self.auth_record_file.exists():
-            #    return False
-
             credential = self.get_credential()
             # Try to get a token silently
             token: AccessToken = credential.get_token(*SCOPES)

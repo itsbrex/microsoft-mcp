@@ -3,8 +3,19 @@ Test configuration and fixtures for Microsoft MCP tests.
 """
 
 import pytest
+import pytest_asyncio
 from unittest.mock import Mock
 import os
+
+from fastmcp import FastMCP
+
+from microsoft_mcp.code_mode import CodeModeRuntime
+
+
+@pytest_asyncio.fixture
+async def mcp_with_runtime():
+    mcp = FastMCP("test")
+    return await CodeModeRuntime.create(mcp)
 
 
 @pytest.fixture

@@ -62,6 +62,35 @@ class CodeModeToolDetails(CodeModeToolSummary):
     python_interface: str = ""
 
 
+def _inplace_var(op: str, x: Any, y: Any) -> Any:
+    """Support for `+=`, `-=`, etc. inside the RestrictedPython sandbox."""
+    if op == "+=":
+        return x + y
+    if op == "-=":
+        return x - y
+    if op == "*=":
+        return x * y
+    if op == "/=":
+        return x / y
+    if op == "//=":
+        return x // y
+    if op == "%=":
+        return x % y
+    if op == "**=":
+        return x**y
+    if op == "|=":
+        return x | y
+    if op == "&=":
+        return x & y
+    if op == "^=":
+        return x ^ y
+    if op == "<<=":
+        return x << y
+    if op == ">>=":
+        return x >> y
+    raise ValueError(f"Unsupported inplace operator: {op}")
+
+
 class CodeModeRuntime:
     """Runtime adapter for the active Microsoft MCP FastMCP registry."""
 
@@ -602,6 +631,7 @@ Python code with direct access to the live tool registry.
     def _load_restricted_python_globals(self) -> dict[str, Any]:
         try:
             guards = importlib.import_module("RestrictedPython.Guards")
+            eval_mod = importlib.import_module("RestrictedPython.Eval")
             print_collector = importlib.import_module("RestrictedPython.PrintCollector")
         except ModuleNotFoundError as exc:
             raise RuntimeError(
@@ -609,6 +639,23 @@ Python code with direct access to the live tool registry.
             ) from exc
 
         safe_globals = dict(getattr(guards, "safe_globals", {}))
+
+        # Iteration + subscripting + augmented-assignment guards.
+        # Without these, comprehensions, `for` loops, and `+=` all fail.
+        safe_globals["_getiter_"] = getattr(eval_mod, "default_guarded_getiter", iter)
+        safe_globals["_getitem_"] = getattr(
+            eval_mod, "default_guarded_getitem", lambda obj, key: obj[key]
+        )
+        safe_globals["_iter_unpack_sequence_"] = getattr(
+            guards,
+            "guarded_iter_unpack_sequence",
+            lambda it, spec, _getiter_: tuple(it),
+        )
+        safe_globals["_unpack_sequence_"] = getattr(
+            guards, "guarded_unpack_sequence", lambda it, spec, _getiter_: tuple(it)
+        )
+        safe_globals["_inplacevar_"] = _inplace_var
+
         shared_print_collector = print_collector.PrintCollector()
         safe_globals["_print_"] = lambda _getattr=None: shared_print_collector
         safe_globals["_print"] = shared_print_collector

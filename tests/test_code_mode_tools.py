@@ -217,3 +217,38 @@ def test_public_tool_registry_can_be_switched_back_to_hybrid(load_tools_module):
     assert "search_tools" in tool_names
     assert "call_tool_chain" in tool_names
     assert not (set(module.TEAMS_TOOL_NAMES) & tool_names)
+
+
+@pytest.mark.asyncio
+async def test_call_tool_chain_supports_list_comprehensions(mcp_with_runtime):
+    runtime = mcp_with_runtime
+    result = await runtime.call_tool_chain("return [n * 2 for n in range(4)]")
+    assert result["result"] == [0, 2, 4, 6]
+
+
+@pytest.mark.asyncio
+async def test_call_tool_chain_supports_for_loops(mcp_with_runtime):
+    runtime = mcp_with_runtime
+    result = await runtime.call_tool_chain(
+        """
+acc = []
+for n in range(3):
+    acc.append(n * n)
+return acc
+"""
+    )
+    assert result["result"] == [0, 1, 4]
+
+
+@pytest.mark.asyncio
+async def test_call_tool_chain_supports_augmented_assignment(mcp_with_runtime):
+    runtime = mcp_with_runtime
+    result = await runtime.call_tool_chain(
+        """
+total = 0
+for n in range(5):
+    total += n
+return total
+"""
+    )
+    assert result["result"] == 10

@@ -1,7 +1,8 @@
 import datetime as dt
 
+from microsoft_mcp import tools as tools_mod
 from microsoft_mcp.inbox_models import InboxItem
-from microsoft_mcp.inbox_ranking import rank_items
+from microsoft_mcp.inbox_ranking import _compute_score, rank_items
 
 
 def _future_iso(minutes: int) -> str:
@@ -102,9 +103,6 @@ def test_inbox_item_to_dict():
 
 
 def test_invite_message_populates_starts_in_minutes_under_15():
-    from microsoft_mcp import tools as tools_mod
-    from microsoft_mcp.inbox_ranking import _compute_score
-
     raw = [
         {
             "id": "msg-1",
@@ -122,9 +120,6 @@ def test_invite_message_populates_starts_in_minutes_under_15():
 
 
 def test_event_populates_starts_in_minutes_1_to_2_hours():
-    from microsoft_mcp import tools as tools_mod
-    from microsoft_mcp.inbox_ranking import _compute_score
-
     raw = [
         {
             "id": "evt-1",
@@ -139,9 +134,6 @@ def test_event_populates_starts_in_minutes_1_to_2_hours():
 
 
 def test_past_events_have_none_starts_in_minutes():
-    from microsoft_mcp import tools as tools_mod
-    from microsoft_mcp.inbox_ranking import _compute_score
-
     raw = [
         {
             "id": "evt-past",

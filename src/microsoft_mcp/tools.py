@@ -4044,7 +4044,7 @@ def _parse_graph_datetime(value: Any) -> dt.datetime | None:
     """
     if not value or not isinstance(value, str):
         return None
-    cleaned = value.rstrip("Z")
+    cleaned = value.removesuffix("Z")
     if "." in cleaned:
         base, frac = cleaned.split(".", 1)
         frac = frac[:6]

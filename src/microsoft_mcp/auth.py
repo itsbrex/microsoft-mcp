@@ -214,43 +214,24 @@ class AzureAuthentication:
         logger.info("Authentication completed and record saved")
         return auth_record
 
-    def get_token_with_details(self) -> tuple[str, int]:
-        """
-        Get an access token along with its expiration timestamp.
-        Uses Azure SDK's built-in caching and refresh token handling.
-
-        Returns:
-            Tuple of (token_string, expires_on_timestamp)
-        """
-        logger.info("Requesting access token with details for Microsoft Graph API")
-
+    def _acquire_token(self) -> AccessToken:
+        """Single-point token acquisition. Handles credential + terminal/transient failures."""
         credential = self.get_credential()
-
         try:
             logger.info(f"Requesting token for scopes: {', '.join(SCOPES)}")
             token: AccessToken = credential.get_token(*SCOPES)
-
             logger.info("Access token acquired successfully")
-            return token.token, token.expires_on
-
+            return token
         except ClientAuthenticationError as e:
             logger.error(f"Client authentication failed (terminal): {e}")
             if not self.auth_record_file.exists():
                 logger.info(
                     "No AuthenticationRecord found, attempting interactive authentication"
                 )
-                try:
-                    self.authenticate()
-                    token: AccessToken = credential.get_token(*SCOPES)
-                    logger.info(
-                        "Access token acquired after interactive authentication"
-                    )
-                    return token.token, token.expires_on
-                except Exception as retry_e:
-                    logger.error(
-                        f"Failed to acquire token after interactive authentication: {retry_e}"
-                    )
-                    raise
+                self.authenticate()
+                token = credential.get_token(*SCOPES)
+                logger.info("Access token acquired after interactive authentication")
+                return token
             logger.info("Clearing cached data after terminal auth failure")
             self.clear_cache()
             self._credential_instance = None
@@ -260,53 +241,17 @@ class AzureAuthentication:
                 f"Transient token acquisition failure (not clearing cache): {e}"
             )
             raise
+
+    def get_token_with_details(self) -> tuple[str, int]:
+        """Return (token_string, expires_on_unix_timestamp)."""
+        logger.info("Requesting access token with details for Microsoft Graph API")
+        token = self._acquire_token()
+        return token.token, token.expires_on
 
     def get_token(self) -> str:
-        """
-        Get an access token for Microsoft Graph API calls.
-        Uses Azure SDK's built-in caching and refresh token handling.
-
-        Returns:
-            Valid access token for Microsoft Graph API.
-        """
+        """Return a valid access token string."""
         logger.info("Requesting access token for Microsoft Graph API")
-
-        credential = self.get_credential()
-
-        try:
-            logger.info(f"Requesting token for scopes: {', '.join(SCOPES)}")
-            token: AccessToken = credential.get_token(*SCOPES)
-
-            logger.info("Access token acquired successfully")
-            return token.token
-
-        except ClientAuthenticationError as e:
-            logger.error(f"Client authentication failed (terminal): {e}")
-            if not self.auth_record_file.exists():
-                logger.info(
-                    "No AuthenticationRecord found, attempting interactive authentication"
-                )
-                try:
-                    self.authenticate()
-                    token: AccessToken = credential.get_token(*SCOPES)
-                    logger.info(
-                        "Access token acquired after interactive authentication"
-                    )
-                    return token.token
-                except Exception as retry_e:
-                    logger.error(
-                        f"Failed to acquire token after interactive authentication: {retry_e}"
-                    )
-                    raise
-            logger.info("Clearing cached data after terminal auth failure")
-            self.clear_cache()
-            self._credential_instance = None
-            raise RuntimeError(f"Client authentication failed: {e}") from e
-        except Exception as e:
-            logger.error(
-                f"Transient token acquisition failure (not clearing cache): {e}"
-            )
-            raise
+        return self._acquire_token().token
 
     def get_graph_client(
         self, scopes: Optional[list[str]] = None

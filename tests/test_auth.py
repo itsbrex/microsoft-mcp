@@ -333,3 +333,23 @@ def test_transient_service_error_does_not_clear_on_get_token_with_details(
         auth.get_token_with_details()
 
     assert record_file.exists()
+
+
+def test_get_token_and_get_token_with_details_share_value(tmp_path, monkeypatch):
+    """After refactor, both methods must return the same token string and expires_on must match."""
+    from microsoft_mcp.auth import AzureAuthentication
+    from unittest.mock import MagicMock
+
+    auth = AzureAuthentication(auth_record_file=tmp_path / "ar.json")
+    fake_token = MagicMock()
+    fake_token.token = "abc"
+    fake_token.expires_on = 9999999
+    cred = MagicMock()
+    cred.get_token.return_value = fake_token
+    monkeypatch.setattr(auth, "get_credential", lambda: cred)
+
+    plain = auth.get_token()
+    detailed, exp = auth.get_token_with_details()
+
+    assert plain == detailed == "abc"
+    assert exp == 9999999

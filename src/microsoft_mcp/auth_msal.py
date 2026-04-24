@@ -519,23 +519,24 @@ class MSALRefreshTokenAuth:
 
         return result
 
-    def get_token(self) -> str:
-        """Get a valid access token, refreshing if needed."""
-        logger.info("Getting access token")
+    def _acquire_token_data(self) -> dict[str, Any]:
+        """Single-point token acquisition for MSAL. Handles lock + refresh path.
 
+        Returns the saved access-token-data dict (not just the token string)
+        so the caller can extract either token or expires_at.
+        """
         # Fast path: no lock needed if token is already valid.
         if self._is_token_valid():
             token_data = self._load_access_token_data()
             if token_data and token_data.get("access_token"):
-                return token_data["access_token"]
+                return token_data
 
         with self._refresh_lock:
-            # Re-check inside the lock: another thread may have refreshed
-            # while this one was waiting.
+            # Re-check inside the lock.
             if self._is_token_valid():
                 token_data = self._load_access_token_data()
                 if token_data and token_data.get("access_token"):
-                    return token_data["access_token"]
+                    return token_data
 
             refresh_token = self._load_refresh_token()
             if not refresh_token:
@@ -553,7 +554,12 @@ class MSALRefreshTokenAuth:
                     expires_in=result.get("expires_in", 3600),
                     scopes=result.get("scope", "https://graph.microsoft.com/.default"),
                 )
-                return result["access_token"]
+                # Re-load the just-saved data so the caller sees canonical shape.
+                data = self._load_access_token_data()
+                if not data:
+                    # Defensive — save should always produce a readable file.
+                    raise Exception("Token saved but could not be re-read")
+                return data
             except Exception as e:
                 logger.error(f"Token refresh failed: {e}")
                 self.clear_cache()
@@ -562,32 +568,29 @@ class MSALRefreshTokenAuth:
                     "MICROSOFT_MCP_AUTH_METHOD=msal uv run authenticate.py"
                 ) from e
 
+    def get_token(self) -> str:
+        """Get a valid access token, refreshing if needed."""
+        logger.info("Getting access token")
+        data = self._acquire_token_data()
+        return data["access_token"]
+
     def get_token_with_details(self) -> tuple[str, int]:
-        """Get access token with expiration timestamp.
+        """Get access token with expiration timestamp."""
+        data = self._acquire_token_data()
+        token = data["access_token"]
 
-        Returns:
-            Tuple of (token_string, expires_on_unix_timestamp).
-
-        Raises:
-            Exception: If token acquisition fails.
-        """
-        # Ensure we have a valid token
-        token = self.get_token()
-
-        # Get expiration from saved data
-        token_data = self._load_access_token_data()
-        if token_data and token_data.get("expires_at"):
+        expires_at_str = data.get("expires_at")
+        if expires_at_str:
             try:
-                expires_at = datetime.strptime(
-                    token_data["expires_at"], "%Y-%m-%dT%H:%M:%SZ"
-                )
-                expires_at = expires_at.replace(tzinfo=timezone.utc)
-                expires_on = int(expires_at.timestamp())
-                return token, expires_on
-            except Exception:
+                raw = expires_at_str.replace("Z", "+00:00")
+                expires_at = datetime.fromisoformat(raw)
+                if expires_at.tzinfo is None:
+                    expires_at = expires_at.replace(tzinfo=timezone.utc)
+                return token, int(expires_at.timestamp())
+            except ValueError:
                 pass
 
-        # Fallback: assume 1 hour from now
+        # Fallback: assume 1 hour from now.
         expires_on = int((datetime.now(timezone.utc) + timedelta(hours=1)).timestamp())
         return token, expires_on
 

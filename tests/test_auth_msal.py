@@ -918,3 +918,27 @@ def test_save_preserves_email_in_payload(tmp_path):
 
     payload = _json.loads((tmp_path / "default_access_token.json").read_text())
     assert payload["email"] == "payload@example.com"
+
+
+def test_msal_get_token_and_get_token_with_details_share_value(tmp_path, monkeypatch):
+    """After refactor, MSAL's get_token and get_token_with_details return consistent values."""
+    from microsoft_mcp.auth_msal import MSALRefreshTokenAuth
+
+    # Write a fresh token so the happy path hits cached state.
+    auth = MSALRefreshTokenAuth(tokens_dir=tmp_path, account_identifier="x@y.com")
+    future = datetime.now(timezone.utc) + timedelta(hours=1)
+    (tmp_path / "x@y.com_access_token.json").write_text(
+        _json.dumps(
+            {
+                "access_token": "cached-tok",
+                "expires_at": future.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "scopes": "Mail.Read offline_access",
+            }
+        )
+    )
+
+    plain = auth.get_token()
+    detailed, exp = auth.get_token_with_details()
+    assert plain == detailed == "cached-tok"
+    # expires_on is a unix timestamp; must be within a second of the stored expires_at.
+    assert abs(exp - int(future.timestamp())) <= 1

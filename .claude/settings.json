@@ -41,10 +41,7 @@
       "Bash(find .:*)",
       "Bash(tree:*)",
       "Bash(python -m microsoft_mcp:*)",
-      "Bash(PYTHONPATH=src python -m microsoft_mcp.utcp_bridge_config:*)",
-      "Read(//Users/hack/github/microsoft-mcp/**)",
-      "Edit(//Users/hack/github/microsoft-mcp/**)",
-      "Write(//Users/hack/github/microsoft-mcp/**)"
+      "Bash(PYTHONPATH=src python -m microsoft_mcp.utcp_bridge_config:*)"
     ],
     "deny": [
       "Bash(rm -rf /*)",
@@ -53,8 +50,8 @@
       "Bash(git push -f:*)",
       "Bash(git reset --hard origin/master:*)",
       "Bash(git reset --hard origin/main:*)",
-      "Read(//Users/hack/.config/microsoft-mcp/tokens/**)",
-      "Read(//Users/hack/.ms-graph-mcp-azure-auth-record.json)"
+      "Read(~/.config/microsoft-mcp/tokens/**)",
+      "Read(~/.ms-graph-mcp-azure-auth-record.json)"
     ],
     "ask": [
       "Bash(git push:*)",

@@ -222,9 +222,9 @@ def test_shape_contact_summary_filters_empty_email_entries():
     raw = {
         "id": "c-1",
         "displayName": "Brian Roach",
-        "emailAddresses": [{"address": "roach7@gmail.com"}, {}, {}],
+        "emailAddresses": [{"address": "user@example.com"}, {}, {}],
     }
-    assert shape_contact_summary(raw)["email_addresses"] == ["roach7@gmail.com"]
+    assert shape_contact_summary(raw)["email_addresses"] == ["user@example.com"]
 ```
 
 **Step 2: Run test to verify it fails**

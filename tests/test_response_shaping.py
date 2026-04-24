@@ -169,10 +169,10 @@ def test_shape_contact_summary_filters_empty_email_entries():
     raw = {
         "id": "c-1",
         "displayName": "Brian Roach",
-        "emailAddresses": [{"address": "roach7@gmail.com"}, {}, {}],
+        "emailAddresses": [{"address": "user@example.com"}, {}, {}],
     }
     shaped = shape_contact_summary(raw)
-    assert shaped["email_addresses"] == ["roach7@gmail.com"]
+    assert shaped["email_addresses"] == ["user@example.com"]
 
 
 def test_shape_contact_summary_separates_unresolved_addresses():

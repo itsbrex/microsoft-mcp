@@ -117,7 +117,7 @@ def test_list_invite_messages_filters_event_messages(mock_graph):
             "$top": 50,
             "$select": (
                 "id,subject,from,toRecipients,receivedDateTime,hasAttachments,"
-                "bodyPreview,conversationId,isRead,webLink"
+                "bodyPreview,conversationId,isRead,webLink,flag"
             ),
             "$orderby": "receivedDateTime desc",
         },

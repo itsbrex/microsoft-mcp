@@ -144,3 +144,31 @@ def test_past_events_have_none_starts_in_minutes():
     items = tools_mod._events_to_inbox_items(raw)
     assert items[0].starts_in_minutes is None
     assert _compute_score(items[0]) == 0.0
+
+
+def test_email_flagged_status_feeds_ranker():
+    raw = [
+        {
+            "id": "m-1",
+            "subject": "Action needed",
+            "isRead": True,
+            "flag": {"flagStatus": "flagged"},
+        }
+    ]
+    items = tools_mod._emails_to_inbox_items(raw)
+    assert items[0].flagged is True
+    assert _compute_score(items[0]) == 8.0
+
+
+def test_email_not_flagged_when_status_missing_or_none():
+    raw = [
+        {
+            "id": "m-2",
+            "subject": "None",
+            "isRead": True,
+            "flag": {"flagStatus": "notFlagged"},
+        },
+        {"id": "m-3", "subject": "Missing", "isRead": True},
+    ]
+    items = tools_mod._emails_to_inbox_items(raw)
+    assert all(not i.flagged for i in items)

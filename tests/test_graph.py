@@ -415,3 +415,71 @@ def test_request_does_not_mutate_caller_params(mock_auth, monkeypatch):
     assert user_params == before
     # But the request must still have gone out with $count=true.
     assert captured["params"].get("$count") == "true"
+
+
+def test_set_and_get_auth_instance_is_thread_safe(monkeypatch):
+    """Concurrent readers + writers never observe a partially-constructed auth."""
+    import threading
+    from microsoft_mcp import graph as g
+
+    # Reset the global to a known state.
+    g.set_auth_instance(None)  # type: ignore[arg-type]
+
+    auths = [object() for _ in range(20)]
+    seen = []
+
+    def writer(a):
+        g.set_auth_instance(a)
+
+    def reader():
+        seen.append(g._global_auth)
+
+    threads = [threading.Thread(target=writer, args=(a,)) for a in auths] + [
+        threading.Thread(target=reader) for _ in range(20)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    # Every observed value must be either None (initial) or one of the real auth objects.
+    for s in seen:
+        assert s is None or s in auths
+
+
+def test_get_auth_instance_lazy_construction_is_serialized(monkeypatch, clean_env):
+    """When _global_auth is None, concurrent get_auth_instance calls must only construct once."""
+    import threading
+    from microsoft_mcp import graph as g
+
+    # Clear the global so get_auth_instance falls into the construction path.
+    g.set_auth_instance(None)  # type: ignore[arg-type]
+
+    construct_count = {"n": 0}
+    build_lock = threading.Lock()
+    import os
+
+    os.environ["MICROSOFT_MCP_CLIENT_ID"] = "test-cid"
+    os.environ["MICROSOFT_MCP_AUTH_METHOD"] = "msal"
+    os.environ["MICROSOFT_MCP_ACCOUNT_ID"] = "test@example.com"
+
+    from microsoft_mcp import auth_msal
+
+    original_init = auth_msal.MSALRefreshTokenAuth.__init__
+
+    def counting_init(self, *args, **kwargs):
+        with build_lock:
+            construct_count["n"] += 1
+        return original_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(auth_msal.MSALRefreshTokenAuth, "__init__", counting_init)
+
+    threads = [threading.Thread(target=g.get_auth_instance) for _ in range(16)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert construct_count["n"] == 1, (
+        f"expected 1 construction, got {construct_count['n']}"
+    )

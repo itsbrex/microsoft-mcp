@@ -1,4 +1,5 @@
 import os
+import threading
 import httpx
 import time
 from typing import Any, Iterator, Optional, TYPE_CHECKING
@@ -15,6 +16,7 @@ _client = httpx.Client(timeout=30.0, follow_redirects=True)
 
 # Global auth instance - supports any AuthProvider implementation
 _global_auth: Optional["AuthProvider"] = None
+_auth_lock = threading.Lock()
 
 
 def set_auth_instance(auth: "AuthProvider") -> None:
@@ -25,7 +27,31 @@ def set_auth_instance(auth: "AuthProvider") -> None:
     - MSALRefreshTokenAuth (MSAL device code flow)
     """
     global _global_auth
-    _global_auth = auth
+    with _auth_lock:
+        _global_auth = auth
+
+
+def _construct_default_auth() -> "AuthProvider":
+    """Construct the default auth provider based on environment configuration."""
+    load_dotenv()
+    auth_method = os.getenv("MICROSOFT_MCP_AUTH_METHOD", "azure").lower()
+
+    if auth_method == "msal":
+        from .auth_msal import MSALRefreshTokenAuth
+
+        return MSALRefreshTokenAuth(
+            tokens_dir=os.getenv("MICROSOFT_MCP_TOKENS_DIR"),
+            client_id=os.getenv("MICROSOFT_MCP_CLIENT_ID"),
+            tenant_id=os.getenv("MICROSOFT_MCP_TENANT_ID"),
+            account_identifier=os.getenv("MICROSOFT_MCP_ACCOUNT_ID"),
+        )
+
+    from .auth import AzureAuthentication
+
+    return AzureAuthentication(
+        auth_record_file=os.getenv("AZURE_CRED_CACHE_FILE"),
+        token_cache_file=os.getenv("AZURE_TOKEN_CACHE_FILE"),
+    )
 
 
 def get_auth_instance() -> "AuthProvider":
@@ -34,28 +60,21 @@ def get_auth_instance() -> "AuthProvider":
     Falls back to the auth method configured in the environment.
     """
     global _global_auth
-    if _global_auth is None:
-        load_dotenv()
-        auth_method = os.getenv("MICROSOFT_MCP_AUTH_METHOD", "azure").lower()
 
-        # Import here to avoid circular imports and honor runtime env configuration.
-        if auth_method == "msal":
-            from .auth_msal import MSALRefreshTokenAuth
+    # Fast path: unlocked read. Safe because set_auth_instance only ever
+    # writes a fully-constructed object.
+    current = _global_auth
+    if current is not None:
+        return current
 
-            _global_auth = MSALRefreshTokenAuth(
-                tokens_dir=os.getenv("MICROSOFT_MCP_TOKENS_DIR"),
-                client_id=os.getenv("MICROSOFT_MCP_CLIENT_ID"),
-                tenant_id=os.getenv("MICROSOFT_MCP_TENANT_ID"),
-                account_identifier=os.getenv("MICROSOFT_MCP_ACCOUNT_ID"),
-            )
-        else:
-            from .auth import AzureAuthentication
+    with _auth_lock:
+        # Re-check under the lock: another thread may have installed an auth
+        # while we were waiting.
+        if _global_auth is not None:
+            return _global_auth
 
-            _global_auth = AzureAuthentication(
-                auth_record_file=os.getenv("AZURE_CRED_CACHE_FILE"),
-                token_cache_file=os.getenv("AZURE_TOKEN_CACHE_FILE"),
-            )
-    return _global_auth
+        _global_auth = _construct_default_auth()
+        return _global_auth
 
 
 def request(

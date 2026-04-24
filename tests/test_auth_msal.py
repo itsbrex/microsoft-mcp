@@ -593,3 +593,125 @@ def test_init_preserves_explicit_identifier(tmp_path):
         tokens_dir=tmp_path, client_id="test-cid", account_identifier="user@example.com"
     )
     assert auth.account_identifier == "user@example.com"
+
+
+import io
+import json as _json
+from urllib.parse import parse_qs
+
+
+
+def test_msal_refresh_preserves_saved_scopes(tmp_path, monkeypatch):
+    auth = MSALRefreshTokenAuth(tokens_dir=tmp_path, account_identifier="x@y.com")
+    (tmp_path / "x@y.com_refresh_only.txt").write_text("rt-123")
+    (tmp_path / "x@y.com_access_token.json").write_text(
+        '{"email": "x@y.com", "access_token": "old", "token_type": "Bearer", '
+        '"expires_in": 0, "expires_at": "2020-01-01T00:00:00Z", '
+        '"refreshed_at": "2020-01-01T00:00:00Z", '
+        '"scopes": "Mail.Read Files.Read offline_access", "api_type": "graph"}'
+    )
+
+    captured = {}
+
+    def fake_urlopen(req, timeout=30):
+        body = req.data.decode()
+        params = parse_qs(body)
+        captured["scope"] = params["scope"][0]
+        return io.BytesIO(
+            _json.dumps(
+                {
+                    "access_token": "new",
+                    "refresh_token": "rt-123",
+                    "expires_in": 3600,
+                    "scope": params["scope"][0],
+                }
+            ).encode()
+        )
+
+    monkeypatch.setattr(
+        "microsoft_mcp.auth_msal.urllib.request.urlopen",
+        fake_urlopen,
+    )
+
+    auth.get_token()
+    assert "Mail.Read" in captured["scope"]
+    assert "Files.Read" in captured["scope"]
+    assert "offline_access" in captured["scope"]
+
+
+def test_msal_refresh_falls_back_to_default_when_no_scopes_saved(tmp_path, monkeypatch):
+    auth = MSALRefreshTokenAuth(tokens_dir=tmp_path, account_identifier="x@y.com")
+    (tmp_path / "x@y.com_refresh_only.txt").write_text("rt-none")
+    # access_token.json exists but has no scopes field
+    (tmp_path / "x@y.com_access_token.json").write_text(
+        '{"email": "x@y.com", "access_token": "old", "token_type": "Bearer", '
+        '"expires_in": 0, "expires_at": "2020-01-01T00:00:00Z", '
+        '"refreshed_at": "2020-01-01T00:00:00Z", '
+        '"api_type": "graph"}'
+    )
+
+    captured = {}
+
+    def fake_urlopen(req, timeout=30):
+        body = req.data.decode()
+        params = parse_qs(body)
+        captured["scope"] = params["scope"][0]
+        return io.BytesIO(
+            _json.dumps(
+                {
+                    "access_token": "new",
+                    "refresh_token": "rt-none",
+                    "expires_in": 3600,
+                    "scope": params["scope"][0],
+                }
+            ).encode()
+        )
+
+    monkeypatch.setattr(
+        "microsoft_mcp.auth_msal.urllib.request.urlopen",
+        fake_urlopen,
+    )
+
+    auth.get_token()
+    # Falls back to .default offline_access when no saved scopes.
+    assert ".default" in captured["scope"]
+    assert "offline_access" in captured["scope"]
+
+
+def test_msal_refresh_appends_offline_access_if_missing(tmp_path, monkeypatch):
+    auth = MSALRefreshTokenAuth(tokens_dir=tmp_path, account_identifier="x@y.com")
+    (tmp_path / "x@y.com_refresh_only.txt").write_text("rt-xyz")
+    # saved scopes without offline_access
+    (tmp_path / "x@y.com_access_token.json").write_text(
+        '{"email": "x@y.com", "access_token": "old", "token_type": "Bearer", '
+        '"expires_in": 0, "expires_at": "2020-01-01T00:00:00Z", '
+        '"refreshed_at": "2020-01-01T00:00:00Z", '
+        '"scopes": "Mail.Read", "api_type": "graph"}'
+    )
+
+    captured = {}
+
+    def fake_urlopen(req, timeout=30):
+        body = req.data.decode()
+        params = parse_qs(body)
+        captured["scope"] = params["scope"][0]
+        return io.BytesIO(
+            _json.dumps(
+                {
+                    "access_token": "new",
+                    "refresh_token": "rt-xyz",
+                    "expires_in": 3600,
+                    "scope": params["scope"][0],
+                }
+            ).encode()
+        )
+
+    monkeypatch.setattr(
+        "microsoft_mcp.auth_msal.urllib.request.urlopen",
+        fake_urlopen,
+    )
+
+    auth.get_token()
+    # offline_access must be appended so refresh tokens keep working.
+    assert "Mail.Read" in captured["scope"]
+    assert "offline_access" in captured["scope"]

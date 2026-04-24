@@ -350,7 +350,14 @@ class MSALRefreshTokenAuth:
         logger.info("Refreshing access token using refresh token")
 
         token_endpoint = TOKEN_ENDPOINT_TEMPLATE.format(tenant=self.tenant_id)
-        scopes = "https://graph.microsoft.com/.default offline_access"
+        saved = self._load_access_token_data() or {}
+        saved_scopes = saved.get("scopes") or ""
+        if saved_scopes.strip():
+            scopes = saved_scopes
+            if "offline_access" not in scopes.split():
+                scopes = f"{scopes} offline_access"
+        else:
+            scopes = "https://graph.microsoft.com/.default offline_access"
 
         # Prepare POST data
         data = urllib.parse.urlencode(

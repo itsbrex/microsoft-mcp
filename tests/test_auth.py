@@ -353,3 +353,36 @@ def test_get_token_and_get_token_with_details_share_value(tmp_path, monkeypatch)
 
     assert plain == detailed == "abc"
     assert exp == 9999999
+
+
+def test_importing_auth_module_does_not_load_dotenv(monkeypatch, tmp_path, clean_env):
+    """Module import must not eagerly load .env."""
+    import importlib
+    import microsoft_mcp.auth as auth_mod
+
+    envfile = tmp_path / ".env"
+    envfile.write_text("MICROSOFT_MCP_CLIENT_ID=from-dotenv-during-import\n")
+    monkeypatch.chdir(tmp_path)
+
+    importlib.reload(auth_mod)
+
+    assert os.environ.get("MICROSOFT_MCP_CLIENT_ID") != "from-dotenv-during-import"
+
+
+def test_constructing_azure_auth_loads_dotenv(monkeypatch, tmp_path, clean_env):
+    """AzureAuthentication() construction should load .env."""
+    import importlib
+    import microsoft_mcp.auth as auth_mod
+
+    envfile = tmp_path / ".env"
+    envfile.write_text("MICROSOFT_MCP_CLIENT_ID=from-dotenv-on-init\n")
+    monkeypatch.chdir(tmp_path)
+
+    importlib.reload(auth_mod)
+    # Pre-construction: env should NOT yet contain the dotenv value.
+    assert os.environ.get("MICROSOFT_MCP_CLIENT_ID") != "from-dotenv-on-init"
+
+    auth_mod.AzureAuthentication(auth_record_file=tmp_path / "ar.json")
+
+    # Post-construction: env now has the value.
+    assert os.environ.get("MICROSOFT_MCP_CLIENT_ID") == "from-dotenv-on-init"

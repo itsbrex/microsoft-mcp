@@ -59,8 +59,6 @@ from msgraph import GraphServiceClient
 # Configure logging
 logger = logging.getLogger(__name__)
 
-load_dotenv()
-
 # Delegated permissions (scopes) for accessing user data on behalf of the signed-in user
 SCOPES: list[str] = sorted(
     {
@@ -98,6 +96,7 @@ class AzureAuthentication:
         Args:
             auth_record_file: Path to AuthenticationRecord file (defaults to ~/.azure-graph-auth.json)
         """
+        load_dotenv()
 
         if auth_record_file:
             self.auth_record_file = Path(auth_record_file).resolve()

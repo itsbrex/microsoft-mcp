@@ -219,8 +219,22 @@ class MSALRefreshTokenAuth:
         return self.tokens_dir / f"{self.account_identifier}_access_only.txt"
 
     def _secure_write_file(self, path: Path, content: str) -> None:
-        """Write file with secure permissions (0o600)."""
-        path.write_text(content)
+        """Write file with secure permissions (0o600) set at create time."""
+        fd = os.open(
+            str(path),
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+            TOKEN_FILE_MODE,
+        )
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(content)
+        except Exception:
+            # If anything failed, ensure the fd is closed (fdopen takes ownership).
+            # We don't unlink here — the file may already exist with valid content
+            # from a previous successful call.
+            raise
+        # If the file PRE-EXISTED with a wider mode, O_CREAT mode is ignored by the OS.
+        # Reset mode after-the-fact so overwrites tighten permissions.
         try:
             path.chmod(TOKEN_FILE_MODE)
         except Exception as e:

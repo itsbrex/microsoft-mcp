@@ -942,3 +942,34 @@ def test_msal_get_token_and_get_token_with_details_share_value(tmp_path, monkeyp
     assert plain == detailed == "cached-tok"
     # expires_on is a unix timestamp; must be within a second of the stored expires_at.
     assert abs(exp - int(future.timestamp())) <= 1
+
+
+def test_secure_write_file_creates_with_owner_only_mode(tmp_path):
+    """Token file must have 0o600 mode immediately on creation, not after a chmod race."""
+    import stat
+    from microsoft_mcp.auth_msal import MSALRefreshTokenAuth
+
+    auth = MSALRefreshTokenAuth(tokens_dir=tmp_path, account_identifier="x@y.com")
+    target = tmp_path / "secure-test.txt"
+    auth._secure_write_file(target, "secret-content")
+
+    assert target.exists()
+    assert target.read_text() == "secret-content"
+    actual_mode = stat.S_IMODE(target.stat().st_mode)
+    assert actual_mode == 0o600, f"expected 0o600, got 0o{actual_mode:o}"
+
+
+def test_secure_write_file_overwrites_existing_with_correct_mode(tmp_path):
+    """When the file already exists with a wider mode, secure_write must reset it to 0o600."""
+    import stat
+    from microsoft_mcp.auth_msal import MSALRefreshTokenAuth
+
+    auth = MSALRefreshTokenAuth(tokens_dir=tmp_path, account_identifier="x@y.com")
+    target = tmp_path / "preexisting.txt"
+    target.write_text("old")
+    target.chmod(0o644)  # simulate a world-readable existing file
+
+    auth._secure_write_file(target, "new-secret")
+    assert target.read_text() == "new-secret"
+    actual_mode = stat.S_IMODE(target.stat().st_mode)
+    assert actual_mode == 0o600, f"expected 0o600, got 0o{actual_mode:o}"

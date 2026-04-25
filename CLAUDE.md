@@ -58,7 +58,7 @@ uvx ruff check --fix --unsafe-fixes .
   - Global auth instance via `set_auth_instance()`/`get_auth_instance()`
 
 - **`tools.py`** - FastMCP tool implementations (30+ tools)
-  - Account Management (3 tools): `list_accounts`, `set_active_account`, `get_active_account`
+  - Account Management (4 tools): `list_accounts`, `set_active_account`, `get_active_account`, `authenticate_new_account`
   - Email (9 tools): list, get, send, reply, move, delete, attachments
   - Calendar (7 tools): events, availability, responses
   - Contacts (6 tools): CRUD + search
@@ -75,7 +75,7 @@ uvx ruff check --fix --unsafe-fixes .
 
 **Dual Auth Support**: Azure SDK (browser) or MSAL (device code) via `MICROSOFT_MCP_AUTH_METHOD=azure|msal`
 
-**Multi-Account Support** (MSAL only): Install multiple accounts during setup, switch at runtime via `set_active_account()`. Tokens stored per-account as `{email}_access_token.json`.
+**Multi-Account Support** (MSAL only): Install accounts during setup OR add them at runtime via `authenticate_new_account(email)` (triggers a device-code flow on the server's stderr). Switch the active account via `set_active_account(email)`. Inspect with `list_accounts()` / `get_active_account()`. Tokens stored per-account as `{email}_access_token.json`.
 
 **Dependency Injection**: Graph module uses global `_global_auth` instance; tests mock via `set_auth_instance()`
 

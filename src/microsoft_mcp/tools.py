@@ -491,6 +491,75 @@ def set_active_account(account: str) -> dict[str, str]:
 
 
 @mcp.tool
+def authenticate_new_account(email: str) -> dict[str, Any]:
+    """Authenticate a new Microsoft account and store its tokens.
+
+    Triggers an MSAL device-code flow for *email* so the user can sign in from
+    a browser. The device-code URL and one-time code are printed to the server's
+    stderr — the user must open the URL and enter the code within MSAL's timeout
+    (typically 15 minutes). When the flow completes, the access and refresh tokens
+    are written to ``{email}_access_token.json`` (and companion files) in the
+    configured tokens directory.
+
+    The currently active account is **not** changed. After this call succeeds,
+    use ``set_active_account(email)`` to switch to the new account and
+    ``list_accounts()`` to verify it appears in the list.
+
+    Args:
+        email: Email address (or UPN) of the account to authenticate.
+               Must be non-empty. Format is not validated beyond that —
+               Microsoft's identifier rules are flexible.
+
+    Returns:
+        Dictionary containing:
+        - status: "authenticated"
+        - account: The email that was authenticated
+        - active: False (caller must use set_active_account to switch)
+        - next: Hint for the next step
+
+    Raises:
+        ValueError: If called outside MSAL auth method, or if email is empty.
+        RuntimeError: If the device-code flow fails or times out.
+
+    Examples:
+        - authenticate_new_account("work@company.com") - Add a work account
+        - authenticate_new_account("personal@outlook.com") - Add a personal account
+    """
+    logger.info(f"authenticate_new_account called: email={email}")
+
+    if auth_method != "msal":
+        raise ValueError(
+            "Adding new accounts is only supported with MSAL authentication method"
+        )
+
+    if not email.strip():
+        raise ValueError("email must be a non-empty string")
+
+    from .auth_msal import MSALRefreshTokenAuth
+
+    new_auth = MSALRefreshTokenAuth(
+        tokens_dir=_env_path("MICROSOFT_MCP_TOKENS_DIR"),
+        client_id=os.getenv("MICROSOFT_MCP_CLIENT_ID"),
+        tenant_id=os.getenv("MICROSOFT_MCP_TENANT_ID"),
+        account_identifier=email,
+    )
+
+    try:
+        new_auth.authenticate()
+    except Exception as e:
+        logger.error(f"authenticate_new_account failed for {email}: {e}", exc_info=True)
+        raise
+
+    logger.info(f"authenticate_new_account succeeded: stored tokens for {email}")
+    return {
+        "status": "authenticated",
+        "account": email,
+        "active": False,
+        "next": f"Call set_active_account('{email}') to switch to this account",
+    }
+
+
+@mcp.tool
 def get_active_account() -> dict[str, Any]:
     """Get the currently active Microsoft account.
 

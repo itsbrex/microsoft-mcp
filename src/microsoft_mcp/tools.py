@@ -560,6 +560,56 @@ def authenticate_new_account(email: str) -> dict[str, Any]:
 
 
 @mcp.tool
+def refresh_all_accounts() -> list[dict[str, Any]]:
+    """Refresh access tokens for all saved Microsoft accounts.
+
+    Iterates every account stored in MICROSOFT_MCP_TOKENS_DIR and refreshes
+    each one in isolation (failure on one account does not affect others).
+    The currently active account is not changed. Skips refresh for accounts
+    whose tokens are still valid.
+
+    Mirrors `outlook auth refresh` in the outlook-creds repo.
+
+    Returns:
+        A list of result dictionaries, one per account, each with:
+        - identifier: the account identifier (usually email)
+        - status: "valid", "refreshed", or "failed"
+        - expires_at: ISO timestamp of token expiry (or None on failure)
+        - error: error message when status == "failed"
+
+    Raises:
+        ValueError: if auth_method is not "msal".
+
+    Examples:
+        - refresh_all_accounts() - Refresh tokens for every saved account
+    """
+    logger.info("refresh_all_accounts called")
+
+    if auth_method != "msal":
+        raise ValueError(
+            "refresh_all_accounts is only supported with MSAL authentication method"
+        )
+
+    from .auth_msal import refresh_all_accounts as _refresh_all_accounts
+
+    results = _refresh_all_accounts(
+        tokens_dir=_env_path("MICROSOFT_MCP_TOKENS_DIR"),
+        client_id=os.getenv("MICROSOFT_MCP_CLIENT_ID"),
+        tenant_id=os.getenv("MICROSOFT_MCP_TENANT_ID"),
+    )
+
+    valid = sum(1 for r in results if r["status"] == "valid")
+    refreshed = sum(1 for r in results if r["status"] == "refreshed")
+    failed = sum(1 for r in results if r["status"] == "failed")
+    logger.info(
+        f"refresh_all_accounts completed: {len(results)} account(s) — "
+        f"{valid} valid, {refreshed} refreshed, {failed} failed"
+    )
+
+    return results
+
+
+@mcp.tool
 def get_active_account() -> dict[str, Any]:
     """Get the currently active Microsoft account.
 

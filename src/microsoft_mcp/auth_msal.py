@@ -654,3 +654,116 @@ class MSALRefreshTokenAuth:
         self._msal_app = None
 
         logger.info("Authentication cache cleared")
+
+
+def refresh_all_accounts(
+    tokens_dir: Optional[Path] = None,
+    client_id: Optional[str] = None,
+    tenant_id: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    """Refresh access tokens for every saved MSAL account.
+
+    Iterates every {account_identifier}_access_token.json file in the tokens
+    directory and runs the existing refresh-or-skip flow for each account in
+    isolation. Failures on one account do NOT block the others. The global
+    active account is not touched.
+
+    Mirrors the semantics of ``outlook auth refresh`` in the outlook-creds
+    repo: idempotent, safe to run repeatedly, skips refresh when token is
+    still valid.
+
+    Args:
+        tokens_dir: Directory containing token files. Defaults to
+            MICROSOFT_MCP_TOKENS_DIR or ~/.config/microsoft-mcp/tokens/.
+        client_id: MSAL client ID. Defaults to env var or Microsoft Office
+            public client ID.
+        tenant_id: MSAL tenant ID. Defaults to env var or "common".
+
+    Returns:
+        A list of result dictionaries, one per account, each containing:
+        - identifier (str): the account identifier (filename stem)
+        - status (str): "valid" if the token was already valid (no refresh
+          needed), "refreshed" if a network refresh occurred, "failed" if
+          the refresh attempt errored
+        - expires_at (str | None): ISO-format expiry timestamp after the
+          operation, or None if the call failed
+        - error (str | None): error message when status == "failed"
+    """
+    # Resolve tokens_dir the same way MSALRefreshTokenAuth.__init__ does.
+    if tokens_dir is not None:
+        resolved_dir = Path(tokens_dir)
+    else:
+        default_dir = Path.home() / ".config" / "microsoft-mcp" / "tokens"
+        resolved_dir = Path(os.getenv("MICROSOFT_MCP_TOKENS_DIR", str(default_dir)))
+
+    if not resolved_dir.exists():
+        logger.info(
+            f"refresh_all_accounts: tokens_dir {resolved_dir} does not exist, returning []"
+        )
+        return []
+
+    token_files = sorted(resolved_dir.glob("*_access_token.json"))
+    logger.info(
+        f"refresh_all_accounts: found {len(token_files)} account(s) in {resolved_dir}"
+    )
+
+    results: list[dict[str, Any]] = []
+
+    for token_file in token_files:
+        # Strip the "_access_token" suffix from the stem to get the identifier.
+        identifier = token_file.stem[: -len("_access_token")]
+        logger.info(f"refresh_all_accounts: processing account '{identifier}'")
+
+        probe = MSALRefreshTokenAuth(
+            tokens_dir=resolved_dir,
+            client_id=client_id,
+            tenant_id=tenant_id,
+            account_identifier=identifier,
+        )
+
+        if probe._is_token_valid():
+            token_data = probe._load_access_token_data() or {}
+            expires_at = token_data.get("expires_at")
+            logger.info(
+                f"refresh_all_accounts: '{identifier}' token is valid, expires_at={expires_at}"
+            )
+            results.append(
+                {
+                    "identifier": identifier,
+                    "status": "valid",
+                    "expires_at": expires_at,
+                    "error": None,
+                }
+            )
+            continue
+
+        # Token is not valid — attempt refresh.
+        try:
+            token_data = probe._acquire_token_data()
+            expires_at = token_data.get("expires_at")
+            logger.info(
+                f"refresh_all_accounts: '{identifier}' refreshed, expires_at={expires_at}"
+            )
+            results.append(
+                {
+                    "identifier": identifier,
+                    "status": "refreshed",
+                    "expires_at": expires_at,
+                    "error": None,
+                }
+            )
+        except Exception as e:
+            # Read the pre-existing file for expires_at (may be stale or absent).
+            stale_data = probe._load_access_token_data() or {}
+            expires_at = stale_data.get("expires_at")
+            logger.warning(f"refresh_all_accounts: '{identifier}' refresh failed: {e}")
+            results.append(
+                {
+                    "identifier": identifier,
+                    "status": "failed",
+                    "expires_at": expires_at,
+                    "error": str(e),
+                }
+            )
+
+    return results

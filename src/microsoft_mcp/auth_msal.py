@@ -592,6 +592,34 @@ class MSALRefreshTokenAuth:
                     "MICROSOFT_MCP_AUTH_METHOD=msal uv run authenticate.py"
                 ) from e
 
+    def force_refresh(self) -> None:
+        """Force a token refresh even if the cached access token looks valid.
+
+        Used by graph.request when a 401 comes back from Microsoft Graph
+        (e.g., after a clock-skew miss, password change, or admin-revoked
+        consent). Acquires the refresh lock, loads the refresh token from
+        disk, calls _refresh_access_token, and persists the new tokens.
+
+        Raises:
+            RuntimeError: if no refresh token is on disk (caller must
+                re-authenticate via authenticate() / authenticate_new_account).
+            Exception: if the refresh network call itself fails.
+        """
+        logger.info(f"Force-refreshing access token for {self.account_identifier}")
+        with self._refresh_lock:
+            refresh_token = self._load_refresh_token()
+            if not refresh_token:
+                raise RuntimeError(
+                    "No refresh token available; re-authentication required"
+                )
+            result = self._refresh_access_token(refresh_token)
+            self._save_tokens(
+                access_token=result["access_token"],
+                refresh_token=result.get("refresh_token", refresh_token),
+                expires_in=result.get("expires_in", 3600),
+                scopes=result.get("scope", "https://graph.microsoft.com/.default"),
+            )
+
     def get_token(self) -> str:
         """Get a valid access token, refreshing if needed."""
         logger.info("Getting access token")

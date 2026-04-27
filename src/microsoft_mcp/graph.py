@@ -1,3 +1,4 @@
+import logging
 import os
 import threading
 import httpx
@@ -8,6 +9,8 @@ from dotenv import load_dotenv
 
 if TYPE_CHECKING:
     from .auth_base import AuthProvider
+
+logger = logging.getLogger(__name__)
 
 BASE_URL = "https://graph.microsoft.com/v1.0"
 # 15 x 320 KiB = 4,915,200 bytes
@@ -118,6 +121,7 @@ def request(
         params.setdefault("$count", "true")
 
     retry_count = 0
+    did_force_refresh = False
     while True:
         response = _client.request(
             method=method,
@@ -142,6 +146,22 @@ def request(
             time.sleep((2**retry_count) * 1)
             retry_count += 1
             continue
+
+        if (
+            response.status_code == 401
+            and not did_force_refresh
+            and hasattr(auth_instance, "force_refresh")
+        ):
+            try:
+                auth_instance.force_refresh()  # type: ignore[attr-defined]
+                headers["Authorization"] = f"Bearer {auth_instance.get_token()}"
+                did_force_refresh = True
+                continue
+            except Exception as e:
+                # Force-refresh failed; let the original 401 propagate via raise_for_status.
+                logger.warning(
+                    "Force-refresh after 401 failed; surfacing original 401: %s", e
+                )
 
         response.raise_for_status()
 
@@ -188,6 +208,7 @@ def download_raw(
     headers = {"Authorization": f"Bearer {auth_instance.get_token()}"}
 
     retry_count = 0
+    did_force_refresh = False
     while retry_count <= max_retries:
         try:
             response = _client.get(f"{BASE_URL}{path}", headers=headers)
@@ -204,6 +225,21 @@ def download_raw(
                 time.sleep(wait_time)
                 retry_count += 1
                 continue
+
+            if (
+                response.status_code == 401
+                and not did_force_refresh
+                and hasattr(auth_instance, "force_refresh")
+            ):
+                try:
+                    auth_instance.force_refresh()  # type: ignore[attr-defined]
+                    headers["Authorization"] = f"Bearer {auth_instance.get_token()}"
+                    did_force_refresh = True
+                    continue
+                except Exception as e:
+                    logger.warning(
+                        "Force-refresh after 401 failed; surfacing original 401: %s", e
+                    )
 
             response.raise_for_status()
             return response.content

@@ -77,6 +77,8 @@ uvx ruff check --fix --unsafe-fixes .
 
 **Multi-Account Support** (MSAL only): Install accounts during setup OR add them at runtime via `authenticate_new_account(email)` (triggers a device-code flow on the server's stderr). Switch the active account via `set_active_account(email)`. Inspect with `list_accounts()` / `get_active_account()`. Tokens stored per-account as `{email}_access_token.json`. Refresh tokens for every saved account at once via `refresh_all_accounts()` (mirrors `outlook auth refresh`). The server auto-refreshes all saved MSAL tokens on startup (opt-out via `MICROSOFT_MCP_REFRESH_ON_STARTUP=0`).
 
+**401 auto-recovery (MSAL):** when Microsoft Graph returns 401 (e.g., after a long-idle session or upstream token revocation), `graph.request` calls `auth.force_refresh()` and replays the request once. If the second attempt also fails, the original 401 surfaces. Azure auth path is unchanged (its SDK manages refresh internally).
+
 **Dependency Injection**: Graph module uses global `_global_auth` instance; tests mock via `set_auth_instance()`
 
 **Error Handling**: All tools log errors with `exc_info=True` and re-raise; HTTP retries use exponential backoff

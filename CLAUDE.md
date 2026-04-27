@@ -75,7 +75,7 @@ uvx ruff check --fix --unsafe-fixes .
 
 **Dual Auth Support**: Azure SDK (browser) or MSAL (device code) via `MICROSOFT_MCP_AUTH_METHOD=azure|msal`
 
-**Multi-Account Support** (MSAL only): Install accounts during setup OR add them at runtime via `authenticate_new_account(email)` (triggers a device-code flow on the server's stderr). Switch the active account via `set_active_account(email)`. Inspect with `list_accounts()` / `get_active_account()`. Tokens stored per-account as `{email}_access_token.json`. Refresh tokens for every saved account at once via `refresh_all_accounts()` (mirrors `outlook auth refresh`).
+**Multi-Account Support** (MSAL only): Install accounts during setup OR add them at runtime via `authenticate_new_account(email)` (triggers a device-code flow on the server's stderr). Switch the active account via `set_active_account(email)`. Inspect with `list_accounts()` / `get_active_account()`. Tokens stored per-account as `{email}_access_token.json`. Refresh tokens for every saved account at once via `refresh_all_accounts()` (mirrors `outlook auth refresh`). The server auto-refreshes all saved MSAL tokens on startup (opt-out via `MICROSOFT_MCP_REFRESH_ON_STARTUP=0`).
 
 **Dependency Injection**: Graph module uses global `_global_auth` instance; tests mock via `set_auth_instance()`
 
@@ -96,6 +96,7 @@ uvx ruff check --fix --unsafe-fixes .
 - `MICROSOFT_MCP_TENANT_ID` (optional) - defaults to "common"
 - `MICROSOFT_MCP_TOKENS_DIR` (optional) - token storage directory (defaults to `~/.config/microsoft-mcp/tokens/`)
 - `MICROSOFT_MCP_ACCOUNT_ID` (optional) - account identifier for token file naming (defaults to "default", typically set to user's email)
+- `MICROSOFT_MCP_REFRESH_ON_STARTUP` (optional) - defaults to "1" (on for MSAL). Set to "0" to skip the refresh-all-accounts pass at server startup.
 
 **Response Shaping:**
 - `MICROSOFT_MCP_RESPONSE_PROFILE` (optional) - `legacy` (default) or `assistant`. Controls response shaping for list/search tools. Individual tool calls can override via `response_profile` parameter.

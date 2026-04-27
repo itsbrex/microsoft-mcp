@@ -1,6 +1,73 @@
+import logging
 import os
 import sys
 from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
+
+
+def _maybe_refresh_on_startup() -> None:
+    """Refresh tokens for all saved MSAL accounts before the server starts.
+
+    Gated by:
+      - MICROSOFT_MCP_AUTH_METHOD=msal (skipped for Azure, which manages
+        its own token refresh internally)
+      - MICROSOFT_MCP_REFRESH_ON_STARTUP != "0" (default on; set to "0"
+        to opt out)
+
+    Failures on individual accounts are logged but do not block server
+    startup — a stale token will refresh on first use anyway. Catastrophic
+    failures (e.g., the refresh module fails to import) are caught and
+    logged as warnings.
+    """
+    if os.getenv("MICROSOFT_MCP_AUTH_METHOD", "azure").lower() != "msal":
+        return
+
+    if os.getenv("MICROSOFT_MCP_REFRESH_ON_STARTUP", "1") == "0":
+        print(
+            "Startup token refresh disabled by MICROSOFT_MCP_REFRESH_ON_STARTUP=0",
+            file=sys.stderr,
+        )
+        return
+
+    try:
+        from microsoft_mcp.auth_msal import refresh_all_accounts
+
+        results = refresh_all_accounts()
+
+        if not results:
+            # Fresh install or no MSAL tokens saved yet — stay silent to
+            # avoid noise on first-run startup.
+            return
+
+        print("Refreshing saved MSAL tokens at startup...", file=sys.stderr)
+
+        n_valid = 0
+        n_refreshed = 0
+        n_failed = 0
+        for r in results:
+            identifier = r.get("identifier", "?")
+            status = r.get("status", "unknown")
+            if status == "valid":
+                n_valid += 1
+                print(f"  {identifier}: {status}", file=sys.stderr)
+            elif status == "refreshed":
+                n_refreshed += 1
+                print(f"  {identifier}: {status}", file=sys.stderr)
+            else:
+                n_failed += 1
+                error = r.get("error") or "unknown error"
+                print(f"  {identifier}: failed - {error}", file=sys.stderr)
+
+        print(
+            f"Startup refresh complete: {n_valid} valid, {n_refreshed} refreshed, {n_failed} failed",
+            file=sys.stderr,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Startup token refresh failed; tokens will refresh lazily on first use: %s",
+            exc,
+        )
 
 
 def main() -> None:
@@ -64,6 +131,8 @@ def main() -> None:
     #         file=sys.stderr,
     #     )
     #     sys.exit(1)
+
+    _maybe_refresh_on_startup()
 
     mcp.run()
 

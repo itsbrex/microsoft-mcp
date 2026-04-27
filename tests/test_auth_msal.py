@@ -510,6 +510,126 @@ class TestMSALRefreshTokenAuthProtocolCompliance:
             assert callable(auth.clear_cache)
 
 
+# ---------------------------------------------------------------------------
+# Scope sanitization tests (Bug B — AADSTS70011 fix)
+# ---------------------------------------------------------------------------
+
+
+def _make_fake_urlopen_response(token_data: dict) -> MagicMock:
+    """Return a mock context-manager that urlopen() can return."""
+    import json as _json
+
+    response_body = _json.dumps(token_data).encode("utf-8")
+    mock_response = MagicMock()
+    mock_response.read.return_value = response_body
+    mock_response.__enter__ = lambda s: s
+    mock_response.__exit__ = MagicMock(return_value=False)
+    return mock_response
+
+
+def _capture_scope_from_urlopen_call(mock_urlopen: MagicMock) -> str:
+    """Decode the POST body from the captured urlopen() call and extract scope."""
+    import urllib.parse as _up
+
+    req = mock_urlopen.call_args[0][0]  # first positional arg = Request object
+    body = req.data.decode("utf-8")
+    params = dict(_up.parse_qsl(body))
+    return params["scope"]
+
+
+class TestRefreshAccessTokenScopeSanitization:
+    """_refresh_access_token must sanitize mixed .default + specific scopes."""
+
+    _FAKE_TOKEN_RESPONSE = {
+        "access_token": "new-access-token",
+        "refresh_token": "new-refresh-token",
+        "expires_in": 3600,
+        "scope": "https://graph.microsoft.com/.default offline_access",
+    }
+
+    def _make_auth(self, tmp_path: Path, saved_scopes: str) -> MSALRefreshTokenAuth:
+        auth = MSALRefreshTokenAuth(
+            tokens_dir=tmp_path,
+            account_identifier="test@example.com",
+        )
+        # Write a saved access-token JSON with the desired scope string.
+        data = {
+            "access_token": "old-token",
+            "expires_at": "2020-01-01T00:00:00Z",
+            "scopes": saved_scopes,
+        }
+        auth._access_token_json_path().write_text(json.dumps(data))
+        return auth
+
+    def test_refresh_drops_default_when_specific_scopes_present(self, tmp_path):
+        """When saved scopes mix .default + specific Graph scopes, .default
+        must be dropped from the POST body (AADSTS70011 prevention)."""
+        mixed_scopes = (
+            "https://graph.microsoft.com/.default "
+            "https://graph.microsoft.com/Mail.ReadWrite "
+            "offline_access"
+        )
+        auth = self._make_auth(tmp_path, mixed_scopes)
+
+        with patch(
+            "urllib.request.urlopen",
+            return_value=_make_fake_urlopen_response(self._FAKE_TOKEN_RESPONSE),
+        ) as mock_urlopen:
+            auth._refresh_access_token("fake-refresh-token")
+
+        scope_sent = _capture_scope_from_urlopen_call(mock_urlopen)
+        scope_parts = scope_sent.split()
+
+        assert not any(p.endswith("/.default") for p in scope_parts), (
+            f".default must be absent when specific scopes are present, got: {scope_sent!r}"
+        )
+        assert "https://graph.microsoft.com/Mail.ReadWrite" in scope_parts
+        assert "offline_access" in scope_parts
+
+    def test_refresh_preserves_default_when_only_default_present(self, tmp_path):
+        """When saved scopes contain only .default (no specific scopes),
+        .default must be kept in the POST body."""
+        only_default = "https://graph.microsoft.com/.default offline_access"
+        auth = self._make_auth(tmp_path, only_default)
+
+        with patch(
+            "urllib.request.urlopen",
+            return_value=_make_fake_urlopen_response(self._FAKE_TOKEN_RESPONSE),
+        ) as mock_urlopen:
+            auth._refresh_access_token("fake-refresh-token")
+
+        scope_sent = _capture_scope_from_urlopen_call(mock_urlopen)
+        assert "https://graph.microsoft.com/.default" in scope_sent.split(), (
+            f".default must be preserved when no specific scopes present, got: {scope_sent!r}"
+        )
+
+    def test_refresh_preserves_specific_scopes_when_no_default_present(self, tmp_path):
+        """When saved scopes contain only specific scopes (no .default),
+        the scope string must be sent unchanged (plus offline_access)."""
+        only_specific = (
+            "https://graph.microsoft.com/Mail.ReadWrite "
+            "https://graph.microsoft.com/Calendars.ReadWrite "
+            "offline_access"
+        )
+        auth = self._make_auth(tmp_path, only_specific)
+
+        with patch(
+            "urllib.request.urlopen",
+            return_value=_make_fake_urlopen_response(self._FAKE_TOKEN_RESPONSE),
+        ) as mock_urlopen:
+            auth._refresh_access_token("fake-refresh-token")
+
+        scope_sent = _capture_scope_from_urlopen_call(mock_urlopen)
+        scope_parts = scope_sent.split()
+
+        assert not any(p.endswith("/.default") for p in scope_parts), (
+            f".default must not appear when only specific scopes were saved, got: {scope_sent!r}"
+        )
+        assert "https://graph.microsoft.com/Mail.ReadWrite" in scope_parts
+        assert "https://graph.microsoft.com/Calendars.ReadWrite" in scope_parts
+        assert "offline_access" in scope_parts
+
+
 class TestMSALRefreshTokenAuthDeviceCodeFlow:
     """Tests for device code flow authentication."""
 

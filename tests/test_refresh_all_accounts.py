@@ -131,6 +131,79 @@ class TestRefreshAllAccountsLibrary:
         assert by_id[broken_email]["status"] == "failed"
         assert "nope" in (by_id[broken_email]["error"] or "")
 
+    def test_refresh_all_accounts_does_not_clear_cache_on_failure(self, tmp_path):
+        """refresh_all_accounts must NOT delete token files when a per-account
+        refresh fails — the refresh token must survive so the user can retry
+        or re-authenticate manually (regression guard for Bug A)."""
+        email = "victim@example.com"
+
+        # Write expired access-token JSON and the precious refresh token.
+        _write_token_file(tmp_path, email, timedelta(seconds=-60))
+        _write_refresh_token(tmp_path, email, value="precious-refresh-token")
+
+        access_json = tmp_path / f"{email}_access_token.json"
+        refresh_txt = tmp_path / f"{email}_refresh_only.txt"
+
+        assert access_json.exists(), "precondition: access_token.json must exist"
+        assert refresh_txt.exists(), "precondition: refresh_only.txt must exist"
+
+        with patch.object(
+            MSALRefreshTokenAuth,
+            "_refresh_access_token",
+            side_effect=RuntimeError("simulated network failure"),
+        ):
+            result = refresh_all_accounts(tokens_dir=tmp_path)
+
+        assert len(result) == 1
+        entry = result[0]
+        assert entry["status"] == "failed"
+        assert "simulated network failure" in (entry["error"] or "")
+
+        # Both files MUST still exist — clear_cache must NOT have been called.
+        assert access_json.exists(), (
+            "access_token.json was deleted by refresh_all_accounts on failure — "
+            "clear_cache() must not be called from this path"
+        )
+        assert refresh_txt.exists(), (
+            "refresh_only.txt was deleted by refresh_all_accounts on failure — "
+            "the refresh token must be preserved for recovery"
+        )
+
+    def test_acquire_token_data_still_clears_cache_on_failure(self, tmp_path):
+        """_acquire_token_data (the lazy get_token path) MUST still call
+        clear_cache() on refresh failure — this evicts a corrupted token so
+        the next call triggers re-authentication instead of looping forever."""
+        email = "lazy@example.com"
+
+        _write_token_file(tmp_path, email, timedelta(seconds=-60))
+        _write_refresh_token(tmp_path, email, value="stale-refresh-token")
+
+        access_json = tmp_path / f"{email}_access_token.json"
+        refresh_txt = tmp_path / f"{email}_refresh_only.txt"
+
+        auth = MSALRefreshTokenAuth(
+            tokens_dir=tmp_path,
+            account_identifier=email,
+        )
+
+        with patch.object(
+            auth,
+            "_refresh_access_token",
+            side_effect=RuntimeError("simulated failure"),
+        ):
+            with pytest.raises(RuntimeError):
+                auth._acquire_token_data()
+
+        # Files must be gone — clear_cache() must have fired.
+        assert not access_json.exists(), (
+            "access_token.json still exists after _acquire_token_data failure — "
+            "clear_cache() was not called on the lazy-refresh path"
+        )
+        assert not refresh_txt.exists(), (
+            "refresh_only.txt still exists after _acquire_token_data failure — "
+            "clear_cache() was not called on the lazy-refresh path"
+        )
+
 
 # ---------------------------------------------------------------------------
 # MCP tool tests

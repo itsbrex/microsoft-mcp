@@ -371,10 +371,28 @@ class MSALRefreshTokenAuth:
         token_endpoint = TOKEN_ENDPOINT_TEMPLATE.format(tenant=self.tenant_id)
         saved = self._load_access_token_data() or {}
         saved_scopes = saved.get("scopes") or ""
-        if saved_scopes.strip():
-            scopes = saved_scopes
-            if "offline_access" not in scopes.split():
-                scopes = f"{scopes} offline_access"
+
+        # Sanitize: Azure AD rejects refresh requests that mix `<resource>/.default`
+        # with resource-specific scopes (AADSTS70011). If the saved scope string
+        # contains both, drop the `.default` and keep the specific scopes — the
+        # narrower request still satisfies the existing consent grant.
+        parts = saved_scopes.split() if saved_scopes.strip() else []
+        has_default = any(p.endswith("/.default") for p in parts)
+        has_specific = any(
+            p.startswith("https://graph.microsoft.com/") and not p.endswith("/.default")
+            for p in parts
+        )
+        if has_default and has_specific:
+            parts = [p for p in parts if not p.endswith("/.default")]
+            logger.info(
+                "Sanitized scope: dropped .default to avoid AADSTS70011 (mix with "
+                "resource-specific scopes)"
+            )
+
+        if parts:
+            if "offline_access" not in parts:
+                parts.append("offline_access")
+            scopes = " ".join(parts)
         else:
             scopes = "https://graph.microsoft.com/.default offline_access"
 
@@ -543,70 +561,30 @@ class MSALRefreshTokenAuth:
 
         return result
 
-    def _acquire_token_data(self) -> dict[str, Any]:
-        """Single-point token acquisition for MSAL. Handles lock + refresh path.
+    def _do_refresh_locked(self) -> dict[str, Any]:
+        """Perform one refresh-token cycle: load refresh token, call Azure
+        AD's token endpoint, persist new tokens, return canonical token data.
 
-        Returns the saved access-token-data dict (not just the token string)
-        so the caller can extract either token or expires_at.
+        Acquires self._refresh_lock for the entire critical section. Does
+        NOT clear cache on failure — caller decides whether eviction is
+        appropriate. Raises on any failure (no refresh token on disk,
+        network error, Azure AD rejection).
+
+        Returns:
+            Canonical token data dict (re-loaded from disk after save).
+
+        Raises:
+            RuntimeError: if no refresh token is on disk.
+            Exception: if the refresh network call or save fails.
         """
-        # Fast path: no lock needed if token is already valid.
-        if self._is_token_valid():
-            token_data = self._load_access_token_data()
-            if token_data and token_data.get("access_token"):
-                return token_data
-
         with self._refresh_lock:
-            # Re-check inside the lock.
+            # Re-check validity under the lock: another thread may have already
+            # refreshed while we were waiting to acquire it.
             if self._is_token_valid():
                 token_data = self._load_access_token_data()
                 if token_data and token_data.get("access_token"):
                     return token_data
 
-            refresh_token = self._load_refresh_token()
-            if not refresh_token:
-                logger.error("No refresh token found. Authentication required.")
-                raise RuntimeError(
-                    "No refresh token found. Run authentication first: "
-                    "MICROSOFT_MCP_AUTH_METHOD=msal uv run authenticate.py"
-                )
-
-            try:
-                result = self._refresh_access_token(refresh_token)
-                self._save_tokens(
-                    access_token=result["access_token"],
-                    refresh_token=result.get("refresh_token", refresh_token),
-                    expires_in=result.get("expires_in", 3600),
-                    scopes=result.get("scope", "https://graph.microsoft.com/.default"),
-                )
-                # Re-load the just-saved data so the caller sees canonical shape.
-                data = self._load_access_token_data()
-                if not data:
-                    # Defensive — save should always produce a readable file.
-                    raise RuntimeError("Token saved but could not be re-read")
-                return data
-            except Exception as e:
-                logger.error(f"Token refresh failed: {e}")
-                self.clear_cache()
-                raise RuntimeError(
-                    f"Token refresh failed: {e}. Please re-authenticate: "
-                    "MICROSOFT_MCP_AUTH_METHOD=msal uv run authenticate.py"
-                ) from e
-
-    def force_refresh(self) -> None:
-        """Force a token refresh even if the cached access token looks valid.
-
-        Used by graph.request when a 401 comes back from Microsoft Graph
-        (e.g., after a clock-skew miss, password change, or admin-revoked
-        consent). Acquires the refresh lock, loads the refresh token from
-        disk, calls _refresh_access_token, and persists the new tokens.
-
-        Raises:
-            RuntimeError: if no refresh token is on disk (caller must
-                re-authenticate via authenticate() / authenticate_new_account).
-            Exception: if the refresh network call itself fails.
-        """
-        logger.info(f"Force-refreshing access token for {self.account_identifier}")
-        with self._refresh_lock:
             refresh_token = self._load_refresh_token()
             if not refresh_token:
                 raise RuntimeError(
@@ -619,6 +597,61 @@ class MSALRefreshTokenAuth:
                 expires_in=result.get("expires_in", 3600),
                 scopes=result.get("scope", "https://graph.microsoft.com/.default"),
             )
+            # Re-load the just-saved data so the caller sees canonical shape.
+            data = self._load_access_token_data()
+            if not data:
+                # Defensive — save should always produce a readable file.
+                raise RuntimeError("Token saved but could not be re-read")
+            return data
+
+    def _acquire_token_data(self) -> dict[str, Any]:
+        """Single-point token acquisition for MSAL. Handles lock + refresh path.
+
+        Returns the saved access-token-data dict (not just the token string)
+        so the caller can extract either token or expires_at.
+        """
+        # Fast path: no lock needed if token is already valid.
+        if self._is_token_valid():
+            token_data = self._load_access_token_data()
+            if token_data and token_data.get("access_token"):
+                return token_data
+
+        if not self._load_refresh_token():
+            logger.error("No refresh token found. Authentication required.")
+            raise RuntimeError(
+                "No refresh token found. Run authentication first: "
+                "MICROSOFT_MCP_AUTH_METHOD=msal uv run authenticate.py"
+            )
+
+        try:
+            return self._do_refresh_locked()
+        except Exception as e:
+            logger.error(f"Token refresh failed: {e}")
+            self.clear_cache()
+            raise RuntimeError(
+                f"Token refresh failed: {e}. Please re-authenticate: "
+                "MICROSOFT_MCP_AUTH_METHOD=msal uv run authenticate.py"
+            ) from e
+
+    def force_refresh(self) -> None:
+        """Force a token refresh even if the cached access token looks valid.
+
+        Used by graph.request when a 401 comes back from Microsoft Graph
+        (e.g., after a clock-skew miss, password change, or admin-revoked
+        consent). Delegates to _do_refresh_locked(), which acquires the
+        refresh lock, loads the refresh token from disk, calls
+        _refresh_access_token, and persists the new tokens.
+
+        Does NOT clear cache on failure — a 401 retry failure should not
+        burn the refresh token.
+
+        Raises:
+            RuntimeError: if no refresh token is on disk (caller must
+                re-authenticate via authenticate() / authenticate_new_account).
+            Exception: if the refresh network call itself fails.
+        """
+        logger.info(f"Force-refreshing access token for {self.account_identifier}")
+        self._do_refresh_locked()
 
     def get_token(self) -> str:
         """Get a valid access token, refreshing if needed."""
@@ -766,8 +799,11 @@ def refresh_all_accounts(
             continue
 
         # Token is not valid — attempt refresh.
+        # Use _do_refresh_locked() directly so that a per-account failure does
+        # NOT call clear_cache() and burn the refresh token. Only _acquire_token_data
+        # (the lazy get_token path) should evict on failure.
         try:
-            token_data = probe._acquire_token_data()
+            token_data = probe._do_refresh_locked()
             expires_at = token_data.get("expires_at")
             logger.info(
                 f"refresh_all_accounts: '{identifier}' refreshed, expires_at={expires_at}"

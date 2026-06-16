@@ -214,9 +214,59 @@ def _cmd_verify(args: argparse.Namespace) -> int:
     return 1 if mismatches else 0
 
 
+def _account_health(tokens_dir: Path) -> list[dict[str, Any]]:
+    """Disk-only health (no network). Buffer matches auth_msal (60s)."""
+    BUFFER_SECONDS = 60
+    rows: list[dict[str, Any]] = []
+    for row in _enumerate_accounts(tokens_dir):
+        identifier = row["identifier"]
+        expires_at = row["expires_at"]
+        valid = False
+        remaining = None
+        if expires_at:
+            raw = expires_at.replace("Z", "+00:00")
+            try:
+                exp = dt.datetime.fromisoformat(raw)
+                if exp.tzinfo is None:
+                    exp = exp.replace(tzinfo=dt.timezone.utc)
+                remaining = (exp - dt.datetime.now(dt.timezone.utc)).total_seconds()
+                valid = remaining > BUFFER_SECONDS
+            except ValueError:
+                pass
+        has_refresh = (tokens_dir / f"{identifier}_refresh_only.txt").exists()
+        rows.append(
+            {
+                "identifier": identifier,
+                "expires_at": expires_at,
+                "valid": valid,
+                "remaining_seconds": int(remaining) if remaining is not None else None,
+                "has_refresh_token": has_refresh,
+            }
+        )
+    return rows
+
+
 def _cmd_status(args: argparse.Namespace) -> int:
-    # Implemented in Task 5.
-    raise NotImplementedError
+    _require_msal()
+    tokens_dir = (_env_kwargs()["tokens_dir"]) or _default_tokens_dir()
+    rows = _account_health(tokens_dir)
+    if args.json:
+        _print_json(rows)
+        return 0 if rows and all(r["valid"] for r in rows) else (0 if not rows else 1)
+    if not rows:
+        print("No saved accounts found.")
+        return 0
+    all_valid = True
+    for r in rows:
+        print(r["identifier"])
+        exp = _format_expiry(r["expires_at"])
+        if r["valid"]:
+            print(_c(f"  ✓ Graph: Valid, expires {exp}", "green"))
+        else:
+            all_valid = False
+            refresh_note = "" if r["has_refresh_token"] else " (no refresh token!)"
+            print(_c(f"  ✗ Graph: Expired, expired {exp}{refresh_note}", "red"))
+    return 0 if all_valid else 1
 
 
 # ---------------------------------------------------------------------------

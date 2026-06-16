@@ -108,3 +108,33 @@ def test_list_accounts_human(monkeypatch, tmp_path, capsys):
     out = capsys.readouterr().out
     assert rc == 0
     assert TEST_EMAIL in out
+
+
+def test_status_reports_valid_without_network(monkeypatch, tmp_path, capsys):
+    _msal_env(monkeypatch, tmp_path)
+    _write_graph_token(tmp_path, TEST_EMAIL, expires_delta_seconds=3600)
+    rc = auth_cli.main(["status"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert TEST_EMAIL in out
+    assert "Graph: Valid" in out
+    assert "UTC" in out
+
+
+def test_status_reports_expired(monkeypatch, tmp_path, capsys):
+    _msal_env(monkeypatch, tmp_path)
+    _write_graph_token(tmp_path, TEST_EMAIL, expires_delta_seconds=-10)
+    rc = auth_cli.main(["status"])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "Expired" in out or "expired" in out
+
+
+def test_status_json(monkeypatch, tmp_path, capsys):
+    _msal_env(monkeypatch, tmp_path)
+    _write_graph_token(tmp_path, TEST_EMAIL)
+    auth_cli.main(["status", "--json"])
+    parsed = _json.loads(capsys.readouterr().out)
+    assert parsed[0]["identifier"] == TEST_EMAIL
+    assert parsed[0]["valid"] is True
+    assert parsed[0]["has_refresh_token"] is True

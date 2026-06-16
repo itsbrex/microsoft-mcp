@@ -2,15 +2,19 @@ import asyncio
 import base64
 import concurrent.futures
 import datetime as dt
+import email.utils as email_utils
 import json
 import logging
+import mimetypes
 import os
 import pathlib as pl
+import re
 from typing import Any
 from urllib.parse import quote
 import httpx
 from fastmcp import FastMCP
 from . import graph
+from . import signatures as signatures_mod
 from .auth_base import AuthProvider
 from .response_shaping import (
     cleanup_graph_payload,
@@ -186,9 +190,13 @@ FOLDERS = {
 }
 
 MESSAGE_SUMMARY_SELECT_FIELDS = (
-    "id,subject,from,toRecipients,receivedDateTime,hasAttachments,"
-    "bodyPreview,conversationId,isRead,webLink,flag,mentionsPreview"
+    "id,subject,from,toRecipients,ccRecipients,bccRecipients,"
+    "receivedDateTime,hasAttachments,bodyPreview,conversationId,"
+    "isRead,webLink,flag"
 )
+# `mentionsPreview` removed: not selectable on Microsoft Graph v1.0 for
+# Microsoft.OutlookServices.Message — request returns 400 RequestBroker--ParseUri
+# and the surrounding except-block silently dropped every message.
 MAIL_FOLDER_SELECT_FIELDS = (
     "id,displayName,parentFolderId,childFolderCount,totalItemCount,"
     "unreadItemCount,isHidden"
@@ -610,6 +618,147 @@ def refresh_all_accounts() -> list[dict[str, Any]]:
 
 
 @mcp.tool
+def refresh_account(email: str) -> dict[str, Any]:
+    """Refresh access token for a single Microsoft account.
+
+    Single-account variant of `refresh_all_accounts`. Looks up the saved
+    token file for ``email`` and runs the same valid/refresh logic. Does
+    not change the active account. A failure does not evict the refresh
+    token (consistent with `refresh_all_accounts`).
+
+    Args:
+        email: Account identifier (filename stem, typically the email).
+
+    Returns:
+        Dict with: identifier, status ("valid" | "refreshed" | "failed"
+        | "missing"), expires_at, error.
+
+    Raises:
+        ValueError: if auth_method is not "msal" or email is empty.
+    """
+    logger.info(f"refresh_account called: email={email}")
+
+    if auth_method != "msal":
+        raise ValueError(
+            "refresh_account is only supported with MSAL authentication method"
+        )
+
+    if not email or not email.strip():
+        raise ValueError("email must be a non-empty string")
+
+    from .auth_msal import refresh_account as _refresh_account
+
+    result = _refresh_account(
+        identifier=email,
+        tokens_dir=_env_path("MICROSOFT_MCP_TOKENS_DIR"),
+        client_id=os.getenv("MICROSOFT_MCP_CLIENT_ID"),
+        tenant_id=os.getenv("MICROSOFT_MCP_TENANT_ID"),
+    )
+    logger.info(
+        f"refresh_account completed: {result['identifier']} -> {result['status']}"
+    )
+    return result
+
+
+@mcp.tool
+def force_reauthenticate_account(email: str) -> dict[str, Any]:
+    """Clear saved tokens for an account and re-run MSAL device-code auth.
+
+    Use when an account's refresh token is revoked or saved credentials
+    are otherwise unrecoverable. Interactive: prints a device code and
+    verification URL to the server's stderr and blocks until the user
+    completes the browser flow.
+
+    Args:
+        email: Account identifier (filename stem, typically the email).
+
+    Returns:
+        Dict with: identifier, status ("reauthenticated"), expires_at,
+        signed_in_as. ``signed_in_as`` is the JWT ``upn`` claim from the
+        newly-issued token; if it does not match ``email`` the user
+        signed into the wrong account and the saved file is mislabeled.
+
+    Raises:
+        ValueError: if auth_method is not "msal" or email is empty.
+        RuntimeError: if the device-code flow fails.
+    """
+    logger.info(f"force_reauthenticate_account called: email={email}")
+
+    if auth_method != "msal":
+        raise ValueError(
+            "force_reauthenticate_account is only supported with MSAL authentication method"
+        )
+
+    if not email or not email.strip():
+        raise ValueError("email must be a non-empty string")
+
+    from .auth_msal import force_reauthenticate as _force_reauthenticate
+
+    result = _force_reauthenticate(
+        identifier=email,
+        tokens_dir=_env_path("MICROSOFT_MCP_TOKENS_DIR"),
+        client_id=os.getenv("MICROSOFT_MCP_CLIENT_ID"),
+        tenant_id=os.getenv("MICROSOFT_MCP_TENANT_ID"),
+    )
+    logger.info(
+        f"force_reauthenticate_account completed: {result['identifier']} "
+        f"signed_in_as={result.get('signed_in_as')}"
+    )
+    return result
+
+
+@mcp.tool
+def verify_account_tokens(live: bool = False) -> list[dict[str, Any]]:
+    """Verify that each saved token belongs to the account named in its filename.
+
+    Decodes the JWT payload of every saved access token and compares the
+    ``upn`` / ``preferred_username`` claim to the filename identifier.
+    A mismatch indicates that the wrong tokens were saved under that
+    filename (e.g., user authenticated while ``MICROSOFT_MCP_ACCOUNT_ID``
+    pointed at the wrong account). Run after authenticating new accounts
+    or any time token-to-account integrity is in doubt.
+
+    Args:
+        live: If True, additionally call Graph ``/me`` for each token to
+            confirm against the live tenant. ``/me`` is heavily throttled,
+            so this is opt-in. JWT claims alone are signed and
+            authoritative; live mode is for paranoid double-checking.
+
+    Returns:
+        List of dicts, one per saved account. Key fields:
+        - identifier: filename stem
+        - jwt_upn / jwt_oid / jwt_tid / jwt_aud: JWT claims
+        - expires_at: saved token's expiry timestamp
+        - match: True if identifier matches the JWT (and Graph, when live)
+        - graph_userPrincipalName / graph_mail / graph_id / graph_error:
+          present only when live=True
+        - jwt_decode_error: present only on token decode failure
+
+    Raises:
+        ValueError: if auth_method is not "msal".
+    """
+    logger.info(f"verify_account_tokens called: live={live}")
+
+    if auth_method != "msal":
+        raise ValueError(
+            "verify_account_tokens is only supported with MSAL authentication method"
+        )
+
+    from .auth_msal import verify_account_tokens as _verify_account_tokens
+
+    results = _verify_account_tokens(
+        tokens_dir=_env_path("MICROSOFT_MCP_TOKENS_DIR"),
+        live=live,
+    )
+    mismatches = [r for r in results if not r.get("match")]
+    logger.info(
+        f"verify_account_tokens completed: {len(results)} account(s), "
+        f"{len(mismatches)} mismatch(es)"
+    )
+    return results
+
+
+@mcp.tool
 def get_active_account() -> dict[str, Any]:
     """Get the currently active Microsoft account.
 
@@ -738,6 +887,180 @@ def utcp_codemode_usage():
     """Guide assistants toward discovery-first code-mode workflows."""
 
     return CodeModeRuntime.AGENT_PROMPT_TEMPLATE
+
+
+@mcp.prompt
+def inbox_triage():
+    """Triage the inbox: rank, summarise, and surface action items in one pass."""
+
+    return """
+Use call_tool_chain to triage the inbox in a single execution pass.
+
+Pattern:
+1. search_tools("inbox triage") to confirm available tools.
+2. call_tool_chain with code that:
+   a. Fetches the ranked inbox list (microsoft.list_inbox_items).
+   b. For the top N items, fetches full detail when needed
+      (microsoft.get_inbox_item_detail).
+   c. Returns a compact report: titles, senders, cc/bcc context,
+      action_hints, scores, reasons.
+
+Each item already exposes: id, kind, title, score, reason, sender,
+participants, cc, bcc, snippet, action_hints, direct_to, on_cc, on_bcc,
+unread, has_attachments, when, starts_in_minutes. Detail calls add the
+full body, attendees (for events), and conversation_url.
+
+Example code block for call_tool_chain:
+```python
+summary = microsoft.list_inbox_items({"limit": 20})
+top = summary["items"][:5]
+
+results = []
+for item in top:
+    snippet = item.get("snippet", "")
+    if not snippet and item["kind"] == "event":
+        detail = microsoft.get_inbox_item_detail(
+            {"item_id": item["id"], "kind": item["kind"]}
+        )
+        snippet = detail.get("snippet", "")
+    results.append({
+        "title": item["title"],
+        "sender": item.get("sender", ""),
+        "cc": item.get("cc", []),
+        "bcc": item.get("bcc", []),
+        "score": item["score"],
+        "reason": item.get("reason", ""),
+        "action": (item.get("action_hints") or ["review"])[0],
+        "snippet": snippet[:160],
+    })
+
+return {"meta": summary.get("meta"), "top": results}
+```
+
+Return only the processed summary — not raw message payloads.
+""".strip()
+
+
+@mcp.prompt
+def daily_briefing():
+    """Morning briefing: upcoming events + unread email digest in one code-mode pass."""
+
+    return """
+Use call_tool_chain to produce a morning briefing in a single execution.
+
+Pattern:
+1. search_tools("calendar events email unread") to confirm available tools.
+2. call_tool_chain with code that:
+   a. Lists today's and tomorrow's calendar events (microsoft.list_events).
+   b. Fetches top unread emails (microsoft.list_emails with folder="inbox").
+   c. Returns a structured briefing object.
+
+Example code block for call_tool_chain:
+```python
+import datetime
+
+today = datetime.date.today().isoformat()
+events = microsoft.list_events({"days_ahead": 2, "limit": 10})
+emails = microsoft.list_emails({"folder": "inbox", "limit": 10, "unread_only": True})
+
+briefing = {
+    "date": today,
+    "events": [
+        {"subject": e.get("subject"), "start": e.get("start"), "location": e.get("location")}
+        for e in (events.get("events") or [])
+    ],
+    "unread_count": emails.get("total_count", 0),
+    "top_emails": [
+        {"from": m.get("from"), "subject": m.get("subject")}
+        for m in (emails.get("messages") or [])[:5]
+    ],
+}
+
+return briefing
+```
+
+Keep the output compact. Do not return full message bodies.
+""".strip()
+
+
+@mcp.prompt
+def meeting_prep(meeting_subject: str = ""):
+    """Pre-meeting context: find related emails and attendee details before a meeting."""
+
+    subject_hint = f' about "{meeting_subject}"' if meeting_subject else ""
+    return f"""
+Prepare context for an upcoming meeting{subject_hint}.
+
+Pattern:
+1. search_tools("calendar meeting contacts email search") to confirm available tools.
+2. call_tool_chain with code that:
+   a. Searches calendar for the meeting (microsoft.search_calendar).
+   b. Searches emails for related threads (microsoft.search_emails).
+   c. Looks up attendee contact details if needed (microsoft.search_contacts).
+   d. Returns a structured prep sheet.
+
+Example code block for call_tool_chain:
+```python
+query = {repr(meeting_subject) if meeting_subject else '"<meeting topic>"'}
+
+events  = microsoft.search_calendar({{"query": query, "limit": 3}})
+threads = microsoft.search_emails({{"query": query, "limit": 10}})
+
+meeting  = (events.get("events")   or [[]])[0] if events.get("events") else {{}}
+emails   = threads.get("messages") or []
+
+return {{
+    "meeting": {{
+        "subject":   meeting.get("subject"),
+        "start":     meeting.get("start"),
+        "attendees": meeting.get("attendees", []),
+    }},
+    "related_threads": [
+        {{"from": m.get("from"), "subject": m.get("subject"), "date": m.get("received_datetime")}}
+        for m in emails[:5]
+    ],
+}}
+```
+
+Surface the most relevant context — avoid dumping full email bodies.
+""".strip()
+
+
+@mcp.prompt
+def search_and_summarise(query: str = ""):
+    """Search emails and calendar for a topic, then summarise findings."""
+
+    query_hint = repr(query) if query else '"<your topic>"'
+    return f"""
+Search across email and calendar for {query_hint}, then produce a concise summary.
+
+Pattern:
+1. search_tools("search emails calendar") to confirm available tools.
+2. call_tool_chain with code that runs both searches and returns a combined digest.
+
+Example code block for call_tool_chain:
+```python
+q = {query_hint}
+
+emails = microsoft.search_emails({{"query": q, "limit": 15}})
+events = microsoft.search_calendar({{"query": q, "limit": 10}})
+
+return {{
+    "email_hits":  len(emails.get("messages") or []),
+    "event_hits":  len(events.get("events")   or []),
+    "top_emails": [
+        {{"from": m.get("from"), "subject": m.get("subject"), "date": m.get("received_datetime")}}
+        for m in (emails.get("messages") or [])[:5]
+    ],
+    "top_events": [
+        {{"subject": e.get("subject"), "start": e.get("start")}}
+        for e in (events.get("events") or [])[:5]
+    ],
+}}
+```
+
+Return the digest, not raw payloads.
+""".strip()
 
 
 @mcp.tool
@@ -1482,9 +1805,18 @@ def _build_recipient_objects(
 
     normalized_recipients = []
     for recipient in recipients:
-        address = recipient.strip()
-        if address:
-            normalized_recipients.append({"emailAddress": {"address": address}})
+        raw = recipient.strip()
+        if not raw:
+            continue
+        name, address = email_utils.parseaddr(raw)
+        address = address.strip()
+        if not address:
+            address = raw
+            name = ""
+        entry: dict[str, Any] = {"address": address}
+        if name:
+            entry["name"] = name
+        normalized_recipients.append({"emailAddress": entry})
 
     return normalized_recipients
 
@@ -1517,6 +1849,74 @@ def _build_message_update_payload(
     return payload
 
 
+def _resolve_signature_name(
+    *,
+    explicit: str | None,
+    draft_type: str | None,
+) -> str | None:
+    """Pick the signature name to apply, honoring env defaults.
+
+    Returns ``None`` to mean "do not inject"; otherwise returns a name to
+    pass to :func:`signatures.apply_signature`. The sentinel ``"none"``
+    short-circuits to ``None``.
+    """
+    if explicit is not None:
+        stripped = explicit.strip()
+        if not stripped:
+            return None
+        if signatures_mod.is_none(stripped):
+            return None
+        return stripped
+
+    if draft_type in {"reply", "reply_all"}:
+        env_default = os.getenv("MICROSOFT_MCP_REPLY_SIGNATURE")
+        if env_default and env_default.strip():
+            return env_default.strip()
+
+    env_default = os.getenv("MICROSOFT_MCP_DEFAULT_SIGNATURE")
+    if env_default and env_default.strip():
+        return env_default.strip()
+
+    return None
+
+
+def _apply_signature_to_body(
+    *,
+    body: str | None,
+    body_content_type: str,
+    signature: str | None,
+    draft_type: str | None,
+) -> tuple[str | None, dict[str, Any] | None, str | None]:
+    """Return (new_body, applied_info, warning).
+
+    - ``new_body`` is the body to send to Graph (may equal the original
+      when no signature is applied).
+    - ``applied_info`` is ``{account, name, html}`` when injected, else
+      ``None``.
+    - ``warning`` is a human-readable message when the named signature
+      could not be applied, else ``None``.
+    """
+    name = _resolve_signature_name(explicit=signature, draft_type=draft_type)
+    if name is None:
+        return body, None, None
+    try:
+        new_body = signatures_mod.apply_signature(body, body_content_type, name)
+    except signatures_mod.SignatureNotFoundError as exc:
+        return body, None, f"signature not found: {exc.account}/{exc.name}"
+    except signatures_mod.NoAccountError as exc:
+        return body, None, f"signature skipped: {exc}"
+    except signatures_mod.InvalidSignatureNameError as exc:
+        return body, None, f"signature skipped: {exc}"
+
+    info = signatures_mod.info_for(name)
+    applied = {
+        "account": info.account if info else None,
+        "name": info.name if info else name.strip().lower(),
+        "html": body_content_type == "html" and bool(info and info.has_html),
+    }
+    return new_body, applied, None
+
+
 def _shape_email_draft(raw: dict[str, Any]) -> dict[str, Any]:
     draft = shape_email_detail(raw)
 
@@ -1543,6 +1943,7 @@ def create_email_draft(
     subject: str | None = None,
     body: str | None = None,
     body_content_type: str = "text",
+    signature: str | None = None,
 ) -> dict[str, Any]:
     """Create an Outlook email draft without sending it.
 
@@ -1562,16 +1963,23 @@ def create_email_draft(
         subject: Optional draft subject
         body: Optional draft body content
         body_content_type: Body format for the draft (`text` or `html`)
+        signature: Optional local signature name to append to the body. Pass
+            ``"none"`` to suppress the env-default signature for this call.
+            When omitted, ``MICROSOFT_MCP_REPLY_SIGNATURE`` is used for
+            reply/reply_all drafts (falling back to
+            ``MICROSOFT_MCP_DEFAULT_SIGNATURE``), and
+            ``MICROSOFT_MCP_DEFAULT_SIGNATURE`` is used for new drafts.
 
     Returns:
         Draft metadata containing the created draft ID plus a shaped draft message object.
     """
 
     logger.info(
-        "create_email_draft called: draft_type=%s, email_id=%s, subject=%s",
+        "create_email_draft called: draft_type=%s, email_id=%s, subject=%s, signature=%s",
         draft_type,
         email_id,
         subject,
+        signature,
     )
 
     try:
@@ -1582,9 +1990,16 @@ def create_email_draft(
         cc_objects = _build_recipient_objects(cc_recipients)
         bcc_objects = _build_recipient_objects(bcc_recipients)
 
+        signed_body, signature_applied, signature_warning = _apply_signature_to_body(
+            body=body,
+            body_content_type=normalized_body_type,
+            signature=signature,
+            draft_type=normalized_draft_type,
+        )
+
         payload = _build_message_update_payload(
             subject=subject,
-            body=body,
+            body=signed_body,
             body_content_type=normalized_body_type,
             to_recipients=to_objects,
             cc_recipients=cc_objects,
@@ -1632,6 +2047,10 @@ def create_email_draft(
         }
         if reply_to_message_id is not None:
             result["reply_to_message_id"] = reply_to_message_id
+        if signature_applied is not None:
+            result["signature_applied"] = signature_applied
+        if signature_warning is not None:
+            result["signature_warning"] = signature_warning
 
         return result
     except Exception as e:
@@ -1643,6 +2062,190 @@ def create_email_draft(
             exc_info=True,
         )
         raise
+
+
+@mcp.tool
+def update_email_draft(
+    email_id: str,
+    to_recipients: list[str] | None = None,
+    cc_recipients: list[str] | None = None,
+    bcc_recipients: list[str] | None = None,
+    subject: str | None = None,
+    body: str | None = None,
+    body_content_type: str = "text",
+    signature: str | None = None,
+) -> dict[str, Any]:
+    """Update fields on an existing Outlook draft message.
+
+    Only fields explicitly supplied are modified; omitted arguments are left untouched.
+    Recipient lists, when provided, fully replace the existing list on the draft (pass
+    the complete desired list, not a delta). Recipient strings may be either a bare
+    email address or a `Name <email>` form; the friendly name is parsed out and sent
+    as a structured Graph emailAddress object so Outlook renders it as a valid chip.
+
+    Args:
+        email_id: ID of the draft message to update. Must be a draft (isDraft=true);
+            sent messages cannot be modified.
+        to_recipients: Optional replacement list of TO recipients.
+        cc_recipients: Optional replacement list of CC recipients.
+        bcc_recipients: Optional replacement list of BCC recipients.
+        subject: Optional new subject.
+        body: Optional new body content.
+        body_content_type: Body format when `body` is supplied (`text` or `html`).
+        signature: Optional local signature name to append to the body. Only
+            applied when ``body`` is supplied; metadata-only updates never
+            re-apply a signature. Pass ``"none"`` to suppress the env default
+            for this call.
+
+    Returns:
+        Update result containing the refreshed draft message object.
+    """
+
+    logger.info(
+        "update_email_draft called: email_id=%s, subject=%s, signature=%s",
+        email_id,
+        subject,
+        signature,
+    )
+
+    try:
+        normalized_body_type = _normalize_body_content_type(body_content_type)
+
+        if body is not None:
+            signed_body, signature_applied, signature_warning = (
+                _apply_signature_to_body(
+                    body=body,
+                    body_content_type=normalized_body_type,
+                    signature=signature,
+                    draft_type=None,
+                )
+            )
+        else:
+            signed_body = body
+            signature_applied = None
+            signature_warning = None
+
+        payload = _build_message_update_payload(
+            subject=subject,
+            body=signed_body,
+            body_content_type=normalized_body_type,
+            to_recipients=_build_recipient_objects(to_recipients),
+            cc_recipients=_build_recipient_objects(cc_recipients),
+            bcc_recipients=_build_recipient_objects(bcc_recipients),
+        )
+
+        if not payload:
+            raise ValueError(
+                "update_email_draft requires at least one field to change "
+                "(to/cc/bcc_recipients, subject, or body)"
+            )
+
+        raw = _patch_email_message(email_id, payload)
+        if not raw.get("isDraft", True):
+            raise ValueError(f"Email {email_id} is not a draft and cannot be updated")
+
+        result: dict[str, Any] = {
+            "status": "draft_updated",
+            "draft_id": raw["id"],
+            "draft": _shape_email_draft(raw),
+        }
+        if signature_applied is not None:
+            result["signature_applied"] = signature_applied
+        if signature_warning is not None:
+            result["signature_warning"] = signature_warning
+        return result
+    except Exception as e:
+        logger.error(
+            "update_email_draft failed: email_id=%s, error=%s",
+            email_id,
+            str(e),
+            exc_info=True,
+        )
+        raise
+
+
+@mcp.tool
+def list_signatures(account: str | None = None) -> list[dict[str, Any]]:
+    """List local plain-text signatures available for use with draft tools.
+
+    Signatures are stored as files under ``~/.config/microsoft-mcp/signatures/``
+    (override via ``MICROSOFT_MCP_SIGNATURES_DIR``). They are appended to
+    draft bodies by ``create_email_draft`` / ``update_email_draft`` when a
+    ``signature`` argument or env default is set.
+
+    Args:
+        account: Optional account slug to filter by. Pass ``"*"`` or
+            ``"all"`` to list signatures across every account in the store.
+            When omitted, lists signatures for the active server account.
+
+    Returns:
+        List of ``{account, name, path, has_html, size, modified}`` records.
+    """
+    rows = signatures_mod.list_signatures(account=account)
+    return [
+        {
+            "account": r.account,
+            "name": r.name,
+            "path": str(r.path),
+            "has_html": r.has_html,
+            "size": r.size,
+            "modified": r.modified,
+        }
+        for r in rows
+    ]
+
+
+@mcp.tool
+def get_signature(
+    name: str,
+    account: str | None = None,
+    html: bool = False,
+) -> dict[str, Any]:
+    """Return the contents of a local signature file.
+
+    Args:
+        name: Signature name (the ``<name>`` part of ``<account>-<name>.txt``).
+        account: Optional account slug; defaults to the active server account.
+        html: When True, request the ``.html`` sibling instead of the ``.txt``.
+
+    Returns:
+        ``{status: "ok", account, name, html, path, content}`` on success, or
+        ``{status: "not_found", account, name, html, path}`` when the file
+        does not exist. Other I/O errors still raise.
+    """
+    try:
+        path = signatures_mod.signature_path(name, account=account, html=html)
+    except (
+        signatures_mod.InvalidSignatureNameError,
+        signatures_mod.NoAccountError,
+    ) as exc:
+        return {
+            "status": "error",
+            "error": str(exc),
+            "name": name,
+            "account": account,
+            "html": html,
+        }
+
+    if not path.exists():
+        return {
+            "status": "not_found",
+            "account": path.parent.name
+            and signatures_mod.account_slug(override=account),
+            "name": name.strip().lower(),
+            "html": html,
+            "path": str(path),
+        }
+
+    content = path.read_text(encoding="utf-8")
+    return {
+        "status": "ok",
+        "account": signatures_mod.account_slug(override=account),
+        "name": name.strip().lower(),
+        "html": html,
+        "path": str(path),
+        "content": content,
+    }
 
 
 def _resolve_mail_folder(folder: str, include_hidden: bool = False) -> str:
@@ -1718,7 +2321,7 @@ def _shape_invite_message(
 
 
 def _get_invite_message(
-    invite_message_id: str, *, include_body: bool = False, expand_event: bool = False
+    invite_message_id: str, *, expand_event: bool = False
 ) -> dict[str, Any]:
     params: dict[str, Any] = {}
     if expand_event:
@@ -1798,12 +2401,32 @@ def _delete_invite_message(invite_message_id: str) -> dict[str, Any]:
     }
 
 
-def _list_message_summaries(folder: str, limit: int) -> list[dict[str, Any]]:
-    params = {
+def _list_message_summaries(
+    folder: str,
+    limit: int,
+    *,
+    invite_only: bool = False,
+) -> list[dict[str, Any]]:
+    """List message summaries from a mail folder.
+
+    When ``invite_only`` is True, filters server-side to messages whose
+    message class begins with ``IPM.Schedule`` (meeting requests, responses,
+    cancellations). Uses ``singleValueExtendedProperties`` with the MAPI
+    ``PR_MESSAGE_CLASS`` property (``String 0x001A``); the direct
+    ``itemClass`` property is not exposed on the Outlook message resource
+    via Graph v1.0 (returns 400 Bad Request on ``$filter``).
+    """
+    params: dict[str, Any] = {
         "$top": min(limit, 100),
         "$select": MESSAGE_SUMMARY_SELECT_FIELDS,
         "$orderby": "receivedDateTime desc",
     }
+    if invite_only:
+        params["$filter"] = (
+            "singleValueExtendedProperties/any("
+            "ep:ep/id eq 'String 0x001A' "
+            "and startswith(ep/value,'IPM.Schedule'))"
+        )
     return list(
         graph.request_paginated(
             f"/me/mailFolders/{folder}/messages",
@@ -1824,7 +2447,6 @@ def _hydrate_invite_messages_from_summaries(
         try:
             raw = _get_invite_message(
                 summary["id"],
-                include_body=False,
                 expand_event=True,
             )
         except ValueError:
@@ -2399,7 +3021,6 @@ def rsvp_to_invite_message(
     try:
         invite_message = _get_invite_message(
             invite_message_id,
-            include_body=True,
             expand_event=True,
         )
         event = invite_message.get("event")
@@ -2824,6 +3445,75 @@ def get_attachment(email_id: str, attachment_id: str, save_path: str) -> dict[st
     except Exception as e:
         logger.error(
             f"get_attachment failed for email_id={email_id}, attachment_id={attachment_id}: {str(e)}",
+            exc_info=True,
+        )
+        raise
+
+
+@mcp.tool
+def add_email_attachment(
+    email_id: str,
+    file_path: str,
+    name: str | None = None,
+    content_type: str | None = None,
+) -> dict[str, Any]:
+    """Attach a local file to an existing Outlook draft message.
+
+    Reads the file from disk and uploads it via Microsoft Graph. Files under
+    ~3MB are sent inline (base64); larger files use a chunked upload session.
+
+    Args:
+        email_id: ID of the draft message to attach to. Must be a draft.
+        file_path: Local filesystem path to the file to attach.
+        name: Optional attachment filename. Defaults to the file's basename.
+        content_type: Optional MIME type. Defaults to a mimetypes guess.
+
+    Returns:
+        Dict with id, name, size, content_type for the created attachment.
+    """
+    logger.info(
+        f"add_email_attachment called: email_id={email_id}, file_path={file_path}"
+    )
+    try:
+        path = pl.Path(file_path).expanduser().resolve()
+        if not path.is_file():
+            raise FileNotFoundError(f"File not found: {path}")
+        data = path.read_bytes()
+        size = len(data)
+        attach_name = name or path.name
+        if not content_type:
+            guessed, _ = mimetypes.guess_type(str(path))
+            content_type = guessed or "application/octet-stream"
+
+        if size < 3 * 1024 * 1024:
+            payload = {
+                "@odata.type": "#microsoft.graph.fileAttachment",
+                "name": attach_name,
+                "contentType": content_type,
+                "contentBytes": base64.b64encode(data).decode("ascii"),
+            }
+            result = graph.request(
+                "POST", f"/me/messages/{email_id}/attachments", json=payload
+            )
+        else:
+            result = graph.upload_large_mail_attachment(
+                email_id, attach_name, data, content_type=content_type
+            )
+
+        result = result or {}
+        out = {
+            "id": result.get("id"),
+            "name": result.get("name", attach_name),
+            "size": result.get("size", size),
+            "content_type": result.get("contentType", content_type),
+        }
+        logger.info(
+            f"add_email_attachment successful: {out['name']} ({out['size']} bytes)"
+        )
+        return out
+    except Exception as e:
+        logger.error(
+            f"add_email_attachment failed for email_id={email_id}, file_path={file_path}: {str(e)}",
             exc_info=True,
         )
         raise
@@ -4319,7 +5009,7 @@ def _is_newsletter_sender(raw_from: dict[str, Any] | None) -> bool:
     address = (raw_from.get("emailAddress") or {}).get("address") or ""
     if "@" not in address:
         return False
-    local, _, _domain = address.lower().partition("@")
+    local = address.lower().partition("@")[0]
     if local in _NEWSLETTER_LOCAL_PARTS:
         return True
     # Common variants like "marketing+id@domain", "news-updates@domain"
@@ -4333,12 +5023,174 @@ def _is_newsletter_sender(raw_from: dict[str, Any] | None) -> bool:
     return False
 
 
+# Bounce / Delivery Status Notification detection.
+#
+# DSN messages are RFC 3464 multipart/report payloads sent automatically when
+# mail fails to deliver. We can't see the full headers from $select alone, so
+# we use a *conjunctive* (AND) heuristic with two independent signals so a
+# legitimate message must satisfy both to be flagged:
+#
+#   1. The sender's local-part is one of the well-known automation handles
+#      (postmaster, mailer-daemon, mailerdaemon, mailer_daemon).
+#   2. The subject starts with one of the canonical DSN prefixes used by
+#      Exchange, Postfix, Sendmail, Gmail, Office 365 and other MTAs.
+#
+# Why AND, not OR:
+#   - A real person named "postmaster" or a corporate alias by that name
+#     would otherwise be silently down-ranked.
+#   - The word "Undeliverable" can appear in a real conversation subject; we
+#     only treat it as a bounce when paired with a postmaster-style sender.
+#   - Some teams email "Failure Notice" thread updates — non-DSN — so we keep
+#     a strict pattern set rather than a substring search.
+_BOUNCE_SENDER_LOCAL_PARTS = frozenset(
+    {
+        "postmaster",
+        "mailer-daemon",
+        "mailerdaemon",
+        "mailer_daemon",
+    }
+)
+
+# Match either:
+#   - a Microsoft "[Postmaster]" bracketed prefix used by Mimecast/EOP, OR
+#   - one of the canonical DSN subject prefixes followed by `:` or whitespace.
+# Anchored at start, case-insensitive. The trailing boundary (':' or whitespace)
+# avoids matching a real subject that merely contains the phrase.
+_BOUNCE_SUBJECT_RE = re.compile(
+    r"^\s*(?:"
+    r"\[Postmaster\]"
+    r"|Undeliverable\s*:"
+    r"|Undelivered\s+Mail\s+Returned"
+    r"|Delivery\s+Status\s+Notification"
+    r"|Delivery\s+Failure"
+    r"|Delivery\s+Has\s+Failed"
+    r"|Mail\s+Delivery\s+Failure"
+    r"|Mail\s+delivery\s+failed"
+    r"|Returned\s+mail\s*:"
+    r"|Failure\s+Notice"
+    r"|Auto-?Reply\s*:\s*Undeliverable"
+    r"|Non[- ]?Delivery\s+Report"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _is_bounce_message(raw: dict[str, Any] | None) -> bool:
+    """True only when both the sender looks like a postmaster and the subject
+    matches a known DSN/NDR pattern. See block comment above for rationale."""
+    if not raw:
+        return False
+    from_addr = (raw.get("from") or {}).get("emailAddress") or {}
+    address = (from_addr.get("address") or "").lower()
+    if "@" not in address:
+        return False
+    local = address.partition("@")[0]
+
+    # Sender match is intentionally permissive because the subject regex is
+    # the strict gate. Real-world senders include compound forms like
+    # ``cai.svcPOSTMASTER@coxautoinc.com``, ``noreply-mailer-daemon@…``, and
+    # ``MAILER-DAEMON@…``. We accept any local-part that ends with one of the
+    # known daemon tokens.
+    sender_match = (
+        local in _BOUNCE_SENDER_LOCAL_PARTS
+        or local.endswith("postmaster")
+        or local.endswith("mailer-daemon")
+        or local.endswith("mailerdaemon")
+    )
+    if not sender_match:
+        return False
+
+    subject = (raw.get("subject") or "").strip()
+    if not subject:
+        return False
+
+    return bool(_BOUNCE_SUBJECT_RE.match(subject))
+
+
+def _active_account_email() -> str:
+    """Return the active account email (lower-cased) or ''.
+
+    Used to classify whether the active user is in toRecipients (direct),
+    ccRecipients, or bccRecipients on each inbox message.
+    """
+    return (os.getenv("MICROSOFT_MCP_ACCOUNT_ID") or "").strip().lower()
+
+
+def _extract_email(addr_obj: dict[str, Any] | None) -> str:
+    if not addr_obj:
+        return ""
+    return ((addr_obj.get("emailAddress") or {}).get("address") or "").lower()
+
+
+def _addresses_of(recipients: list[dict[str, Any]] | None) -> set[str]:
+    if not recipients:
+        return set()
+    return {_extract_email(r) for r in recipients if _extract_email(r)}
+
+
+def _email_action_hints(
+    *,
+    is_newsletter: bool,
+    is_bounce: bool,
+    unread: bool,
+    direct_to: bool,
+    on_cc: bool,
+    on_bcc: bool,
+    has_attachments: bool,
+    flagged: bool,
+) -> list[str]:
+    if is_bounce:
+        return ["delete"]
+    if is_newsletter:
+        return ["archive", "unsubscribe"]
+    hints: list[str] = []
+    if flagged:
+        hints.append("reply")
+    if direct_to and unread:
+        hints.append("reply")
+    elif on_cc and unread:
+        hints.append("read")
+    elif on_bcc and unread:
+        hints.append("read")
+    if has_attachments:
+        hints.append("review attachments")
+    if not hints:
+        hints.append("review")
+    # de-dup while keeping order
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for h in hints:
+        if h not in seen:
+            deduped.append(h)
+            seen.add(h)
+    return deduped
+
+
 def _emails_to_inbox_items(raw_emails: list[dict[str, Any]]) -> list[InboxItem]:
     items = []
+    me = _active_account_email()
     for e in raw_emails:
         from_addr = ""
         if "from" in e:
             from_addr = flatten_email_address(e["from"])
+
+        to_set = _addresses_of(e.get("toRecipients"))
+        cc_set = _addresses_of(e.get("ccRecipients"))
+        bcc_set = _addresses_of(e.get("bccRecipients"))
+
+        direct_to = bool(me and me in to_set)
+        on_cc = bool(me and me in cc_set)
+        on_bcc = bool(me and me in bcc_set)
+
+        cc_list = [flatten_email_address(r) for r in (e.get("ccRecipients") or [])]
+        bcc_list = [flatten_email_address(r) for r in (e.get("bccRecipients") or [])]
+
+        unread = not e.get("isRead", True)
+        flagged = (e.get("flag") or {}).get("flagStatus") == "flagged"
+        is_newsletter = _is_newsletter_sender(e.get("from"))
+        is_bounce = _is_bounce_message(e)
+        has_attachments = bool(e.get("hasAttachments"))
+
         items.append(
             InboxItem(
                 id=e["id"],
@@ -4347,11 +5199,28 @@ def _emails_to_inbox_items(raw_emails: list[dict[str, Any]]) -> list[InboxItem]:
                 title=e.get("subject", ""),
                 snippet=e.get("bodyPreview", "")[:200],
                 participants=[from_addr] if from_addr else [],
+                cc=cc_list,
+                bcc=bcc_list,
                 when=e.get("receivedDateTime"),
-                unread=not e.get("isRead", True),
-                mentioned=bool((e.get("mentionsPreview") or {}).get("isMentioned")),
-                flagged=(e.get("flag") or {}).get("flagStatus") == "flagged",
-                is_newsletter=_is_newsletter_sender(e.get("from")),
+                unread=unread,
+                mentioned=False,
+                flagged=flagged,
+                is_newsletter=is_newsletter,
+                is_bounce=is_bounce,
+                has_attachments=has_attachments,
+                direct_to=direct_to,
+                on_cc=on_cc,
+                on_bcc=on_bcc,
+                action_hints=_email_action_hints(
+                    is_newsletter=is_newsletter,
+                    is_bounce=is_bounce,
+                    unread=unread,
+                    direct_to=direct_to,
+                    on_cc=on_cc,
+                    on_bcc=on_bcc,
+                    has_attachments=has_attachments,
+                    flagged=flagged,
+                ),
                 web_url=f"https://outlook.office.com/mail/deeplink/readconv/{quote(e.get('conversationId', ''), safe='')}"
                 if e.get("conversationId")
                 else "",
@@ -4438,6 +5307,19 @@ def _events_to_inbox_items(raw_events: list[dict[str, Any]]) -> list[InboxItem]:
         if "organizer" in ev:
             organizer = flatten_email_address(ev["organizer"])
         start_dt = ev.get("start", {}).get("dateTime", "")
+        starts_in = _minutes_until(start_dt)
+
+        hints: list[str] = []
+        if starts_in is not None:
+            if starts_in <= 15:
+                hints = ["join"]
+            elif starts_in <= 60:
+                hints = ["prepare"]
+            else:
+                hints = ["review"]
+        else:
+            hints = ["review"]
+
         items.append(
             InboxItem(
                 id=ev["id"],
@@ -4446,7 +5328,8 @@ def _events_to_inbox_items(raw_events: list[dict[str, Any]]) -> list[InboxItem]:
                 title=ev.get("subject", ""),
                 participants=[organizer] if organizer else [],
                 when=start_dt,
-                starts_in_minutes=_minutes_until(start_dt),
+                starts_in_minutes=starts_in,
+                action_hints=hints,
             )
         )
     return items
@@ -4476,6 +5359,7 @@ def list_inbox_items(
     )
     profile = get_response_profile(response_profile)
     all_items: list[InboxItem] = []
+    errors: list[dict[str, str]] = []
     kinds = (
         set(include_kinds) if include_kinds else {"email", "event", "invite_message"}
     )
@@ -4487,7 +5371,11 @@ def list_inbox_items(
                 if "invite_message" in kinds
                 else limit
             )
-            raw_messages = _list_message_summaries("inbox", message_fetch_limit)
+            raw_messages = _list_message_summaries(
+                "inbox",
+                message_fetch_limit,
+                invite_only="invite_message" in kinds and "email" not in kinds,
+            )
 
             invite_messages: list[dict[str, Any]] = []
             invite_ids: set[str] = set()
@@ -4511,23 +5399,38 @@ def list_inbox_items(
                 )
         except Exception as e:
             logger.error("list_inbox_items message fetch failed: %s", e, exc_info=True)
+            errors.append({"source": "messages", "error": str(e)[:500]})
 
     if "event" in kinds:
         try:
             now = dt.datetime.now(dt.timezone.utc)
             params = {
                 "startDateTime": now.isoformat(),
-                "endDateTime": (now + dt.timedelta(days=2)).isoformat(),
+                "endDateTime": (now + dt.timedelta(days=7)).isoformat(),
                 "$orderby": "start/dateTime",
-                "$top": min(limit, 25),
+                "$top": min(max(limit, 25), 100),
                 "$select": "id,subject,start,end,location,organizer,seriesMasterId",
             }
             raw = list(
                 graph.request_paginated("/me/calendarView", params=params, limit=limit)
             )
-            all_items.extend(_events_to_inbox_items(raw))
+            event_items = _events_to_inbox_items(raw)
+
+            # Dedup: events that also appear as invite_messages get suppressed
+            # by subject + start signature.
+            existing_signatures = {
+                (i.title.strip().lower(), (i.when or "")[:16])
+                for i in all_items
+                if i.kind == "invite_message"
+            }
+            for ev in event_items:
+                sig = (ev.title.strip().lower(), (ev.when or "")[:16])
+                if sig in existing_signatures:
+                    continue
+                all_items.append(ev)
         except Exception as e:
             logger.error("list_inbox_items event fetch failed: %s", e, exc_info=True)
+            errors.append({"source": "events", "error": str(e)[:500]})
 
     ranked = rank_items(all_items)[:limit]
 
@@ -4541,14 +5444,15 @@ def list_inbox_items(
             trimmed.append(shaped)
         items = trimmed
 
-    return {
-        "items": items,
-        "meta": {
-            "total_fetched": len(all_items),
-            "returned": len(ranked),
-            "kinds": list(kinds),
-        },
+    meta: dict[str, Any] = {
+        "total_fetched": len(all_items),
+        "returned": len(ranked),
+        "kinds": list(kinds),
     }
+    if errors:
+        meta["errors"] = errors
+
+    return {"items": items, "meta": meta}
 
 
 @mcp.tool
@@ -4581,7 +5485,7 @@ def get_inbox_item_detail(item_id: str, kind: str) -> dict[str, Any]:
         return detail
 
     if kind == "invite_message":
-        raw = _get_invite_message(item_id, include_body=True, expand_event=True)
+        raw = _get_invite_message(item_id, expand_event=True)
         return _shape_invite_message(raw, include_body=True)
 
     raise ValueError(f"Unsupported kind: {kind}")

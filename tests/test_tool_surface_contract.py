@@ -86,13 +86,35 @@ def test_inbox_ranker_signals_are_populated():
     """
     import datetime as dt
 
-    # Email: mentioned, flagged, is_newsletter
+    # Email: direct_to, on_cc, on_bcc, flagged, is_newsletter, has_attachments.
+    # `mentioned` is currently always False because $select=mentionsPreview is
+    # rejected by Microsoft Graph v1.0 ("Could not find a property named
+    # 'mentionsPreview' on type 'Microsoft.OutlookServices.Message'") — see
+    # mcp-tool-responses/v1/audit/inbox-triage/probe3_select_field_isolation.json
+    import os as _os
+
+    _os.environ["MICROSOFT_MCP_ACCOUNT_ID"] = "me@example.com"
+
     raw_emails = [
         {
-            "id": "m-mention",
-            "subject": "FYI",
-            "isRead": True,
-            "mentionsPreview": {"isMentioned": True},
+            "id": "m-direct",
+            "subject": "Direct ask",
+            "isRead": False,
+            "toRecipients": [{"emailAddress": {"address": "me@example.com"}}],
+        },
+        {
+            "id": "m-cc",
+            "subject": "FYI cc",
+            "isRead": False,
+            "toRecipients": [{"emailAddress": {"address": "team@example.com"}}],
+            "ccRecipients": [{"emailAddress": {"address": "me@example.com"}}],
+        },
+        {
+            "id": "m-bcc",
+            "subject": "Quiet copy",
+            "isRead": False,
+            "toRecipients": [{"emailAddress": {"address": "team@example.com"}}],
+            "bccRecipients": [{"emailAddress": {"address": "me@example.com"}}],
         },
         {
             "id": "m-flag",
@@ -106,11 +128,23 @@ def test_inbox_ranker_signals_are_populated():
             "isRead": False,
             "from": {"emailAddress": {"address": "noreply@substack.com"}},
         },
+        {
+            "id": "m-attach",
+            "subject": "see attached",
+            "isRead": True,
+            "hasAttachments": True,
+        },
     ]
     items = tools_mod._emails_to_inbox_items(raw_emails)
     by_id = {it.id: it for it in items}
-    assert by_id["m-mention"].mentioned is True, (
-        "_emails_to_inbox_items lost the mentioned signal populator (B3d)"
+    assert by_id["m-direct"].direct_to is True, (
+        "_emails_to_inbox_items lost the direct_to populator"
+    )
+    assert by_id["m-cc"].on_cc is True, (
+        "_emails_to_inbox_items lost the on_cc populator"
+    )
+    assert by_id["m-bcc"].on_bcc is True, (
+        "_emails_to_inbox_items lost the on_bcc populator"
     )
     assert by_id["m-flag"].flagged is True, (
         "_emails_to_inbox_items lost the flagged signal populator (B3b)"
@@ -118,6 +152,11 @@ def test_inbox_ranker_signals_are_populated():
     assert by_id["m-news"].is_newsletter is True, (
         "_emails_to_inbox_items lost the is_newsletter signal populator (B3c)"
     )
+    assert by_id["m-attach"].has_attachments is True, (
+        "_emails_to_inbox_items lost the has_attachments populator"
+    )
+    # mentioned currently always False on this tenant (Graph v1.0 limitation).
+    assert all(not it.mentioned for it in items)
 
     # Invite: starts_in_minutes
     future_iso = (

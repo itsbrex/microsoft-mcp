@@ -11,7 +11,9 @@ import pathlib as pl
 import re
 from typing import Any
 from urllib.parse import quote
+
 import httpx
+import yaml
 from fastmcp import FastMCP
 from . import graph
 from . import rules as _rules
@@ -1938,6 +1940,202 @@ def reorder_inbox_rules(rule_ids_in_order: list[str]) -> list[dict]:
         return results
     except Exception as e:
         logger.error("reorder_inbox_rules failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def export_inbox_rules(path: str | None = None) -> dict[str, Any]:
+    """Export all Outlook inbox rules to a YAML string or file.
+
+    Fetches all inbox rules from Graph, resolves folder IDs to display names,
+    and serialises them as a YAML template list compatible with
+    ``import_inbox_rules``.
+
+    Args:
+        path: Optional file path. When given, the YAML is written to disk and
+            the tool returns ``{"path": path, "count": n}``. When omitted,
+            the YAML string is returned inline as ``{"yaml": ..., "count": n}``.
+
+    Returns:
+        dict with either ``yaml`` (inline) or ``path`` (file), plus ``count``.
+    """
+    logger.info("export_inbox_rules called: path=%s", path)
+    try:
+        raw_rules = list(
+            graph.request_paginated(
+                "/me/mailFolders/inbox/messageRules",
+                params={"$select": _rules.RULE_LIST_FIELDS},
+                limit=None,
+            )
+        )
+
+        # Build a folder-id → display-name map from the full folder list.
+        raw_folders = list(
+            graph.request_paginated(
+                "/me/mailFolders",
+                params={"$select": "id,displayName", "$top": 100},
+                limit=None,
+            )
+        )
+        folder_name_map: dict[str, str] = {
+            f["id"]: f.get("displayName", f["id"]) for f in raw_folders if f.get("id")
+        }
+
+        def _folder_namer(folder_id: str) -> str:
+            return folder_name_map.get(folder_id, folder_id)
+
+        templates = [
+            _rules.rule_to_template(r, folder_namer=_folder_namer) for r in raw_rules
+        ]
+        yaml_text = yaml.safe_dump({"rules": templates}, sort_keys=False)
+
+        if path:
+            pl.Path(path).write_text(yaml_text, encoding="utf-8")
+            return {"path": path, "count": len(templates)}
+        return {"yaml": yaml_text, "count": len(templates)}
+    except Exception as e:
+        logger.error("export_inbox_rules failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def import_inbox_rules(
+    yaml_text: str | None = None,
+    path: str | None = None,
+    mode: str = "create",
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Import Outlook inbox rules from a YAML template string or file.
+
+    Loads rule templates (in the same format produced by ``export_inbox_rules``),
+    validates each, resolves folder names to IDs, and creates or updates rules
+    via the Graph API.
+
+    Args:
+        yaml_text: YAML string containing a ``rules:`` list. Mutually exclusive
+            with ``path``.
+        path: Path to a YAML file. Mutually exclusive with ``yaml_text``.
+        mode: ``"create"`` (default) — skip templates whose ``name`` already
+            exists among current rules; ``"sync"`` — PATCH existing rules by
+            name, POST new ones.
+        dry_run: When ``True``, return the planned actions without making any
+            POST or PATCH calls to Graph.
+
+    Returns:
+        ``{"created": [...], "updated": [...], "skipped": [...], "errors": [...]}``.
+    """
+    logger.info(
+        "import_inbox_rules called: mode=%s, dry_run=%s, has_yaml=%s, has_path=%s",
+        mode,
+        dry_run,
+        yaml_text is not None,
+        path is not None,
+    )
+
+    if mode not in {"create", "sync"}:
+        raise ValueError(f"mode must be 'create' or 'sync', got {mode!r}")
+
+    try:
+        # Load YAML source.
+        if path:
+            raw_text = pl.Path(path).read_text(encoding="utf-8")
+        elif yaml_text:
+            raw_text = yaml_text
+        else:
+            raise ValueError("Either yaml_text or path must be provided")
+
+        doc = yaml.safe_load(raw_text) or {}
+        templates: list[dict[str, Any]] = doc.get("rules") or []
+
+        # Fetch existing rules for name-based deduplication / sync lookup.
+        existing_rules = list(
+            graph.request_paginated(
+                "/me/mailFolders/inbox/messageRules",
+                params={"$select": _rules.RULE_LIST_FIELDS},
+                limit=None,
+            )
+        )
+        existing_by_name: dict[str, dict[str, Any]] = {
+            r["displayName"]: r for r in existing_rules if r.get("displayName")
+        }
+
+        created: list[str] = []
+        updated: list[str] = []
+        skipped: list[str] = []
+        errors: list[str] = []
+
+        for tpl in templates:
+            name = tpl.get("name", "<unnamed>")
+
+            # Validate template.
+            errs = _rules.validate_template(tpl)
+            if errs:
+                errors.append(f"{name}: {'; '.join(errs)}")
+                continue
+
+            # Resolve folder names to IDs.
+            acts = tpl.get("actions") or {}
+            folder_resolver_errors: list[str] = []
+
+            def _resolve_folder(folder_name: str) -> str:
+                try:
+                    return _resolve_mail_folder(folder_name)
+                except Exception as exc:
+                    folder_resolver_errors.append(
+                        f"{name}: cannot resolve folder {folder_name!r}: {exc}"
+                    )
+                    return folder_name  # placeholder — will be caught below
+
+            move_to = acts.get("move_to")
+            copy_to = acts.get("copy_to")
+
+            resolved_tpl = dict(tpl)
+            if move_to or copy_to:
+                resolved_acts = dict(acts)
+                if move_to:
+                    resolved_acts["move_to"] = _resolve_folder(move_to)
+                if copy_to:
+                    resolved_acts["copy_to"] = _resolve_folder(copy_to)
+                resolved_tpl = {**tpl, "actions": resolved_acts}
+
+            if folder_resolver_errors:
+                errors.extend(folder_resolver_errors)
+                continue
+
+            payload = _rules.template_to_rule_payload(resolved_tpl)
+
+            if name in existing_by_name:
+                if mode == "create":
+                    skipped.append(name)
+                    continue
+                # mode == "sync": PATCH existing
+                existing_id = existing_by_name[name]["id"]
+                if not dry_run:
+                    graph.request(
+                        "PATCH",
+                        f"/me/mailFolders/inbox/messageRules/{existing_id}",
+                        json=payload,
+                    )
+                updated.append(name)
+            else:
+                if not dry_run:
+                    graph.request(
+                        "POST",
+                        "/me/mailFolders/inbox/messageRules",
+                        json=payload,
+                    )
+                created.append(name)
+
+        return {
+            "created": created,
+            "updated": updated,
+            "skipped": skipped,
+            "errors": errors,
+        }
+    except ValueError:
+        raise
+    except Exception as e:
+        logger.error("import_inbox_rules failed: %s", e, exc_info=True)
         raise
 
 

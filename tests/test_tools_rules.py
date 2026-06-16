@@ -260,3 +260,135 @@ def test_reorder_inbox_rules(mock_req):
         {"rule_id": "rB", "sequence": 1},
         {"rule_id": "rA", "sequence": 2},
     ]
+
+
+# ---------------------------------------------------------------------------
+# export_inbox_rules
+# ---------------------------------------------------------------------------
+
+_MOCK_RULES = [
+    {
+        "id": "r1",
+        "displayName": "Newsletter",
+        "sequence": 1,
+        "isEnabled": True,
+        "conditions": {"senderContains": ["newsletter"]},
+        "actions": {"moveToFolder": "FOLDER_ID_NEWSLETTERS"},
+    }
+]
+
+_MOCK_FOLDERS = [
+    {"id": "FOLDER_ID_NEWSLETTERS", "displayName": "Newsletters"},
+    {"id": "FOLDER_ID_ARCHIVE", "displayName": "Archive"},
+]
+
+
+@patch("src.microsoft_mcp.tools.graph.request_paginated")
+def test_export_inbox_rules_yaml_contains_name_and_folder_name(mock_paged):
+    from src.microsoft_mcp.tools import export_inbox_rules
+    import yaml
+
+    # First call: rules, second call: folders
+    mock_paged.side_effect = [iter(_MOCK_RULES), iter(_MOCK_FOLDERS)]
+
+    out = export_inbox_rules.fn()
+    assert "yaml" in out
+    assert out["count"] == 1
+
+    data = yaml.safe_load(out["yaml"])
+    assert len(data["rules"]) == 1
+    rule = data["rules"][0]
+    assert rule["name"] == "Newsletter"
+    # folder ID must be resolved to display name
+    assert rule["actions"]["move_to"] == "Newsletters"
+
+
+@patch("src.microsoft_mcp.tools.graph.request_paginated")
+def test_export_inbox_rules_writes_file(mock_paged, tmp_path):
+    from src.microsoft_mcp.tools import export_inbox_rules
+
+    mock_paged.side_effect = [iter(_MOCK_RULES), iter(_MOCK_FOLDERS)]
+    out_path = str(tmp_path / "rules.yaml")
+    out = export_inbox_rules.fn(path=out_path)
+    assert out == {"path": out_path, "count": 1}
+    assert (tmp_path / "rules.yaml").exists()
+
+
+# ---------------------------------------------------------------------------
+# import_inbox_rules
+# ---------------------------------------------------------------------------
+
+_IMPORT_YAML = """\
+rules:
+  - name: Newsletter
+    enabled: true
+    sequence: 1
+    conditions:
+      sender_contains:
+        - newsletter
+    actions:
+      move_to: Newsletters
+"""
+
+
+@patch("src.microsoft_mcp.tools._resolve_mail_folder")
+@patch("src.microsoft_mcp.tools.graph.request_paginated")
+@patch("src.microsoft_mcp.tools.graph.request")
+def test_import_inbox_rules_dry_run_no_mutations(mock_req, mock_paged, mock_resolve):
+    from src.microsoft_mcp.tools import import_inbox_rules
+
+    # Existing rules (no match) returned by paginated
+    mock_paged.return_value = iter([])
+    mock_resolve.return_value = "FOLDER_ID_NEWSLETTERS"
+
+    out = import_inbox_rules.fn(yaml_text=_IMPORT_YAML, dry_run=True)
+
+    # dry_run must not POST or PATCH
+    for call in mock_req.call_args_list:
+        method = call[0][0] if call[0] else call[1].get("method", "")
+        assert method not in ("POST", "PATCH"), f"unexpected mutating call: {call}"
+
+    assert len(out["created"]) == 1
+    assert out["created"][0] == "Newsletter"
+    assert out["updated"] == []
+    assert out["skipped"] == []
+    assert out["errors"] == []
+
+
+@patch("src.microsoft_mcp.tools._resolve_mail_folder")
+@patch("src.microsoft_mcp.tools.graph.request_paginated")
+@patch("src.microsoft_mcp.tools.graph.request")
+def test_import_inbox_rules_create_skips_existing_name(
+    mock_req, mock_paged, mock_resolve
+):
+    from src.microsoft_mcp.tools import import_inbox_rules
+
+    existing_rule = {
+        "id": "r1",
+        "displayName": "Newsletter",
+        "sequence": 1,
+        "isEnabled": True,
+        "conditions": {"senderContains": ["newsletter"]},
+        "actions": {"moveToFolder": "FOLDER_ID_NEWSLETTERS"},
+    }
+    mock_paged.return_value = iter([existing_rule])
+    mock_resolve.return_value = "FOLDER_ID_NEWSLETTERS"
+
+    out = import_inbox_rules.fn(yaml_text=_IMPORT_YAML, mode="create")
+
+    # must not POST or PATCH
+    mock_req.assert_not_called()
+    assert out["skipped"] == ["Newsletter"]
+    assert out["created"] == []
+    assert out["errors"] == []
+
+
+@patch("src.microsoft_mcp.tools._resolve_mail_folder")
+@patch("src.microsoft_mcp.tools.graph.request_paginated")
+@patch("src.microsoft_mcp.tools.graph.request")
+def test_import_inbox_rules_invalid_mode_raises(mock_req, mock_paged, mock_resolve):
+    from src.microsoft_mcp.tools import import_inbox_rules
+    import pytest
+
+    with pytest.raises(ValueError, match="mode"):
+        import_inbox_rules.fn(yaml_text=_IMPORT_YAML, mode="replace")

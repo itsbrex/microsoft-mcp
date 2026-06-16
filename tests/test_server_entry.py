@@ -90,3 +90,30 @@ def test_auth_subcommand_dispatches_to_auth_cli(monkeypatch):
             server.main()
     assert called["argv"] == ["refresh", "--json"]
     fake_exit.assert_called_once_with(0)
+
+
+@pytest.mark.parametrize(
+    "head,target",
+    [
+        ("signatures", "microsoft_mcp.signatures_cli.main"),
+        ("auth", "microsoft_mcp.auth_cli.main"),
+    ],
+)
+def test_subcommand_dispatch_routes(monkeypatch, head, target):
+    from unittest import mock
+
+    from microsoft_mcp import server
+
+    called = {}
+
+    def fake_main(argv):
+        called["argv"] = argv
+        return 0
+
+    monkeypatch.setattr(target, fake_main)
+    monkeypatch.setattr(sys, "argv", ["microsoft-mcp", head, "x", "--json"])
+    with mock.patch.object(sys, "exit", side_effect=SystemExit) as fake_exit:
+        with pytest.raises(SystemExit):
+            server.main()
+    assert called["argv"] == ["x", "--json"]
+    fake_exit.assert_called_once_with(0)

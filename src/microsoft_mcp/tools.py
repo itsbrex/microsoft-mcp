@@ -18,6 +18,7 @@ from fastmcp import FastMCP
 from . import graph
 from . import rules as _rules
 from . import signatures as signatures_mod
+from . import todo as _todo
 from .auth_base import AuthProvider
 from .response_shaping import (
     _html_to_text,
@@ -6712,6 +6713,250 @@ def get_inbox_item_detail(item_id: str, kind: str) -> dict[str, Any]:
         return _shape_invite_message(raw, include_body=True)
 
     raise ValueError(f"Unsupported kind: {kind}")
+
+
+# ---------------------------------------------------------------------------
+# Microsoft To-Do helpers + tools
+# ---------------------------------------------------------------------------
+
+
+def _resolve_todo_list(name_or_id: str, *, create_if_missing: bool = False) -> str:
+    """Resolve a To-Do list by displayName or id; optionally create if missing.
+
+    Args:
+        name_or_id: List display name or id.
+        create_if_missing: When True, POST to create the list if not found.
+
+    Returns:
+        The list id string.
+
+    Raises:
+        ValueError: When the list is not found and create_if_missing is False.
+    """
+    lists = list(graph.request_paginated("/me/todo/lists", limit=500))
+    target = name_or_id.strip()
+
+    for lst in lists:
+        if lst.get("id") == target or lst.get("displayName", "") == target:
+            return str(lst["id"])
+
+    if create_if_missing:
+        created = graph.request("POST", "/me/todo/lists", json={"displayName": target})
+        if not created:
+            raise RuntimeError("_resolve_todo_list: no data returned from Graph")
+        return str(created["id"])
+
+    raise ValueError(f"To-Do list '{name_or_id}' not found")
+
+
+@mcp.tool
+def list_todo_lists(response_profile: str = "auto") -> list[dict[str, Any]]:
+    """List all Microsoft To-Do task lists for the current user.
+
+    Args:
+        response_profile: "auto" | "legacy" | "assistant".
+
+    Returns:
+        List of task list objects from Microsoft Graph.
+    """
+    logger.info("list_todo_lists called")
+    try:
+        raw = list(graph.request_paginated("/me/todo/lists", limit=500))
+        return raw
+    except Exception as e:
+        logger.error("list_todo_lists failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def create_todo_list(name: str) -> dict[str, Any]:
+    """Create a new Microsoft To-Do task list.
+
+    Args:
+        name: Display name for the new list.
+
+    Returns:
+        The newly created task list object.
+    """
+    logger.info("create_todo_list called: name=%s", name)
+    try:
+        result = graph.request("POST", "/me/todo/lists", json={"displayName": name})
+        if not result:
+            raise RuntimeError("create_todo_list: no data returned from Graph")
+        return result
+    except Exception as e:
+        logger.error("create_todo_list failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def list_tasks(
+    list_name: str,
+    status: str | None = None,
+    response_profile: str = "auto",
+) -> list[dict[str, Any]]:
+    """List tasks in a To-Do list, optionally filtered by status.
+
+    Args:
+        list_name: Display name or id of the task list.
+        status: Optional status filter: "notStarted" | "inProgress" | "completed"
+            | "waitingOnOthers" | "deferred".
+        response_profile: "auto" | "legacy" | "assistant".
+
+    Returns:
+        List of task objects.
+    """
+    logger.info("list_tasks called: list_name=%s status=%s", list_name, status)
+    try:
+        list_id = _resolve_todo_list(list_name)
+        params: dict[str, Any] = {}
+        if status:
+            params["$filter"] = f"status eq '{status}'"
+        raw = list(
+            graph.request_paginated(
+                f"/me/todo/lists/{list_id}/tasks",
+                params=params,
+                limit=500,
+            )
+        )
+        return raw
+    except Exception as e:
+        logger.error("list_tasks failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def create_task(
+    list_name: str,
+    title: str,
+    importance: str = "normal",
+    body: str = "",
+    due: str = "",
+) -> dict[str, Any]:
+    """Create a task in a To-Do list, auto-creating the list if it doesn't exist.
+
+    Args:
+        list_name: Display name or id of the task list (created if missing).
+        title: Task title.
+        importance: "low" | "normal" | "high" (default: "normal").
+        body: Optional task body/description.
+        due: Optional due date: "today", "tomorrow", "+Nd", or "YYYY-MM-DD".
+
+    Returns:
+        The newly created task object.
+    """
+    logger.info("create_task called: list_name=%s title=%s", list_name, title)
+    try:
+        list_id = _resolve_todo_list(list_name, create_if_missing=True)
+        due_dict = _todo.parse_due_date(due, today=dt.date.today()) if due else None
+        payload = _todo.build_task_payload(
+            title=title,
+            importance=importance,
+            body=body or None,
+            due=due_dict,
+        )
+        result = graph.request("POST", f"/me/todo/lists/{list_id}/tasks", json=payload)
+        if not result:
+            raise RuntimeError("create_task: no data returned from Graph")
+        return result
+    except Exception as e:
+        logger.error("create_task failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def update_task(
+    list_name: str,
+    task_id: str,
+    title: str | None = None,
+    importance: str | None = None,
+    body: str | None = None,
+    due: str | None = None,
+) -> dict[str, Any]:
+    """Partially update a task in a To-Do list (only provided fields are changed).
+
+    Args:
+        list_name: Display name or id of the task list.
+        task_id: The task id to update.
+        title: New title (optional).
+        importance: New importance: "low" | "normal" | "high" (optional).
+        body: New body/description (optional).
+        due: New due date: "today", "tomorrow", "+Nd", or "YYYY-MM-DD" (optional).
+
+    Returns:
+        The updated task object.
+    """
+    logger.info("update_task called: list_name=%s task_id=%s", list_name, task_id)
+    try:
+        list_id = _resolve_todo_list(list_name)
+        patch: dict[str, Any] = {}
+        if title is not None:
+            patch["title"] = title
+        if importance is not None:
+            patch["importance"] = importance
+        if body is not None:
+            patch["body"] = {"content": body, "contentType": "text"}
+        if due is not None:
+            patch["dueDateTime"] = _todo.parse_due_date(due, today=dt.date.today())
+        result = graph.request(
+            "PATCH",
+            f"/me/todo/lists/{list_id}/tasks/{task_id}",
+            json=patch,
+        )
+        if not result:
+            raise RuntimeError("update_task: no data returned from Graph")
+        return result
+    except Exception as e:
+        logger.error("update_task failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def complete_task(list_name: str, task_id: str) -> dict[str, Any]:
+    """Mark a task as completed in a To-Do list.
+
+    Args:
+        list_name: Display name or id of the task list.
+        task_id: The task id to complete.
+
+    Returns:
+        The updated task object with status "completed".
+    """
+    logger.info("complete_task called: list_name=%s task_id=%s", list_name, task_id)
+    try:
+        list_id = _resolve_todo_list(list_name)
+        result = graph.request(
+            "PATCH",
+            f"/me/todo/lists/{list_id}/tasks/{task_id}",
+            json={"status": "completed"},
+        )
+        if not result:
+            raise RuntimeError("complete_task: no data returned from Graph")
+        return result
+    except Exception as e:
+        logger.error("complete_task failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def delete_task(list_name: str, task_id: str) -> dict[str, Any]:
+    """Delete a task from a To-Do list.
+
+    Args:
+        list_name: Display name or id of the task list.
+        task_id: The task id to delete.
+
+    Returns:
+        {"status": "deleted", "task_id": task_id}
+    """
+    logger.info("delete_task called: list_name=%s task_id=%s", list_name, task_id)
+    try:
+        list_id = _resolve_todo_list(list_name)
+        graph.request("DELETE", f"/me/todo/lists/{list_id}/tasks/{task_id}")
+        return {"status": "deleted", "task_id": task_id}
+    except Exception as e:
+        logger.error("delete_task failed: %s", e, exc_info=True)
+        raise
 
 
 _configure_public_tool_mode()

@@ -53,6 +53,8 @@ mcp-tool-responses/
 .claude/logs/
 .claude/hooks/logs/
 .claude/HANDOFF.md
+.claude/HANDOFF.md.consumed
+.claude/orchestration/
 .claude/agents/session-state.json
 
 # Claude Code session transcripts (autosaved, dated)
@@ -61,4 +63,5 @@ mcp-tool-responses/
 # Local runtime / scratch artifacts (not source)
 .instance/
 outputs/
+codedb.snapshot
 

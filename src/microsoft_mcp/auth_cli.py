@@ -321,6 +321,30 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     return 1
 
 
+def _cmd_test(args: argparse.Namespace) -> int:
+    _require_msal()
+    from .auth_msal import verify_account_tokens
+
+    tokens_dir = (_env_kwargs()["tokens_dir"]) or _default_tokens_dir()
+    results = verify_account_tokens(tokens_dir=tokens_dir, live=True)
+    if args.json:
+        _print_json(results)
+        return 1 if any(r.get("graph_error") for r in results) else 0
+    if not results:
+        print("No saved accounts found.")
+        return 0
+    failures = 0
+    for r in results:
+        ident = r.get("identifier", "?")
+        if r.get("graph_error"):
+            failures += 1
+            print(_c(f"  ✗ {ident}: /me failed — {r['graph_error']}", "red"))
+        else:
+            upn = r.get("graph_userPrincipalName") or "?"
+            print(_c(f"  ✓ {ident}: /me OK — {upn}", "green"))
+    return 1 if failures else 0
+
+
 def _stat_mode(path: Path) -> int | None:
     try:
         import stat as _s
@@ -423,6 +447,10 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_doctor.add_argument("--json", action="store_true")
     p_doctor.set_defaults(func=_cmd_doctor)
+
+    p_test = sub.add_parser("test", help="live test each token against Graph /me")
+    p_test.add_argument("--json", action="store_true")
+    p_test.set_defaults(func=_cmd_test)
 
     return parser
 

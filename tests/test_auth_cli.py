@@ -174,3 +174,44 @@ def test_doctor_clean_passes(monkeypatch, tmp_path, capsys):
     out = capsys.readouterr().out
     assert rc == 0
     assert "OK" in out or "no issues" in out.lower()
+
+
+def test_auth_test_reports_live_identity(monkeypatch, tmp_path, capsys):
+    _msal_env(monkeypatch, tmp_path)
+    _write_graph_token(tmp_path, TEST_EMAIL)
+    monkeypatch.setattr(
+        "microsoft_mcp.auth_msal.verify_account_tokens",
+        lambda **kw: [
+            {
+                "identifier": TEST_EMAIL,
+                "graph_userPrincipalName": TEST_EMAIL,
+                "graph_error": None,
+                "match": True,
+            }
+        ],
+    )
+    rc = auth_cli.main(["test"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert TEST_EMAIL in out
+    assert "/me" in out or "OK" in out
+
+
+def test_auth_test_reports_failure(monkeypatch, tmp_path, capsys):
+    _msal_env(monkeypatch, tmp_path)
+    _write_graph_token(tmp_path, TEST_EMAIL)
+    monkeypatch.setattr(
+        "microsoft_mcp.auth_msal.verify_account_tokens",
+        lambda **kw: [
+            {
+                "identifier": TEST_EMAIL,
+                "graph_userPrincipalName": None,
+                "graph_error": "HTTP 401: token expired",
+                "match": False,
+            }
+        ],
+    )
+    rc = auth_cli.main(["test"])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "401" in out

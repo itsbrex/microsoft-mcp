@@ -4593,6 +4593,146 @@ def add_email_attachment(
         raise
 
 
+@mcp.tool
+def list_attachments(email_id: str) -> list[dict]:
+    """List all attachments on an email message.
+
+    Returns metadata for every attachment without downloading content.
+    Use this to inspect what attachments are present before deciding which to download.
+
+    Args:
+        email_id: Unique identifier of the email message.
+
+    Returns:
+        List of attachment metadata dicts, each containing:
+        - id: Attachment identifier
+        - name: Filename or display name
+        - content_type: MIME type
+        - size: Size in bytes
+        - is_inline: True if the attachment is embedded inline in the body
+        - kind: "file" for downloadable file attachments, "item" for embedded Outlook items
+    """
+    logger.info(f"list_attachments called: email_id={email_id}")
+    try:
+        result = graph.request(
+            "GET",
+            f"/me/messages/{email_id}/attachments",
+            params={"$select": "id,name,contentType,size,isInline"},
+        )
+        attachments = (result or {}).get("value", [])
+        out = []
+        for a in attachments:
+            odata_type = a.get("@odata.type", "")
+            kind = "file" if "fileAttachment" in odata_type else "item"
+            out.append(
+                {
+                    "id": a.get("id"),
+                    "name": a.get("name"),
+                    "content_type": a.get("contentType"),
+                    "size": a.get("size"),
+                    "is_inline": a.get("isInline", False),
+                    "kind": kind,
+                }
+            )
+        logger.info(
+            f"list_attachments successful: {len(out)} attachment(s) on email_id={email_id}"
+        )
+        return out
+    except Exception as e:
+        logger.error(
+            f"list_attachments failed for email_id={email_id}: {str(e)}", exc_info=True
+        )
+        raise
+
+
+@mcp.tool
+def download_attachments(
+    email_id: str,
+    save_dir: str,
+    names: list[str] | None = None,
+) -> dict[str, Any]:
+    """Download file attachments from an email to a local directory.
+
+    Lists the email's attachments, optionally filters by name, then writes each
+    file attachment to save_dir. Item attachments (embedded Outlook objects such as
+    calendar invites) are always skipped. If contentBytes is absent from the list
+    response the attachment is re-fetched individually before decoding.
+
+    Args:
+        email_id: Unique identifier of the email message.
+        save_dir: Local directory path where attachment files will be saved.
+                  Created (including parents) if it does not exist.
+        names: Optional list of attachment filenames to download. When omitted all
+               file attachments are downloaded.
+
+    Returns:
+        Dict with two keys:
+        - saved: List of absolute paths to files that were written.
+        - skipped: List of attachment names that were not saved (item attachments,
+                   name-filtered-out, or missing content after re-fetch).
+    """
+    logger.info(
+        f"download_attachments called: email_id={email_id}, save_dir={save_dir}, names={names}"
+    )
+    try:
+        dir_path = pl.Path(save_dir).expanduser().resolve()
+        dir_path.mkdir(parents=True, exist_ok=True)
+
+        # Fetch attachment list (without $select so @odata.type is included)
+        list_result = graph.request("GET", f"/me/messages/{email_id}/attachments")
+        attachments = (list_result or {}).get("value", [])
+
+        saved: list[str] = []
+        skipped: list[str] = []
+
+        for a in attachments:
+            att_name = a.get("name", "unknown")
+            odata_type = a.get("@odata.type", "")
+
+            # Skip non-file attachments (embedded Outlook items, etc.)
+            if "fileAttachment" not in odata_type:
+                skipped.append(att_name)
+                continue
+
+            # Apply name filter if provided
+            if names is not None and att_name not in names:
+                skipped.append(att_name)
+                continue
+
+            # Re-fetch single attachment if contentBytes is missing
+            if "contentBytes" not in a:
+                att_id = a.get("id")
+                logger.info(
+                    f"download_attachments: re-fetching attachment {att_id} for contentBytes"
+                )
+                a = graph.request(
+                    "GET", f"/me/messages/{email_id}/attachments/{att_id}"
+                )
+                a = a or {}
+
+            content_b64 = a.get("contentBytes")
+            if not content_b64:
+                skipped.append(att_name)
+                continue
+
+            content_bytes = base64.b64decode(content_b64)
+            dest = dir_path / att_name
+            dest.write_bytes(content_bytes)
+            saved.append(str(dest))
+            logger.info(f"download_attachments: saved {att_name} to {dest}")
+
+        logger.info(
+            f"download_attachments successful: {len(saved)} saved, {len(skipped)} skipped"
+        )
+        return {"saved": saved, "skipped": skipped}
+    except Exception as e:
+        logger.error(
+            f"download_attachments failed for email_id={email_id}: {str(e)}",
+            exc_info=True,
+        )
+        raise
+
+
 def _analyze_search_error(error: Exception, request_payload: dict) -> str:
     """Analyze Microsoft Graph Search API errors and provide helpful diagnostics."""
 

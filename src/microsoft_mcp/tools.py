@@ -1613,6 +1613,306 @@ def list_inbox_rules(response_profile: str = "auto") -> list[dict[str, Any]]:
 
 
 @mcp.tool
+def get_inbox_rule(rule_id: str, response_profile: str = "auto") -> dict[str, Any]:
+    """Get a single Outlook inbox rule by ID.
+
+    Args:
+        rule_id: The unique ID of the message rule.
+        response_profile: "auto" | "legacy" | "assistant".
+
+    Returns:
+        assistant: {id, display_name, sequence, is_enabled, conditions_summary,
+        actions_summary, exceptions_summary}. legacy: cleaned raw Graph rule.
+    """
+    logger.info("get_inbox_rule called: rule_id=%s", rule_id)
+    profile = get_response_profile(response_profile)
+    try:
+        rule = graph.request(
+            "GET",
+            f"/me/mailFolders/inbox/messageRules/{rule_id}",
+            params={"$select": _rules.RULE_DETAIL_FIELDS},
+        )
+        if not rule:
+            raise RuntimeError(
+                f"get_inbox_rule: no data returned for rule_id={rule_id}"
+            )
+        if profile == "assistant":
+            shaped = _rules.shape_rule_summary(rule)
+            shaped["exceptions_summary"] = _rules.summarize_conditions(
+                rule.get("exceptions")
+            )
+            return shaped
+        return cleanup_graph_payload(rule)
+    except Exception as e:
+        logger.error("get_inbox_rule failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def create_inbox_rule(
+    display_name: str,
+    sequence: int = 1,
+    is_enabled: bool = True,
+    sender_contains: list[str] | None = None,
+    subject_contains: list[str] | None = None,
+    body_contains: list[str] | None = None,
+    from_addresses: list[str] | None = None,
+    has_attachments: bool | None = None,
+    importance: str | None = None,
+    move_to_folder: str | None = None,
+    copy_to_folder: str | None = None,
+    assign_categories: list[str] | None = None,
+    mark_as_read: bool | None = None,
+    mark_importance: str | None = None,
+    forward_to: list[str] | None = None,
+    delete: bool | None = None,
+    stop_processing_rules: bool | None = None,
+    response_profile: str = "auto",
+) -> dict[str, Any]:
+    """Create a new Outlook inbox rule.
+
+    Folder arguments (move_to_folder, copy_to_folder) accept either a folder
+    display name or an existing folder ID; names are resolved automatically.
+
+    Args:
+        display_name: Name for the rule.
+        sequence: Processing order (lower = earlier). Defaults to 1.
+        is_enabled: Whether the rule is active. Defaults to True.
+        sender_contains: Match if sender address/name contains any of these strings.
+        subject_contains: Match if subject contains any of these strings.
+        body_contains: Match if body contains any of these strings.
+        from_addresses: Match if from one of these email addresses.
+        has_attachments: Match if message has (True) or lacks (False) attachments.
+        importance: Match by importance: "low" | "normal" | "high".
+        move_to_folder: Folder name or ID to move matched messages into.
+        copy_to_folder: Folder name or ID to copy matched messages into.
+        assign_categories: List of category names to assign.
+        mark_as_read: Mark matched messages as read.
+        mark_importance: Set importance: "low" | "normal" | "high".
+        forward_to: Forward to these email addresses.
+        delete: Move to Deleted Items if True.
+        stop_processing_rules: Stop evaluating further rules if True.
+        response_profile: "auto" | "legacy" | "assistant".
+
+    Returns:
+        The created rule. assistant: shaped summary. legacy: cleaned raw Graph object.
+    """
+    logger.info("create_inbox_rule called: display_name=%s", display_name)
+    profile = get_response_profile(response_profile)
+    try:
+        if move_to_folder:
+            move_to_folder = _resolve_mail_folder(move_to_folder)
+        if copy_to_folder:
+            copy_to_folder = _resolve_mail_folder(copy_to_folder)
+        payload = _rules.build_rule_payload(
+            display_name=display_name,
+            sequence=sequence,
+            is_enabled=is_enabled,
+            sender_contains=sender_contains,
+            subject_contains=subject_contains,
+            body_contains=body_contains,
+            from_addresses=from_addresses,
+            has_attachments=has_attachments,
+            importance=importance,
+            move_to_folder=move_to_folder,
+            copy_to_folder=copy_to_folder,
+            assign_categories=assign_categories,
+            mark_as_read=mark_as_read,
+            mark_importance=mark_importance,
+            forward_to=forward_to,
+            delete=delete,
+            stop_processing_rules=stop_processing_rules,
+        )
+        created = graph.request(
+            "POST",
+            "/me/mailFolders/inbox/messageRules",
+            json=payload,
+        )
+        if not created:
+            raise RuntimeError("create_inbox_rule: no data returned from Graph")
+        if profile == "assistant":
+            return _rules.shape_rule_summary(created)
+        return cleanup_graph_payload(created)
+    except Exception as e:
+        logger.error("create_inbox_rule failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def update_inbox_rule(
+    rule_id: str,
+    display_name: str | None = None,
+    sequence: int | None = None,
+    is_enabled: bool | None = None,
+    sender_contains: list[str] | None = None,
+    subject_contains: list[str] | None = None,
+    body_contains: list[str] | None = None,
+    from_addresses: list[str] | None = None,
+    has_attachments: bool | None = None,
+    importance: str | None = None,
+    move_to_folder: str | None = None,
+    copy_to_folder: str | None = None,
+    assign_categories: list[str] | None = None,
+    mark_as_read: bool | None = None,
+    mark_importance: str | None = None,
+    forward_to: list[str] | None = None,
+    delete: bool | None = None,
+    stop_processing_rules: bool | None = None,
+    response_profile: str = "auto",
+) -> dict[str, Any]:
+    """Update fields on an existing Outlook inbox rule (partial PATCH).
+
+    Only fields explicitly supplied are sent; omitted arguments are left untouched.
+
+    Args:
+        rule_id: The unique ID of the rule to update.
+        display_name: New display name.
+        sequence: New processing order.
+        is_enabled: Enable or disable the rule.
+        sender_contains: Replace sender-contains condition strings.
+        subject_contains: Replace subject-contains condition strings.
+        body_contains: Replace body-contains condition strings.
+        from_addresses: Replace from-addresses condition.
+        has_attachments: Replace has-attachments condition.
+        importance: Replace importance condition.
+        move_to_folder: Replace move-to-folder action (name or ID).
+        copy_to_folder: Replace copy-to-folder action (name or ID).
+        assign_categories: Replace assign-categories action.
+        mark_as_read: Replace mark-as-read action.
+        mark_importance: Replace mark-importance action.
+        forward_to: Replace forward-to action.
+        delete: Replace delete action.
+        stop_processing_rules: Replace stop-processing-rules action.
+        response_profile: "auto" | "legacy" | "assistant".
+
+    Returns:
+        The updated rule. assistant: shaped summary. legacy: cleaned raw Graph object.
+    """
+    logger.info("update_inbox_rule called: rule_id=%s", rule_id)
+    profile = get_response_profile(response_profile)
+    try:
+        partial: dict[str, Any] = {}
+        if display_name is not None:
+            partial["displayName"] = display_name
+        if sequence is not None:
+            partial["sequence"] = sequence
+        if is_enabled is not None:
+            partial["isEnabled"] = is_enabled
+
+        # Build conditions sub-object only from provided fields.
+        conditions: dict[str, Any] = {}
+        if sender_contains is not None:
+            conditions["senderContains"] = sender_contains
+        if subject_contains is not None:
+            conditions["subjectContains"] = subject_contains
+        if body_contains is not None:
+            conditions["bodyContains"] = body_contains
+        if from_addresses is not None:
+            conditions["fromAddresses"] = _rules._recipients(from_addresses)
+        if has_attachments is not None:
+            conditions["hasAttachments"] = has_attachments
+        if importance is not None:
+            conditions["importance"] = importance
+        if conditions:
+            partial["conditions"] = conditions
+
+        # Build actions sub-object only from provided fields.
+        if move_to_folder is not None:
+            move_to_folder = _resolve_mail_folder(move_to_folder)
+        if copy_to_folder is not None:
+            copy_to_folder = _resolve_mail_folder(copy_to_folder)
+        actions: dict[str, Any] = {}
+        if move_to_folder is not None:
+            actions["moveToFolder"] = move_to_folder
+        if copy_to_folder is not None:
+            actions["copyToFolder"] = copy_to_folder
+        if assign_categories is not None:
+            actions["assignCategories"] = assign_categories
+        if mark_as_read is not None:
+            actions["markAsRead"] = mark_as_read
+        if mark_importance is not None:
+            actions["markImportance"] = mark_importance
+        if forward_to is not None:
+            actions["forwardTo"] = _rules._recipients(forward_to)
+        if delete is not None:
+            actions["delete"] = delete
+        if stop_processing_rules is not None:
+            actions["stopProcessingRules"] = stop_processing_rules
+        if actions:
+            partial["actions"] = actions
+
+        updated = graph.request(
+            "PATCH",
+            f"/me/mailFolders/inbox/messageRules/{rule_id}",
+            json=partial,
+        )
+        if not updated:
+            raise RuntimeError(
+                f"update_inbox_rule: no data returned for rule_id={rule_id}"
+            )
+        if profile == "assistant":
+            return _rules.shape_rule_summary(updated)
+        return cleanup_graph_payload(updated)
+    except Exception as e:
+        logger.error("update_inbox_rule failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def delete_inbox_rule(rule_id: str) -> dict[str, Any]:
+    """Delete an Outlook inbox rule.
+
+    Args:
+        rule_id: The unique ID of the rule to delete.
+
+    Returns:
+        {"status": "deleted", "rule_id": <rule_id>}
+    """
+    logger.info("delete_inbox_rule called: rule_id=%s", rule_id)
+    try:
+        graph.request("DELETE", f"/me/mailFolders/inbox/messageRules/{rule_id}")
+        return {"status": "deleted", "rule_id": rule_id}
+    except Exception as e:
+        logger.error("delete_inbox_rule failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def toggle_inbox_rule(rule_id: str) -> dict[str, Any]:
+    """Toggle an Outlook inbox rule between enabled and disabled.
+
+    Fetches the current isEnabled state and flips it with a single PATCH.
+
+    Args:
+        rule_id: The unique ID of the rule to toggle.
+
+    Returns:
+        {"rule_id": <rule_id>, "is_enabled": <new bool value>}
+    """
+    logger.info("toggle_inbox_rule called: rule_id=%s", rule_id)
+    try:
+        current = graph.request(
+            "GET",
+            f"/me/mailFolders/inbox/messageRules/{rule_id}",
+            params={"$select": "id,isEnabled"},
+        )
+        if not current:
+            raise RuntimeError(
+                f"toggle_inbox_rule: no data returned for rule_id={rule_id}"
+            )
+        new_enabled = not current.get("isEnabled", False)
+        graph.request(
+            "PATCH",
+            f"/me/mailFolders/inbox/messageRules/{rule_id}",
+            json={"isEnabled": new_enabled},
+        )
+        return {"rule_id": rule_id, "is_enabled": new_enabled}
+    except Exception as e:
+        logger.error("toggle_inbox_rule failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
 def list_emails(
     folder: str = "inbox",
     limit: int = 10,

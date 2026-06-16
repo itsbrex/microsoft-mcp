@@ -2139,6 +2139,149 @@ def import_inbox_rules(
         raise
 
 
+# ---------------------------------------------------------------------------
+# Focused Inbox override CRUD
+# ---------------------------------------------------------------------------
+
+_FOCUSED_CLASSIFY_AS_VALUES = {"focused", "other"}
+
+_FOCUSED_OVERRIDE_SELECT = "id,classifyAs,senderEmailAddress"
+
+
+def _validate_classify_as(classify_as: str) -> None:
+    if classify_as not in _FOCUSED_CLASSIFY_AS_VALUES:
+        raise ValueError(
+            f"classify_as must be one of {sorted(_FOCUSED_CLASSIFY_AS_VALUES)!r}, got {classify_as!r}"
+        )
+
+
+@mcp.tool
+def list_focused_overrides(response_profile: str = "auto") -> list[dict[str, Any]]:
+    """List Focused Inbox sender overrides.
+
+    Returns the overrides that control whether messages from specific senders
+    land in the Focused or Other inbox tab.
+
+    Args:
+        response_profile: "auto" | "legacy" | "assistant".
+
+    Returns:
+        assistant: [{id, classify_as, email, name}, ...].
+        legacy: cleaned raw Graph objects.
+    """
+    logger.info("list_focused_overrides called")
+    profile = get_response_profile(response_profile)
+    try:
+        raw = list(
+            graph.request_paginated(
+                "/me/inferenceClassification/overrides",
+                params={"$select": _FOCUSED_OVERRIDE_SELECT},
+                limit=None,
+            )
+        )
+        if profile == "assistant":
+            return [
+                {
+                    "id": item["id"],
+                    "classify_as": item.get("classifyAs", ""),
+                    "email": item.get("senderEmailAddress", {}).get("address", ""),
+                    "name": item.get("senderEmailAddress", {}).get("name", ""),
+                }
+                for item in raw
+            ]
+        return [cleanup_graph_payload(item) for item in raw]
+    except Exception as e:
+        logger.error("list_focused_overrides failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def create_focused_override(
+    sender_email: str,
+    classify_as: str = "focused",
+    name: str = "",
+) -> dict[str, Any]:
+    """Create a Focused Inbox sender override.
+
+    Args:
+        sender_email: The sender's email address to classify.
+        classify_as: "focused" (default) or "other".
+        name: Display name for the sender. Defaults to sender_email when empty.
+
+    Returns:
+        The created override object from Graph.
+    """
+    logger.info("create_focused_override called: sender_email=%s", sender_email)
+    _validate_classify_as(classify_as)
+    try:
+        payload = {
+            "classifyAs": classify_as,
+            "senderEmailAddress": {
+                "address": sender_email,
+                "name": name or sender_email,
+            },
+        }
+        created = graph.request(
+            "POST",
+            "/me/inferenceClassification/overrides",
+            json=payload,
+        )
+        if not created:
+            raise RuntimeError("create_focused_override: no data returned from Graph")
+        return created
+    except Exception as e:
+        logger.error("create_focused_override failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def update_focused_override(override_id: str, classify_as: str) -> dict[str, Any]:
+    """Update the classification of a Focused Inbox sender override.
+
+    Args:
+        override_id: The unique ID of the override to update.
+        classify_as: "focused" or "other".
+
+    Returns:
+        The updated override object from Graph.
+    """
+    logger.info("update_focused_override called: override_id=%s", override_id)
+    _validate_classify_as(classify_as)
+    try:
+        updated = graph.request(
+            "PATCH",
+            f"/me/inferenceClassification/overrides/{override_id}",
+            json={"classifyAs": classify_as},
+        )
+        if not updated:
+            raise RuntimeError(
+                f"update_focused_override: no data returned for override_id={override_id}"
+            )
+        return updated
+    except Exception as e:
+        logger.error("update_focused_override failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def delete_focused_override(override_id: str) -> dict[str, Any]:
+    """Delete a Focused Inbox sender override.
+
+    Args:
+        override_id: The unique ID of the override to delete.
+
+    Returns:
+        {"status": "deleted", "override_id": <override_id>}
+    """
+    logger.info("delete_focused_override called: override_id=%s", override_id)
+    try:
+        graph.request("DELETE", f"/me/inferenceClassification/overrides/{override_id}")
+        return {"status": "deleted", "override_id": override_id}
+    except Exception as e:
+        logger.error("delete_focused_override failed: %s", e, exc_info=True)
+        raise
+
+
 @mcp.tool
 def list_emails(
     folder: str = "inbox",

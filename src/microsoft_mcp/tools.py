@@ -14,6 +14,7 @@ from urllib.parse import quote
 import httpx
 from fastmcp import FastMCP
 from . import graph
+from . import rules as _rules
 from . import signatures as signatures_mod
 from .auth_base import AuthProvider
 from .response_shaping import (
@@ -1577,6 +1578,38 @@ def ensure_master_categories(
         "updated": updated,
         "existing": existing,
     }
+
+
+@mcp.tool
+def list_inbox_rules(response_profile: str = "auto") -> list[dict[str, Any]]:
+    """List Outlook inbox rules (server-side message rules).
+
+    Returns each rule with a human-readable summary of its conditions and
+    actions. Rules run top-to-bottom by `sequence` (lower = earlier).
+
+    Args:
+        response_profile: "auto" | "legacy" | "assistant".
+
+    Returns:
+        List of rules. assistant: {id, display_name, sequence, is_enabled,
+        conditions_summary, actions_summary}. legacy: cleaned raw Graph rules.
+    """
+    logger.info("list_inbox_rules called")
+    profile = get_response_profile(response_profile)
+    try:
+        raw = list(
+            graph.request_paginated(
+                "/me/mailFolders/inbox/messageRules",
+                params={"$select": _rules.RULE_LIST_FIELDS},
+                limit=None,
+            )
+        )
+        if profile == "assistant":
+            return [_rules.shape_rule_summary(r) for r in raw]
+        return [cleanup_graph_payload(r) for r in raw]
+    except Exception as e:
+        logger.error(f"list_inbox_rules failed: {e}", exc_info=True)
+        raise
 
 
 @mcp.tool

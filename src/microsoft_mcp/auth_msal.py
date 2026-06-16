@@ -613,7 +613,7 @@ class MSALRefreshTokenAuth:
                 access_token=result["access_token"],
                 refresh_token=result.get("refresh_token", refresh_token),
                 expires_in=result.get("expires_in", 3600),
-                scopes=result.get("scope", "https://graph.microsoft.com/.default"),
+                scopes=result.get("scope", self._default_scope()),
             )
             # Re-load the just-saved data so the caller sees canonical shape.
             data = self._load_access_token_data()
@@ -864,7 +864,10 @@ def refresh_all_accounts(
         # Strip the "_access_token" suffix from the stem to get the identifier.
         identifier = token_file.stem[: -len("_access_token")]
         if identifier.endswith("_outlook"):
-            continue  # skip outlook sibling files during enumeration
+            # Skip outlook sibling files ({id}_outlook_access_token.json) during
+            # enumeration. (A real account identifier literally ending in
+            # "_outlook" would be falsely skipped, but email identifiers don't.)
+            continue
         logger.info(f"refresh_all_accounts: processing account '{identifier}'")
 
         for current_api in api_types:

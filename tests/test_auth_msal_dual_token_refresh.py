@@ -85,3 +85,31 @@ def test_refresh_all_accounts_skips_outlook_sibling_files(tmp_path):
     results = auth_msal.refresh_all_accounts(tokens_dir=tmp_path)
     idents = [r["identifier"] for r in results]
     assert idents == [TEST_EMAIL]  # not TEST_EMAIL_outlook
+
+
+def test_outlook_refresh_persists_outlook_scope_when_response_omits_scope(
+    tmp_path, monkeypatch
+):
+    # Azure normally returns `scope`, but if it doesn't, an outlook instance
+    # must still persist the OUTLOOK scope (not a graph fallback).
+    _seed_graph_account(tmp_path, TEST_EMAIL, valid=False)
+    monkeypatch.setattr(
+        auth_msal.MSALRefreshTokenAuth,
+        "_refresh_access_token",
+        lambda self, rt: {
+            "access_token": "n",
+            "refresh_token": "shared-refresh",
+            "expires_in": 3600,
+            # deliberately NO "scope" key
+        },
+    )
+    result = auth_msal.refresh_account(
+        TEST_EMAIL, tokens_dir=tmp_path, api_type="outlook"
+    )
+    assert result["status"] == "refreshed"
+    import json as _json
+
+    data = _json.loads(
+        (tmp_path / f"{TEST_EMAIL}_outlook_access_token.json").read_text()
+    )
+    assert data["scopes"] == auth_msal.OUTLOOK_SCOPE

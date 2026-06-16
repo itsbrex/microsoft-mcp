@@ -48,8 +48,15 @@ mcp-tool-responses/
 # Keep per-user state local.
 .claude/settings.local.json
 .claude/.state/
+.claude/state/
 .claude/chain/
+.claude/logs/
+.claude/agents/session-state.json
 
 # Claude Code session transcripts (autosaved, dated)
 20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]-*.txt
+
+# Local runtime / scratch artifacts (not source)
+.instance/
+outputs/
 

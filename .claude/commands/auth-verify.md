@@ -13,4 +13,4 @@ Exit code: 0 if all match, 1 if any mismatch.
 
 Arguments passed: `$ARGUMENTS`
 
-!`uv run auth_refresh.py --verify $ARGUMENTS`
+!`uv run microsoft-mcp auth verify $ARGUMENTS`

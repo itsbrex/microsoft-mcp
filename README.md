@@ -265,6 +265,32 @@ uv run authenticate.py
 
 If `MICROSOFT_MCP_TENANT_ID` is not set and `MICROSOFT_MCP_ACCOUNT_ID` matches an existing `outlook-creds` profile, the MSAL auth provider will reuse that profile's tenant-specific authority. This avoids tenant-specific device-code failures such as `AADSTS65002` on fresh login.
 
+### Auth CLI (MSAL)
+
+Refresh, inspect, and verify saved Microsoft tokens:
+
+```bash
+microsoft-mcp auth refresh             # refresh all accounts
+microsoft-mcp auth refresh --api both  # refresh Graph + Outlook tokens
+microsoft-mcp auth status              # read-only health (no network)
+microsoft-mcp auth verify              # check tokens match their filenames
+microsoft-mcp auth test                # live Graph /me check
+microsoft-mcp auth doctor              # diagnose perms/dups/expiry
+```
+
+Example:
+
+```text
+broach@cresa.com
+  ✓ Graph: Valid, expires 2026-06-15 21:25:06 UTC
+broach@cresa.email
+  ✓ Graph: Refreshed, expires 2026-06-15 22:40:11 UTC
+```
+
+`--api both` mints both a Graph token (`{id}_access_token.json`) and an Outlook token (`{id}_outlook_access_token.json`) off the shared `{id}_refresh_only.txt`. Color is zero-dependency ANSI, auto-disabled when stdout is not a TTY or `NO_COLOR` is set (`MICROSOFT_MCP_FORCE_COLOR=1` to force).
+
+(Also available as a standalone `microsoft-mcp-auth <cmd>` command.)
+
 ### Response Shaping
 
 Use the shaping parameters on the individual tools for raw payload control. Use the code-mode surface when you need orchestration and local reduction after the server has already trimmed the response.

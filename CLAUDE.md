@@ -79,6 +79,13 @@ uvx ruff check --fix --unsafe-fixes .
   - Exposed two ways: standalone `microsoft-mcp-signatures <cmd>` console script and `microsoft-mcp signatures <cmd>` subcommand on the main entry point. `server.main()` dispatches `argv[0] == "signatures"` to the CLI before any Graph imports.
   - Subcommands: `list`, `show`, `set`, `edit`, `rm`, `path`, `dir`. `set` accepts `--from-file`, `--stdin`, or `--editor` ($VISUAL > $EDITOR > vi).
 
+- **`auth_cli.py`** - CLI for refreshing/inspecting MSAL tokens (MSAL only). Mirrors `outlook auth refresh`.
+  - Exposed two ways: standalone `microsoft-mcp-auth <cmd>` console script and `microsoft-mcp auth <cmd>` subcommand on the main entry point (mirroring the signatures CLI). `auth_refresh.py` is now a thin backward-compat shim over this module.
+  - Subcommands: `auth refresh [email] [--api graph|outlook|both] [--force] [--json]`, `auth verify [--live] [--json]`, `auth status [--json]` (read-only, no network), `auth list [--json]`, `auth test [--json]` (live Graph `/me`), `auth doctor [--json]` (diagnose perms/dups/expiry).
+  - Zero-dependency ANSI color, auto-disabled when stdout is not a TTY or `NO_COLOR` is set (`MICROSOFT_MCP_FORCE_COLOR=1` to force).
+
+- **Dual Graph/Outlook tokens.** `MSALRefreshTokenAuth(api_type="outlook")` writes `{id}_outlook_access_token.json` using `outlook.office365.com/.default` and the SHARED `{id}_refresh_only.txt` (Graph tokens stay in `{id}_access_token.json`). `auth refresh --api=both` mints both off the one refresh token.
+
 - **`server.py`** - MCP server entry point, validates `MICROSOFT_MCP_CLIENT_ID`
 
 ### Key Patterns
@@ -214,7 +221,7 @@ This repo ships a shared `.claude/` so every collaborator gets the same tooling:
 
 - `.claude/settings.json` — permissions allowlist, PostToolUse ruff hook, status line, PostCompact reminder. Committed.
 - `.claude/settings.local.json` — per-user overrides. Gitignored.
-- `.claude/commands/` — `/test`, `/lint`, `/format`, `/run`, `/auth`, `/auth-refresh`, `/auth-verify`, `/commit-push-pr`, `/techdebt`, `/bridge-regen`.
+- `.claude/commands/` — `/test`, `/lint`, `/format`, `/run`, `/auth`, `/auth-refresh`, `/auth-verify`, `/auth-status`, `/commit-push-pr`, `/techdebt`, `/bridge-regen`.
 - `.claude/agents/` — `test-writer` (haiku), `code-simplifier` (haiku), `doc-sync` (haiku), `graph-reviewer` (sonnet).
 - `.claude/scripts/` — hook and statusline helpers (bash + jq).
 

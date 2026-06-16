@@ -130,7 +130,34 @@ def test_event_populates_starts_in_minutes_1_to_2_hours():
     items = tools_mod._events_to_inbox_items(raw)
     assert items[0].starts_in_minutes is not None
     assert 60 < items[0].starts_in_minutes <= 120
-    assert _compute_score(items[0]) == 5.0
+    # 60 < t <= 120 minutes -> proximity bucket 8.0
+    assert _compute_score(items[0]) == 8.0
+
+
+def test_event_within_7_days_still_scores_above_zero():
+    """Regression: prior version capped proximity at 120 min and dropped to 0."""
+    raw = [
+        {
+            "id": "evt-3d",
+            "subject": "Mid-week sync",
+            "start": {"dateTime": _future_iso(3 * 24 * 60)},  # 3 days out
+        }
+    ]
+    items = tools_mod._events_to_inbox_items(raw)
+    score = _compute_score(items[0])
+    assert 0 < score < 3.0  # decays from 3.0 -> 0 across 1d..7d
+
+
+def test_event_beyond_7_days_scores_zero():
+    raw = [
+        {
+            "id": "evt-far",
+            "subject": "Quarterly review",
+            "start": {"dateTime": _future_iso(8 * 24 * 60)},
+        }
+    ]
+    items = tools_mod._events_to_inbox_items(raw)
+    assert _compute_score(items[0]) == 0.0
 
 
 def test_past_events_have_none_starts_in_minutes():
@@ -204,30 +231,306 @@ def test_human_sender_not_newsletter():
     assert items[0].is_newsletter is False
 
 
-def test_mentioned_signal_fires_when_mentionspreview_present():
-    raw = [
-        {
-            "id": "m-ment",
-            "subject": "FYI",
-            "isRead": True,
-            "mentionsPreview": {"isMentioned": True},
-        }
-    ]
-    items = tools_mod._emails_to_inbox_items(raw)
-    assert items[0].mentioned is True
-    # mentioned (+15) only, not unread
-    assert _compute_score(items[0]) == 15.0
+def test_mentioned_field_disabled_pending_replacement_signal():
+    """`mentionsPreview` is not selectable on Graph v1.0 for our tenants.
 
-
-def test_not_mentioned_when_field_absent_or_false():
+    The previous behavior caused the whole list_inbox_items call to return
+    zero emails (see mcp-tool-responses/v1/audit/inbox-triage). Field is
+    now always False until a replacement mention signal is implemented.
+    """
     raw = [
-        {"id": "m-nm1", "subject": "a", "isRead": True},
+        {"id": "m-1", "subject": "a", "isRead": True},
         {
-            "id": "m-nm2",
+            "id": "m-2",
             "subject": "b",
             "isRead": True,
-            "mentionsPreview": {"isMentioned": False},
+            "mentionsPreview": {"isMentioned": True},
         },
     ]
     items = tools_mod._emails_to_inbox_items(raw)
     assert all(not i.mentioned for i in items)
+
+
+def test_direct_to_boosts_score_above_cc_only(monkeypatch):
+    monkeypatch.setenv("MICROSOFT_MCP_ACCOUNT_ID", "me@example.com")
+    raw_direct = [
+        {
+            "id": "m-d",
+            "subject": "Direct",
+            "isRead": False,
+            "toRecipients": [
+                {"emailAddress": {"address": "me@example.com"}},
+            ],
+        }
+    ]
+    raw_cc = [
+        {
+            "id": "m-cc",
+            "subject": "FYI cc",
+            "isRead": False,
+            "toRecipients": [
+                {"emailAddress": {"address": "lead@example.com"}},
+            ],
+            "ccRecipients": [
+                {"emailAddress": {"address": "me@example.com"}},
+            ],
+        }
+    ]
+    direct_item = tools_mod._emails_to_inbox_items(raw_direct)[0]
+    cc_item = tools_mod._emails_to_inbox_items(raw_cc)[0]
+
+    assert direct_item.direct_to is True
+    assert direct_item.on_cc is False
+    assert cc_item.direct_to is False
+    assert cc_item.on_cc is True
+
+    # direct (unread 10 + direct 5 = 15) > cc-only (unread 10 - cc 5 = 5)
+    assert _compute_score(direct_item) == 15.0
+    assert _compute_score(cc_item) == 5.0
+
+
+_BOUNCE_TRUE_POSITIVES = [
+    # subject prefixes seen in live triage + canonical MTA forms
+    {
+        "id": "b-1",
+        "subject": "[Postmaster] Email Delivery Failure",
+        "from": {"emailAddress": {"address": "postmaster@cresa.com"}},
+    },
+    {
+        "id": "b-2",
+        "subject": "[Postmaster] Messages on hold for broach@cresa.com",
+        "from": {"emailAddress": {"address": "postmaster@cresa.com"}},
+    },
+    {
+        "id": "b-3",
+        "subject": "Undeliverable: oc office ti",
+        "from": {"emailAddress": {"address": "cai.svcPOSTMASTER@coxautoinc.com"}},
+    },
+    {
+        "id": "b-4",
+        "subject": "Undeliverable: $1.08 otay mesa",
+        "from": {"emailAddress": {"address": "postmaster@morfurniture.com"}},
+    },
+    {
+        "id": "b-5",
+        "subject": "Mail Delivery Failure",
+        "from": {"emailAddress": {"address": "MAILER-DAEMON@example.org"}},
+    },
+    {
+        "id": "b-6",
+        "subject": "Delivery Status Notification (Failure)",
+        "from": {"emailAddress": {"address": "mailer-daemon@googlemail.com"}},
+    },
+    {
+        "id": "b-7",
+        "subject": "Undelivered Mail Returned to Sender",
+        "from": {"emailAddress": {"address": "postmaster@mailserver.local"}},
+    },
+    {
+        "id": "b-8",
+        "subject": "Failure Notice",
+        "from": {"emailAddress": {"address": "MAILER-DAEMON@yahoo.com"}},
+    },
+]
+
+
+_BOUNCE_TRUE_NEGATIVES = [
+    # Real human/system mail that must NOT be flagged.
+    {
+        "name": "human conversation",
+        "raw": {
+            "id": "n-1",
+            "subject": "Re: Q3 plan review",
+            "from": {"emailAddress": {"address": "alice@acme.com"}},
+        },
+    },
+    {
+        "name": "newsletter with 'delivery' in subject",
+        "raw": {
+            "id": "n-2",
+            "subject": "Same-day delivery now in your area!",
+            "from": {"emailAddress": {"address": "marketing@retailer.com"}},
+        },
+    },
+    {
+        "name": "postmaster local-part but normal subject",
+        "raw": {
+            "id": "n-3",
+            "subject": "Weekly DNS zone change request",
+            "from": {"emailAddress": {"address": "postmaster@cresa.com"}},
+        },
+    },
+    {
+        "name": "DSN-style subject but human sender",
+        "raw": {
+            "id": "n-4",
+            "subject": "Undeliverable: please reschedule",
+            "from": {"emailAddress": {"address": "bob@vendor.com"}},
+        },
+    },
+    {
+        "name": "subject contains 'Failure Notice' deep inside, not at start",
+        "raw": {
+            "id": "n-5",
+            "subject": "Action required after our Failure Notice last quarter",
+            "from": {"emailAddress": {"address": "postmaster@cresa.com"}},
+        },
+    },
+    {
+        "name": "missing from field",
+        "raw": {
+            "id": "n-6",
+            "subject": "Undeliverable: oc office ti",
+        },
+    },
+    {
+        "name": "empty subject with postmaster sender",
+        "raw": {
+            "id": "n-7",
+            "subject": "",
+            "from": {"emailAddress": {"address": "postmaster@cresa.com"}},
+        },
+    },
+]
+
+
+def test_is_bounce_detects_canonical_dsn_messages():
+    """All known DSN/NDR shapes must be flagged."""
+    items = tools_mod._emails_to_inbox_items(_BOUNCE_TRUE_POSITIVES)
+    for raw, item in zip(_BOUNCE_TRUE_POSITIVES, items):
+        assert item.is_bounce is True, (
+            f"missed bounce: subject={raw['subject']!r} from={raw['from']!r}"
+        )
+
+
+def test_is_bounce_does_not_catch_legitimate_mail():
+    """Strict AND logic — neither sender pattern alone nor subject pattern alone is enough."""
+    raws = [case["raw"] for case in _BOUNCE_TRUE_NEGATIVES]
+    items = tools_mod._emails_to_inbox_items(raws)
+    for case, item in zip(_BOUNCE_TRUE_NEGATIVES, items):
+        assert item.is_bounce is False, (
+            f"false positive on case '{case['name']}': subject="
+            f"{case['raw'].get('subject')!r} from="
+            f"{case['raw'].get('from')!r}"
+        )
+
+
+def test_bounce_action_hints_are_delete_only():
+    raw = _BOUNCE_TRUE_POSITIVES[0]
+    item = tools_mod._emails_to_inbox_items([raw])[0]
+    assert item.action_hints == ["delete"]
+
+
+def test_bounce_score_sinks_below_human_mail(monkeypatch):
+    monkeypatch.setenv("MICROSOFT_MCP_ACCOUNT_ID", "me@example.com")
+    bounce_raw = {
+        "id": "b-rank",
+        "subject": "[Postmaster] Email Delivery Failure",
+        "isRead": False,
+        "from": {"emailAddress": {"address": "postmaster@cresa.com"}},
+        "toRecipients": [{"emailAddress": {"address": "me@example.com"}}],
+        "hasAttachments": True,
+    }
+    human_raw = {
+        "id": "h-rank",
+        "subject": "Re: contract",
+        "isRead": False,
+        "from": {"emailAddress": {"address": "alice@acme.com"}},
+        "toRecipients": [{"emailAddress": {"address": "me@example.com"}}],
+    }
+    items = tools_mod._emails_to_inbox_items([bounce_raw, human_raw])
+    ranked = rank_items(items)
+    # Human mail must come first; bounce sinks below zero.
+    assert ranked[0].id == "h-rank"
+    assert ranked[1].id == "b-rank"
+    assert ranked[1].score < 0
+    assert "bounce" in ranked[1].reason
+
+
+def test_bcc_only_penalised_more_than_cc(monkeypatch):
+    monkeypatch.setenv("MICROSOFT_MCP_ACCOUNT_ID", "me@example.com")
+    raw_bcc = [
+        {
+            "id": "m-bcc",
+            "subject": "Quiet copy",
+            "isRead": False,
+            "toRecipients": [
+                {"emailAddress": {"address": "lead@example.com"}},
+            ],
+            "bccRecipients": [
+                {"emailAddress": {"address": "me@example.com"}},
+            ],
+        }
+    ]
+    item = tools_mod._emails_to_inbox_items(raw_bcc)[0]
+    assert item.on_bcc is True
+    # unread 10 - bcc 8 = 2
+    assert _compute_score(item) == 2.0
+
+
+def test_action_hints_include_reply_when_direct_unread(monkeypatch):
+    monkeypatch.setenv("MICROSOFT_MCP_ACCOUNT_ID", "me@example.com")
+    raw = [
+        {
+            "id": "m-r",
+            "subject": "Need answer",
+            "isRead": False,
+            "toRecipients": [
+                {"emailAddress": {"address": "me@example.com"}},
+            ],
+        }
+    ]
+    item = tools_mod._emails_to_inbox_items(raw)[0]
+    assert "reply" in item.action_hints
+
+
+def test_action_hints_newsletter_says_archive_unsubscribe():
+    raw = [
+        {
+            "id": "m-news",
+            "subject": "Weekly digest",
+            "isRead": False,
+            "from": {
+                "emailAddress": {"address": "noreply@substack.com", "name": "Substack"}
+            },
+        }
+    ]
+    item = tools_mod._emails_to_inbox_items(raw)[0]
+    assert item.action_hints == ["archive", "unsubscribe"]
+
+
+def test_reason_string_populated_after_ranking():
+    item = InboxItem(
+        id="m1",
+        kind="email",
+        title="x",
+        unread=True,
+        flagged=True,
+    )
+    ranked = rank_items([item])
+    assert "unread" in ranked[0].reason
+    assert "flagged" in ranked[0].reason
+
+
+def test_to_dict_aliases_sender_from_first_participant():
+    item = InboxItem(
+        id="m1",
+        kind="email",
+        title="x",
+        participants=["Alice <a@example.com>"],
+    )
+    d = item.to_dict()
+    assert d["sender"] == "Alice <a@example.com>"
+
+
+def test_to_dict_emits_cc_and_bcc_when_present():
+    item = InboxItem(
+        id="m1",
+        kind="email",
+        title="x",
+        cc=["Bob <b@example.com>"],
+        bcc=["Carol <c@example.com>"],
+    )
+    d = item.to_dict()
+    assert d["cc"] == ["Bob <b@example.com>"]
+    assert d["bcc"] == ["Carol <c@example.com>"]

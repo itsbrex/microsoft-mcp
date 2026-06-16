@@ -125,6 +125,26 @@ def _clean_body_text(text: str) -> str:
     return text.strip()
 
 
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_HTML_WS_RE = re.compile(r"[\s ]+")
+
+
+def _html_to_text(html: str) -> str:
+    """Best-effort HTML -> plain text. Used when bodyPreview is unavailable."""
+    if not html:
+        return ""
+    text = _HTML_TAG_RE.sub(" ", html)
+    text = (
+        text.replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", '"')
+        .replace("&#39;", "'")
+    )
+    return _HTML_WS_RE.sub(" ", text).strip()
+
+
 def _classify_email_address(addr: str) -> tuple[str, bool]:
     if _EXCHANGE_DN_RE.match(addr):
         return addr, False
@@ -230,10 +250,15 @@ def shape_event_detail(raw: dict[str, Any]) -> dict[str, Any]:
 
     body = raw.get("body")
     if body:
+        content = body.get("content", "")
         shaped["body"] = {
             "contentType": body.get("contentType", "text"),
-            "content": body.get("content", ""),
+            "content": content,
         }
+        snippet_source = raw.get("bodyPreview") or _html_to_text(content)
+        snippet = _clean_body_text(snippet_source)[:200]
+        if snippet:
+            shaped["snippet"] = snippet
 
     if raw.get("recurrence"):
         shaped["recurrence"] = raw["recurrence"]

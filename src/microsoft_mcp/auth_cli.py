@@ -103,6 +103,10 @@ def _print_json(payload: Any) -> None:
 # Result rendering
 
 
+def _api_label(api_type: str) -> str:
+    return "Outlook" if api_type == "outlook" else "Graph"
+
+
 def _print_refresh_results(
     results: list[dict[str, Any]], api_label: str = "Graph"
 ) -> None:
@@ -162,11 +166,13 @@ def _cmd_refresh(args: argparse.Namespace) -> int:
     if args.email:
         from .auth_msal import refresh_account
 
-        result = refresh_account(identifier=args.email, **env)
+        result = refresh_account(identifier=args.email, api_type=args.api, **env)
         if args.json:
             _print_json(result)
         else:
-            _print_refresh_results([result])
+            _print_refresh_results(
+                [result], api_label=_api_label(result.get("api_type", args.api))
+            )
         if result.get("status") == "failed":
             return 1
         if result.get("status") == "missing":
@@ -175,11 +181,14 @@ def _cmd_refresh(args: argparse.Namespace) -> int:
 
     from .auth_msal import refresh_all_accounts
 
-    results = refresh_all_accounts(**env)
+    results = refresh_all_accounts(api_type=args.api, **env)
     if args.json:
         _print_json(results)
     else:
-        _print_refresh_results(results)
+        for r in results:
+            _print_refresh_results(
+                [r], api_label=_api_label(r.get("api_type", "graph"))
+            )
     return 1 if any(r.get("status") == "failed" for r in results) else 0
 
 
@@ -425,6 +434,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="clear EMAIL's tokens and re-run device-code flow",
     )
     p_refresh.add_argument("--json", action="store_true")
+    p_refresh.add_argument(
+        "--api",
+        choices=["graph", "outlook", "both"],
+        default="graph",
+        help="which access token(s) to refresh (default: graph)",
+    )
     p_refresh.set_defaults(func=_cmd_refresh)
 
     p_verify = sub.add_parser(

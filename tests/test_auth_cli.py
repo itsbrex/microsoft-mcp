@@ -215,3 +215,57 @@ def test_auth_test_reports_failure(monkeypatch, tmp_path, capsys):
     out = capsys.readouterr().out
     assert rc == 1
     assert "401" in out
+
+
+def test_refresh_api_outlook_labels_output(monkeypatch, tmp_path, capsys):
+    _msal_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        "microsoft_mcp.auth_msal.refresh_all_accounts",
+        lambda **kw: [
+            {
+                "identifier": TEST_EMAIL,
+                "status": "refreshed",
+                "expires_at": "2026-06-15T22:00:00Z",
+                "error": None,
+                "api_type": kw.get("api_type", "graph"),
+            }
+        ],
+    )
+    rc = auth_cli.main(["refresh", "--api", "outlook"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Outlook: Refreshed" in out
+
+
+def test_refresh_api_both_groups_by_label(monkeypatch, tmp_path, capsys):
+    _msal_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        "microsoft_mcp.auth_msal.refresh_all_accounts",
+        lambda **kw: [
+            {
+                "identifier": TEST_EMAIL,
+                "status": "valid",
+                "expires_at": "2026-06-15T22:00:00Z",
+                "error": None,
+                "api_type": "graph",
+            },
+            {
+                "identifier": TEST_EMAIL,
+                "status": "refreshed",
+                "expires_at": "2026-06-15T22:30:00Z",
+                "error": None,
+                "api_type": "outlook",
+            },
+        ],
+    )
+    rc = auth_cli.main(["refresh", "--api", "both"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Graph: Valid" in out
+    assert "Outlook: Refreshed" in out
+
+
+def test_refresh_api_invalid_rejected(monkeypatch, tmp_path):
+    _msal_env(monkeypatch, tmp_path)
+    with pytest.raises(SystemExit):
+        auth_cli.main(["refresh", "--api", "bogus"])

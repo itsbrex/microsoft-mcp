@@ -230,3 +230,33 @@ def test_toggle_inbox_rule_false_to_true(mock_req):
     patch_kwargs = mock_req.call_args_list[1][1]
     assert patch_kwargs["json"] == {"isEnabled": True}
     assert out == {"rule_id": "r6", "is_enabled": True}
+
+
+# ---------------------------------------------------------------------------
+# reorder_inbox_rules
+# ---------------------------------------------------------------------------
+
+
+@patch("src.microsoft_mcp.tools.graph.request")
+def test_reorder_inbox_rules(mock_req):
+    from src.microsoft_mcp.tools import reorder_inbox_rules
+
+    mock_req.return_value = {}
+    out = reorder_inbox_rules.fn(rule_ids_in_order=["rB", "rA"])
+
+    assert mock_req.call_count == 2
+    call0_args, call0_kwargs = mock_req.call_args_list[0]
+    call1_args, call1_kwargs = mock_req.call_args_list[1]
+
+    assert call0_args[0] == "PATCH"
+    assert "rB" in call0_args[1]
+    assert call0_kwargs["json"] == {"sequence": 1}
+
+    assert call1_args[0] == "PATCH"
+    assert "rA" in call1_args[1]
+    assert call1_kwargs["json"] == {"sequence": 2}
+
+    assert out == [
+        {"rule_id": "rB", "sequence": 1},
+        {"rule_id": "rA", "sequence": 2},
+    ]

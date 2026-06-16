@@ -1913,6 +1913,35 @@ def toggle_inbox_rule(rule_id: str) -> dict[str, Any]:
 
 
 @mcp.tool
+def reorder_inbox_rules(rule_ids_in_order: list[str]) -> list[dict]:
+    """Reorder Outlook inbox rules by assigning each a new sequence number.
+
+    Iterates over *rule_ids_in_order* and PATCHes sequence=index+1 for each
+    rule, so the first entry becomes sequence 1, the second sequence 2, etc.
+
+    Args:
+        rule_ids_in_order: Rule IDs in the desired priority order (first = highest priority).
+
+    Returns:
+        List of {"rule_id": <id>, "sequence": <int>} for each rule patched.
+    """
+    logger.info("reorder_inbox_rules called: %d rules", len(rule_ids_in_order))
+    try:
+        results = []
+        for seq, rid in enumerate(rule_ids_in_order, start=1):
+            graph.request(
+                "PATCH",
+                f"/me/mailFolders/inbox/messageRules/{rid}",
+                json={"sequence": seq},
+            )
+            results.append({"rule_id": rid, "sequence": seq})
+        return results
+    except Exception as e:
+        logger.error("reorder_inbox_rules failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
 def list_emails(
     folder: str = "inbox",
     limit: int = 10,

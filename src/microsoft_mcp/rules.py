@@ -9,6 +9,7 @@ summarizes rules for display, and converts to/from YAML templates.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 RULE_LIST_FIELDS = "id,displayName,sequence,isEnabled,conditions,actions"
@@ -182,3 +183,176 @@ def build_rule_payload(
     if actions:
         payload["actions"] = actions
     return payload
+
+
+# ---------------------------------------------------------------------------
+# YAML template ⇄ Graph payload converters
+# ---------------------------------------------------------------------------
+
+_IMPORTANCE_VALUES = {"low", "normal", "high"}
+
+
+def template_to_rule_payload(
+    tpl: dict[str, Any],
+    folder_resolver: Callable[[str], str] | None = None,
+) -> dict[str, Any]:
+    """Convert a snake_case YAML template dict to a Graph rule payload.
+
+    Delegates to :func:`build_rule_payload` so all camel-case mapping lives
+    in one place.  If *folder_resolver* is provided, ``move_to`` / ``copy_to``
+    folder names are resolved to folder IDs before being passed through.
+    """
+    conds: dict[str, Any] = tpl.get("conditions") or {}
+    acts: dict[str, Any] = tpl.get("actions") or {}
+
+    def _resolve(name: str) -> str:
+        return folder_resolver(name) if folder_resolver else name
+
+    move_to = acts.get("move_to")
+    copy_to = acts.get("copy_to")
+
+    return build_rule_payload(
+        display_name=tpl["name"],
+        sequence=tpl.get("sequence", 1),
+        is_enabled=tpl.get("enabled", True),
+        # conditions
+        sender_contains=conds.get("sender_contains"),
+        subject_contains=conds.get("subject_contains"),
+        body_contains=conds.get("body_contains"),
+        from_addresses=conds.get("from_addresses"),
+        has_attachments=conds.get("has_attachments"),
+        importance=conds.get("importance"),
+        # actions
+        move_to_folder=_resolve(move_to) if move_to else None,
+        copy_to_folder=_resolve(copy_to) if copy_to else None,
+        assign_categories=acts.get("assign_categories"),
+        mark_as_read=acts.get("mark_as_read"),
+        mark_importance=acts.get("mark_importance"),
+        forward_to=acts.get("forward_to"),
+        delete=acts.get("delete"),
+        stop_processing_rules=acts.get("stop_processing"),
+    )
+
+
+def rule_to_template(
+    rule: dict[str, Any],
+    folder_namer: Callable[[str], str] | None = None,
+) -> dict[str, Any]:
+    """Convert a Graph message rule dict to a snake_case template dict.
+
+    Inverse of :func:`template_to_rule_payload`.  If *folder_namer* is
+    provided, folder IDs in ``moveToFolder`` / ``copyToFolder`` are resolved
+    to human-readable names.
+    """
+    conds_raw: dict[str, Any] = rule.get("conditions") or {}
+    acts_raw: dict[str, Any] = rule.get("actions") or {}
+
+    def _name(fid: str) -> str:
+        return folder_namer(fid) if folder_namer else fid
+
+    conds: dict[str, Any] = {}
+    if conds_raw.get("senderContains"):
+        conds["sender_contains"] = conds_raw["senderContains"]
+    if conds_raw.get("subjectContains"):
+        conds["subject_contains"] = conds_raw["subjectContains"]
+    if conds_raw.get("bodyContains"):
+        conds["body_contains"] = conds_raw["bodyContains"]
+    if conds_raw.get("fromAddresses"):
+        conds["from_addresses"] = [
+            (r.get("emailAddress", {}).get("address") or "")
+            for r in conds_raw["fromAddresses"]
+        ]
+    if conds_raw.get("hasAttachments") is not None:
+        conds["has_attachments"] = conds_raw["hasAttachments"]
+    if conds_raw.get("importance"):
+        conds["importance"] = conds_raw["importance"]
+
+    acts: dict[str, Any] = {}
+    if acts_raw.get("moveToFolder"):
+        acts["move_to"] = _name(acts_raw["moveToFolder"])
+    if acts_raw.get("copyToFolder"):
+        acts["copy_to"] = _name(acts_raw["copyToFolder"])
+    if acts_raw.get("assignCategories"):
+        acts["assign_categories"] = acts_raw["assignCategories"]
+    if acts_raw.get("markAsRead") is not None:
+        acts["mark_as_read"] = acts_raw["markAsRead"]
+    if acts_raw.get("markImportance"):
+        acts["mark_importance"] = acts_raw["markImportance"]
+    if acts_raw.get("forwardTo"):
+        acts["forward_to"] = [
+            (r.get("emailAddress", {}).get("address") or "")
+            for r in acts_raw["forwardTo"]
+        ]
+    if acts_raw.get("delete") is not None:
+        acts["delete"] = acts_raw["delete"]
+    if acts_raw.get("stopProcessingRules") is not None:
+        acts["stop_processing"] = acts_raw["stopProcessingRules"]
+
+    tpl: dict[str, Any] = {
+        "name": rule.get("displayName", ""),
+        "enabled": rule.get("isEnabled", True),
+    }
+    if rule.get("sequence") is not None:
+        tpl["sequence"] = rule["sequence"]
+    if conds:
+        tpl["conditions"] = conds
+    if acts:
+        tpl["actions"] = acts
+    return tpl
+
+
+def validate_template(tpl: dict[str, Any]) -> list[str]:
+    """Validate a snake_case rule template dict.
+
+    Returns a list of human-readable error strings; an empty list means valid.
+    """
+    errors: list[str] = []
+
+    if not tpl.get("name"):
+        errors.append("'name' is required")
+
+    conds: dict[str, Any] = tpl.get("conditions") or {}
+    acts: dict[str, Any] = tpl.get("actions") or {}
+
+    # At least one condition key with a non-empty/non-false value
+    has_condition = any(
+        (v is not False and v is not None and v != [] and v != {})
+        for v in conds.values()
+    )
+    if not has_condition:
+        errors.append("at least one condition is required")
+
+    # At least one real action OR stop_processing: true
+    stop = acts.get("stop_processing")
+    has_action = stop is True or any(
+        k != "stop_processing"
+        and v is not None
+        and v is not False
+        and v != []
+        and v != {}
+        for k, v in acts.items()
+    )
+    if not has_action:
+        errors.append("at least one action (or stop_processing: true) is required")
+
+    if "enabled" in tpl and not isinstance(tpl["enabled"], bool):
+        errors.append("'enabled' must be a boolean")
+
+    if "sequence" in tpl and not isinstance(tpl["sequence"], int):
+        errors.append("'sequence' must be an integer")
+
+    # importance in conditions
+    cond_imp = conds.get("importance")
+    if cond_imp is not None and str(cond_imp).lower() not in _IMPORTANCE_VALUES:
+        errors.append(
+            f"conditions.importance must be one of {sorted(_IMPORTANCE_VALUES)}, got {cond_imp!r}"
+        )
+
+    # mark_importance in actions
+    act_imp = acts.get("mark_importance")
+    if act_imp is not None and str(act_imp).lower() not in _IMPORTANCE_VALUES:
+        errors.append(
+            f"actions.mark_importance must be one of {sorted(_IMPORTANCE_VALUES)}, got {act_imp!r}"
+        )
+
+    return errors

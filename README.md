@@ -269,6 +269,55 @@ If `MICROSOFT_MCP_TENANT_ID` is not set and `MICROSOFT_MCP_ACCOUNT_ID` matches a
 
 Use the shaping parameters on the individual tools for raw payload control. Use the code-mode surface when you need orchestration and local reduction after the server has already trimmed the response.
 
+## Email Signatures
+
+Microsoft Graph does not expose Outlook signatures (no `/me/signature`, not in `mailboxSettings`, no draft flag), so this server keeps signatures as local plain-text files and appends them to draft bodies before they are POSTed/PATCHed to Graph.
+
+**Where they live:** `~/.config/microsoft-mcp/signatures/<account-slug>-<name>.txt`. Optional `.html` siblings (e.g., `brian-work-default.html`) are used verbatim for HTML drafts; otherwise the `.txt` is auto-converted (`\n` → `<br>`).
+
+**Account slug:** override with `MICROSOFT_MCP_SIGNATURE_ACCOUNT`, otherwise derived by slugifying `MICROSOFT_MCP_ACCOUNT_ID` (`brian@work.com` → `brian-work-com`).
+
+**CLI** — two equivalent entry points:
+
+```bash
+microsoft-mcp-signatures list
+microsoft-mcp-signatures set    default --from-file ./brian.txt
+microsoft-mcp-signatures set    replies --editor                   # opens $EDITOR
+microsoft-mcp-signatures set    default --html --from-file ./brian.html
+microsoft-mcp-signatures show   default
+microsoft-mcp-signatures edit   replies
+microsoft-mcp-signatures rm     default --yes
+microsoft-mcp-signatures path   default                            # absolute path
+microsoft-mcp-signatures dir                                        # store directory
+microsoft-mcp-signatures list --account jp-work
+microsoft-mcp-signatures list --account "*"                        # all accounts
+
+# equivalent subcommand on the main entry point:
+microsoft-mcp signatures list
+```
+
+**Applying a signature to a draft:**
+
+```python
+# Explicit signature name
+create_email_draft(draft_type="new", to_recipients=[...], body="Hi", signature="default")
+
+# Suppress the env default for a single call
+create_email_draft(draft_type="reply", email_id="...", body="Thanks", signature="none")
+```
+
+**Env defaults** (each is optional):
+
+| Variable                              | Effect                                                                 |
+| ------------------------------------- | ---------------------------------------------------------------------- |
+| `MICROSOFT_MCP_DEFAULT_SIGNATURE`     | Name appended to new drafts when `signature=` is omitted.              |
+| `MICROSOFT_MCP_REPLY_SIGNATURE`       | Name appended to reply / reply_all drafts (falls back to default).     |
+| `MICROSOFT_MCP_SIGNATURES_DIR`        | Override the store directory.                                          |
+| `MICROSOFT_MCP_SIGNATURE_ACCOUNT`     | Override the account slug used in filenames.                           |
+| `MICROSOFT_MCP_SIGNATURE_RFC3676`     | `1` to use the RFC 3676 `-- ` delimiter; default is a blank line.      |
+
+Missing signature files do not fail the draft — the tool result simply includes a `signature_warning` field and the draft is created without a signature. The assistant can inspect (but never modify) signatures via the read-only `list_signatures` / `get_signature` MCP tools.
+
 ## UTCP Bridge Config Generator
 
 The repo includes a non-destructive converter that wraps an existing Claude Desktop `mcpServers` config into a UTCP code-mode bridge configuration.

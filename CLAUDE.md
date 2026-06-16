@@ -58,14 +58,26 @@ uvx ruff check --fix --unsafe-fixes .
   - Global auth instance via `set_auth_instance()`/`get_auth_instance()`
 
 - **`tools.py`** - FastMCP tool implementations (30+ tools)
-  - Account Management (5 tools): `list_accounts`, `set_active_account`, `get_active_account`, `authenticate_new_account`, `refresh_all_accounts`
+  - Account Management (8 tools): `list_accounts`, `set_active_account`, `get_active_account`, `authenticate_new_account`, `refresh_all_accounts`, `refresh_account`, `force_reauthenticate_account`, `verify_account_tokens`
   - Email (9 tools): list, get, send, reply, move, delete, attachments
   - Calendar (7 tools): events, availability, responses
   - Contacts (6 tools): CRUD + search
   - Files (6 tools): OneDrive operations
   - Teams (6 tools): chat and channel messages
+  - Signatures (2 read-only tools): `list_signatures`, `get_signature` — the assistant can inspect local plain-text signatures but cannot mutate them.
   - Search: unified search across all services with KQL support
   - Initializes global auth instance based on `MICROSOFT_MCP_AUTH_METHOD`
+
+- **`signatures.py`** - Local plain-text signature store
+  - Files live at `~/.config/microsoft-mcp/signatures/<account-slug>-<name>.txt` (override via `MICROSOFT_MCP_SIGNATURES_DIR`). Optional `.html` siblings used verbatim for HTML drafts; otherwise `.txt` is auto-converted (`\n` → `<br>\n`, wrapped in `<div class="signature">`).
+  - Microsoft Graph does not expose signature settings (no `/me/signature`, not in `mailboxSettings`, no "apply default signature" flag), so this module owns the workaround: `create_email_draft` and `update_email_draft` call `apply_signature` and append to the body before POST/PATCH.
+  - Account slug resolution: `MICROSOFT_MCP_SIGNATURE_ACCOUNT` if set, else slugify `MICROSOFT_MCP_ACCOUNT_ID` (lowercase, `@`/`.` → `-`, strip non-`[a-z0-9-]`, collapse repeated `-`).
+  - Injection on draft tools: pass `signature="name"` to apply, `signature="none"` to suppress an env default. With no arg, `MICROSOFT_MCP_REPLY_SIGNATURE` is used for reply/reply_all (falling back to `MICROSOFT_MCP_DEFAULT_SIGNATURE`); `MICROSOFT_MCP_DEFAULT_SIGNATURE` is used for new drafts. `update_email_draft` only applies a signature when `body` is supplied.
+  - Missing signature files do **not** fail the draft; the tool result includes a `signature_warning` field and the draft is created/updated without a signature.
+
+- **`signatures_cli.py`** - CLI for managing the local store
+  - Exposed two ways: standalone `microsoft-mcp-signatures <cmd>` console script and `microsoft-mcp signatures <cmd>` subcommand on the main entry point. `server.main()` dispatches `argv[0] == "signatures"` to the CLI before any Graph imports.
+  - Subcommands: `list`, `show`, `set`, `edit`, `rm`, `path`, `dir`. `set` accepts `--from-file`, `--stdin`, or `--editor` ($VISUAL > $EDITOR > vi).
 
 - **`server.py`** - MCP server entry point, validates `MICROSOFT_MCP_CLIENT_ID`
 
@@ -102,6 +114,13 @@ uvx ruff check --fix --unsafe-fixes .
 
 **Response Shaping:**
 - `MICROSOFT_MCP_RESPONSE_PROFILE` (optional) - `legacy` (default) or `assistant`. Controls response shaping for list/search tools. Individual tool calls can override via `response_profile` parameter.
+
+**Signatures (local plain-text store):**
+- `MICROSOFT_MCP_SIGNATURES_DIR` (optional) - signature directory (default `~/.config/microsoft-mcp/signatures/`).
+- `MICROSOFT_MCP_SIGNATURE_ACCOUNT` (optional) - account slug used in filenames; defaults to a slug derived from `MICROSOFT_MCP_ACCOUNT_ID`.
+- `MICROSOFT_MCP_DEFAULT_SIGNATURE` (optional) - signature name appended to new drafts when `create_email_draft` is called without an explicit `signature`. Used as a fallback for replies when `MICROSOFT_MCP_REPLY_SIGNATURE` is unset.
+- `MICROSOFT_MCP_REPLY_SIGNATURE` (optional) - signature name for reply/reply_all drafts.
+- `MICROSOFT_MCP_SIGNATURE_RFC3676` (optional) - `1` to use the RFC 3676 `-- ` sig delimiter; default is a blank line.
 
 ## MCP Configuration Format
 
@@ -180,6 +199,8 @@ For multiple Microsoft accounts, create separate server entries:
 
 Tests use `unittest.mock` for mocking Azure auth and HTTP responses. The `conftest.py` provides shared fixtures. Focus is on unit testing logic and integration between modules since FastMCP decorators make direct function testing complex.
 
+**Single-account test fixture policy.** Tests that write MSAL token files (`{email}_access_token.json`, `{email}_refresh_only.txt`) or exercise `refresh_all_accounts` MUST use only one account identifier per test, canonicalized to `broach@cresa.com` (declared as `TEST_EMAIL` at the top of each affected test module). Multi-account fixtures on disk caused real-world auth issues during `refresh_all_accounts`, so the supported pattern — and the only pattern exercised in tests — is single-account. Mismatch/drift tests still write only one token file; they vary the JWT `upn` claim inside that file to simulate misconfiguration, not the filename.
+
 ## Development Guidelines
 
 - Keep `IMPLEMENTATION.md` updated with any architectural changes
@@ -193,7 +214,7 @@ This repo ships a shared `.claude/` so every collaborator gets the same tooling:
 
 - `.claude/settings.json` — permissions allowlist, PostToolUse ruff hook, status line, PostCompact reminder. Committed.
 - `.claude/settings.local.json` — per-user overrides. Gitignored.
-- `.claude/commands/` — `/test`, `/lint`, `/format`, `/run`, `/auth`, `/commit-push-pr`, `/techdebt`, `/bridge-regen`.
+- `.claude/commands/` — `/test`, `/lint`, `/format`, `/run`, `/auth`, `/auth-refresh`, `/auth-verify`, `/commit-push-pr`, `/techdebt`, `/bridge-regen`.
 - `.claude/agents/` — `test-writer` (haiku), `code-simplifier` (haiku), `doc-sync` (haiku), `graph-reviewer` (sonnet).
 - `.claude/scripts/` — hook and statusline helpers (bash + jq).
 

@@ -2867,6 +2867,265 @@ def update_email_draft(
         raise
 
 
+def _create_reply_draft_impl(
+    *,
+    email_id: str,
+    action: str,
+    body: str,
+    signature: str | None,
+    response_profile: str,
+    tool_name: str,
+) -> dict[str, Any]:
+    """Shared implementation for reply_email_draft and reply_all_email_draft."""
+    logger.info(
+        "%s called: email_id=%s, signature=%s",
+        tool_name,
+        email_id,
+        signature,
+    )
+
+    try:
+        draft_type = "reply" if action == "createReply" else "reply_all"
+        raw: dict[str, Any] | None = graph.request(
+            "POST", f"/me/messages/{email_id}/{action}"
+        )
+
+        if not raw or not raw.get("id"):
+            raise ValueError("Draft could not be created")
+
+        if body:
+            signed_body, signature_applied, signature_warning = (
+                _apply_signature_to_body(
+                    body=body,
+                    body_content_type="HTML",
+                    signature=signature,
+                    draft_type=draft_type,
+                )
+            )
+            patch_payload: dict[str, Any] = {
+                "body": {"contentType": "HTML", "content": signed_body}
+            }
+            raw = _patch_email_message(raw["id"], patch_payload)
+            if not raw or not raw.get("id"):
+                raise ValueError("Draft could not be updated")
+        else:
+            signature_applied = None
+            signature_warning = None
+
+        profile = get_response_profile(response_profile)
+        if profile == "assistant":
+            draft_out: dict[str, Any] = {
+                "id": raw["id"],
+                "web_link": raw.get("webLink", ""),
+                "is_draft": raw.get("isDraft", True),
+            }
+        else:
+            draft_out = _shape_email_draft(raw)
+
+        result: dict[str, Any] = {
+            "status": "draft_created",
+            "draft_id": raw["id"],
+            "draft": draft_out,
+        }
+        if signature_applied is not None:
+            result["signature_applied"] = signature_applied
+        if signature_warning is not None:
+            result["signature_warning"] = signature_warning
+        return result
+    except Exception as e:
+        logger.error(
+            "%s failed: email_id=%s, error=%s",
+            tool_name,
+            email_id,
+            str(e),
+            exc_info=True,
+        )
+        raise
+
+
+@mcp.tool
+def reply_email_draft(
+    email_id: str,
+    body: str = "",
+    signature: str | None = None,
+    response_profile: str = "auto",
+) -> dict[str, Any]:
+    """Create a reply draft to an existing email message without sending it.
+
+    Uses Graph's ``createReply`` action to seed the draft with the original
+    message quoted inline. If ``body`` is supplied the draft body is replaced
+    (with optional signature) via a follow-up PATCH. The draft is never sent.
+
+    Args:
+        email_id: ID of the message to reply to.
+        body: Optional HTML body for the reply. When omitted the Graph-generated
+            quoted reply body is left unchanged.
+        signature: Optional local signature name. Pass ``"none"`` to suppress
+            the env-default signature. When omitted,
+            ``MICROSOFT_MCP_REPLY_SIGNATURE`` is used (falling back to
+            ``MICROSOFT_MCP_DEFAULT_SIGNATURE``).
+        response_profile: Response shaping profile (``"auto"``, ``"legacy"``,
+            or ``"assistant"``). ``"auto"`` defers to
+            ``MICROSOFT_MCP_RESPONSE_PROFILE``.
+
+    Returns:
+        ``{status, draft_id, draft}`` — the created draft message. Never sends.
+    """
+    return _create_reply_draft_impl(
+        email_id=email_id,
+        action="createReply",
+        body=body,
+        signature=signature,
+        response_profile=response_profile,
+        tool_name="reply_email_draft",
+    )
+
+
+@mcp.tool
+def reply_all_email_draft(
+    email_id: str,
+    body: str = "",
+    signature: str | None = None,
+    response_profile: str = "auto",
+) -> dict[str, Any]:
+    """Create a reply-all draft to an existing email thread without sending it.
+
+    Uses Graph's ``createReplyAll`` action to seed the draft with all original
+    recipients and the quoted message body. If ``body`` is supplied it replaces
+    the draft body (with optional signature) via a follow-up PATCH. The draft
+    is never sent.
+
+    Args:
+        email_id: ID of the message to reply-all to.
+        body: Optional HTML body for the reply-all. When omitted the
+            Graph-generated quoted reply body is left unchanged.
+        signature: Optional local signature name. Pass ``"none"`` to suppress
+            the env-default signature. When omitted,
+            ``MICROSOFT_MCP_REPLY_SIGNATURE`` is used (falling back to
+            ``MICROSOFT_MCP_DEFAULT_SIGNATURE``).
+        response_profile: Response shaping profile (``"auto"``, ``"legacy"``,
+            or ``"assistant"``). ``"auto"`` defers to
+            ``MICROSOFT_MCP_RESPONSE_PROFILE``.
+
+    Returns:
+        ``{status, draft_id, draft}`` — the created draft message. Never sends.
+    """
+    return _create_reply_draft_impl(
+        email_id=email_id,
+        action="createReplyAll",
+        body=body,
+        signature=signature,
+        response_profile=response_profile,
+        tool_name="reply_all_email_draft",
+    )
+
+
+@mcp.tool
+def forward_email_draft(
+    email_id: str,
+    to: list[str],
+    comment: str = "",
+    signature: str | None = None,
+    response_profile: str = "auto",
+) -> dict[str, Any]:
+    """Create a forward draft for an existing email message without sending it.
+
+    Uses Graph's ``createForward`` action to seed the draft, then PATCHes the
+    ``toRecipients`` and optionally the body (with optional signature). The
+    draft is never sent.
+
+    Args:
+        email_id: ID of the message to forward.
+        to: Non-empty list of recipient email addresses.
+        comment: Optional HTML comment/body to prepend. When omitted the
+            ``toRecipients`` patch is still applied so the forwarded draft has
+            the correct recipients.
+        signature: Optional local signature name. Pass ``"none"`` to suppress
+            the env-default signature. When omitted,
+            ``MICROSOFT_MCP_DEFAULT_SIGNATURE`` is used when ``comment`` is
+            supplied.
+        response_profile: Response shaping profile (``"auto"``, ``"legacy"``,
+            or ``"assistant"``). ``"auto"`` defers to
+            ``MICROSOFT_MCP_RESPONSE_PROFILE``.
+
+    Returns:
+        ``{status, draft_id, draft}`` — the created forward draft. Never sends.
+
+    Raises:
+        ValueError: If ``to`` is empty.
+    """
+    logger.info(
+        "forward_email_draft called: email_id=%s, to=%s, signature=%s",
+        email_id,
+        to,
+        signature,
+    )
+
+    try:
+        if not to:
+            raise ValueError(
+                "forward_email_draft requires at least one recipient in 'to'"
+            )
+
+        raw: dict[str, Any] | None = graph.request(
+            "POST", f"/me/messages/{email_id}/createForward"
+        )
+
+        if not raw or not raw.get("id"):
+            raise ValueError("Draft could not be created")
+
+        patch_payload: dict[str, Any] = {
+            "toRecipients": [{"emailAddress": {"address": addr}} for addr in to],
+        }
+
+        signature_applied = None
+        signature_warning = None
+
+        if comment:
+            signed_comment, signature_applied, signature_warning = (
+                _apply_signature_to_body(
+                    body=comment,
+                    body_content_type="HTML",
+                    signature=signature,
+                    draft_type="new",
+                )
+            )
+            patch_payload["body"] = {"contentType": "HTML", "content": signed_comment}
+
+        raw = _patch_email_message(raw["id"], patch_payload)
+        if not raw or not raw.get("id"):
+            raise ValueError("Draft could not be updated")
+
+        profile = get_response_profile(response_profile)
+        if profile == "assistant":
+            draft_out: dict[str, Any] = {
+                "id": raw["id"],
+                "web_link": raw.get("webLink", ""),
+                "is_draft": raw.get("isDraft", True),
+            }
+        else:
+            draft_out = _shape_email_draft(raw)
+
+        result: dict[str, Any] = {
+            "status": "draft_created",
+            "draft_id": raw["id"],
+            "draft": draft_out,
+        }
+        if signature_applied is not None:
+            result["signature_applied"] = signature_applied
+        if signature_warning is not None:
+            result["signature_warning"] = signature_warning
+        return result
+    except Exception as e:
+        logger.error(
+            "forward_email_draft failed: email_id=%s, error=%s",
+            email_id,
+            str(e),
+            exc_info=True,
+        )
+        raise
+
+
 @mcp.tool
 def list_signatures(account: str | None = None) -> list[dict[str, Any]]:
     """List local plain-text signatures available for use with draft tools.

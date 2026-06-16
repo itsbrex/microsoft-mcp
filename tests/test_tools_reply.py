@@ -334,3 +334,45 @@ def test_forward_email_draft_assistant_profile(mock_graph):
     assert result["draft"]["id"] == "d-fwd-4"
     assert "web_link" in result["draft"]
     assert result["draft"]["is_draft"] is True
+
+
+# ---------------------------------------------------------------------------
+# send_email_draft
+# ---------------------------------------------------------------------------
+
+
+@patch("src.microsoft_mcp.tools.graph")
+def test_send_email_draft_posts_to_send_endpoint(mock_graph):
+    from src.microsoft_mcp import tools
+
+    mock_graph.request.return_value = None  # Graph returns 202 No Content
+
+    tools.send_email_draft.fn(draft_id="d-send-1")
+
+    mock_graph.request.assert_called_once()
+    call_args = mock_graph.request.call_args
+    method = call_args.args[0]
+    path = call_args.args[1]
+    assert method == "POST"
+    assert path.endswith("/d-send-1/send")
+
+
+@patch("src.microsoft_mcp.tools.graph")
+def test_send_email_draft_returns_sent_shape(mock_graph):
+    from src.microsoft_mcp import tools
+
+    mock_graph.request.return_value = None
+
+    result = tools.send_email_draft.fn(draft_id="d-send-2")
+
+    assert result == {"status": "sent", "draft_id": "d-send-2"}
+
+
+@patch("src.microsoft_mcp.tools.graph")
+def test_send_email_draft_reraises_on_error(mock_graph):
+    from src.microsoft_mcp import tools
+
+    mock_graph.request.side_effect = RuntimeError("Graph 500")
+
+    with pytest.raises(RuntimeError, match="Graph 500"):
+        tools.send_email_draft.fn(draft_id="d-send-3")

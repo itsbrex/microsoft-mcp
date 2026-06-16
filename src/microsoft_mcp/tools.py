@@ -3127,6 +3127,40 @@ def forward_email_draft(
 
 
 @mcp.tool
+def send_email_draft(draft_id: str) -> dict[str, Any]:
+    """Send an existing draft message — the ONLY tool that puts mail on the wire.
+
+    This is the single, explicit send gate for the microsoft-mcp server. All
+    other tools (``create_email_draft``, ``reply_email_draft``,
+    ``reply_all_email_draft``, ``forward_email_draft``) only create or mutate
+    drafts and never transmit them. Call this tool when you are ready to
+    transmit a draft that was previously created by one of those tools.
+
+    Uses Graph's ``POST /me/messages/{draft_id}/send`` action (returns 202 No
+    Content on success).
+
+    Args:
+        draft_id: ID of the draft message to send (as returned in the
+            ``draft_id`` field from any of the draft-creating tools).
+
+    Returns:
+        ``{"status": "sent", "draft_id": draft_id}``
+    """
+    logger.info("send_email_draft called: draft_id=%s", draft_id)
+    try:
+        graph.request("POST", f"/me/messages/{draft_id}/send")
+        return {"status": "sent", "draft_id": draft_id}
+    except Exception as e:
+        logger.error(
+            "send_email_draft failed: draft_id=%s, error=%s",
+            draft_id,
+            str(e),
+            exc_info=True,
+        )
+        raise
+
+
+@mcp.tool
 def list_signatures(account: str | None = None) -> list[dict[str, Any]]:
     """List local plain-text signatures available for use with draft tools.
 

@@ -390,3 +390,171 @@ def test_builtin_followup_template_loads():
     tpl = te.load_template("email", "followup")
     assert tpl["name"] == "followup"
     assert tpl["html_template"]
+
+
+# ---------------------------------------------------------------------------
+# find_template_variables (task 7.2)
+# ---------------------------------------------------------------------------
+
+
+def test_find_vars_plain():
+    import microsoft_mcp.templates_engine as te
+
+    assert te.find_template_variables("Hi {{first_name}}, see {{company}}") == [
+        "first_name",
+        "company",
+    ]
+
+
+def test_find_vars_uniqueness_preserves_order():
+    import microsoft_mcp.templates_engine as te
+
+    result = te.find_template_variables("{{a}} and {{b}} and {{a}}")
+    assert result == ["a", "b"]
+
+
+def test_find_vars_html_encoded():
+    import microsoft_mcp.templates_engine as te
+
+    result = te.find_template_variables("&#123;&#123;name&#125;&#125;")
+    assert result == ["name"]
+
+
+def test_find_vars_html_encoded_decode_false():
+    import microsoft_mcp.templates_engine as te
+
+    # With decode_html=False, HTML-encoded vars are NOT detected
+    result = te.find_template_variables(
+        "&#123;&#123;name&#125;&#125;", decode_html=False
+    )
+    assert result == []
+
+
+def test_find_vars_empty_content():
+    import microsoft_mcp.templates_engine as te
+
+    assert te.find_template_variables("") == []
+    assert te.find_template_variables("no vars here") == []
+
+
+def test_find_vars_mixed_plain_and_encoded():
+    import microsoft_mcp.templates_engine as te
+
+    # Plain comes first, then HTML-encoded unique name
+    content = "{{first}} &#123;&#123;last&#125;&#125;"
+    result = te.find_template_variables(content)
+    assert result == ["first", "last"]
+
+
+# ---------------------------------------------------------------------------
+# substitute_variables (task 7.2)
+# ---------------------------------------------------------------------------
+
+
+def test_substitute_basic():
+    import microsoft_mcp.templates_engine as te
+
+    out = te.substitute_variables("Hi {{name}}", {"name": "John"})
+    assert out == "Hi John"
+
+
+def test_substitute_non_strict_leaves_unknown_intact():
+    import microsoft_mcp.templates_engine as te
+
+    out = te.substitute_variables("{{a}} and {{b}}", {"a": "X"}, strict=False)
+    assert out == "X and {{b}}"
+
+
+def test_substitute_strict_raises_on_missing():
+    import microsoft_mcp.templates_engine as te
+
+    with pytest.raises(te.VariableSubstitutionError, match="missing_var"):
+        te.substitute_variables("{{missing_var}}", {}, strict=True)
+
+
+def test_substitute_strict_raises_lists_all_missing():
+    import microsoft_mcp.templates_engine as te
+
+    with pytest.raises(te.VariableSubstitutionError) as exc_info:
+        te.substitute_variables("{{x}} {{y}}", {}, strict=True)
+    msg = str(exc_info.value)
+    assert "x" in msg
+    assert "y" in msg
+
+
+def test_substitute_html_encoded():
+    import microsoft_mcp.templates_engine as te
+
+    out = te.substitute_variables("&#123;&#123;name&#125;&#125;", {"name": "Alice"})
+    assert out == "Alice"
+
+
+def test_substitute_empty_content():
+    import microsoft_mcp.templates_engine as te
+
+    assert te.substitute_variables("", {"x": "y"}) == ""
+
+
+# ---------------------------------------------------------------------------
+# parse_recipients_csv (task 7.2)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_csv_basic(tmp_path):
+    import microsoft_mcp.templates_engine as te
+
+    csv_file = tmp_path / "recipients.csv"
+    csv_file.write_text(
+        "email,first_name,company\njohn@example.com,John,Acme\n", encoding="utf-8"
+    )
+
+    rows = te.parse_recipients_csv(str(csv_file))
+    assert len(rows) == 1
+    assert rows[0]["email"] == "john@example.com"
+    assert rows[0]["first_name"] == "John"
+    assert rows[0]["company"] == "Acme"
+
+
+def test_parse_csv_multiple_rows(tmp_path):
+    import microsoft_mcp.templates_engine as te
+
+    csv_file = tmp_path / "multi.csv"
+    csv_file.write_text(
+        "email,name\nalice@example.com,Alice\nbob@example.com,Bob\n",
+        encoding="utf-8",
+    )
+    rows = te.parse_recipients_csv(str(csv_file))
+    assert len(rows) == 2
+    assert rows[1]["name"] == "Bob"
+
+
+def test_parse_csv_utf8_sig(tmp_path):
+    import microsoft_mcp.templates_engine as te
+
+    csv_file = tmp_path / "bom.csv"
+    # utf-8-sig adds BOM at the start; header key must still be clean
+    csv_file.write_bytes("email,name\njane@example.com,Jane\n".encode("utf-8-sig"))
+
+    rows = te.parse_recipients_csv(str(csv_file))
+    assert len(rows) == 1
+    assert "email" in rows[0]
+    assert rows[0]["email"] == "jane@example.com"
+
+
+def test_parse_csv_file_not_found(tmp_path):
+    import microsoft_mcp.templates_engine as te
+
+    with pytest.raises(FileNotFoundError):
+        te.parse_recipients_csv(str(tmp_path / "nonexistent.csv"))
+
+
+def test_parse_csv_strips_whitespace(tmp_path):
+    import microsoft_mcp.templates_engine as te
+
+    csv_file = tmp_path / "spaces.csv"
+    csv_file.write_text(" email , name \n john@example.com , John \n", encoding="utf-8")
+
+    rows = te.parse_recipients_csv(str(csv_file))
+    assert "email" in rows[0]
+    assert rows[0]["email"] == "john@example.com"
+    assert rows[0]["name"] == "John"

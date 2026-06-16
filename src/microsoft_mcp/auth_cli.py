@@ -269,6 +269,67 @@ def _cmd_status(args: argparse.Namespace) -> int:
     return 0 if all_valid else 1
 
 
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    _require_msal()
+    from .auth_msal import verify_account_tokens
+
+    tokens_dir = (_env_kwargs()["tokens_dir"]) or _default_tokens_dir()
+    verify = {v["identifier"]: v for v in verify_account_tokens(tokens_dir=tokens_dir)}
+    health = _account_health(tokens_dir)
+
+    issues: list[str] = []
+    upn_to_ids: dict[str, list[str]] = {}
+
+    for r in health:
+        identifier = r["identifier"]
+        f = tokens_dir / f"{identifier}_access_token.json"
+        mode = _stat_mode(f)
+        if mode is not None and (mode & 0o077):
+            issues.append(
+                f"{identifier}: loose permissions on token file ({oct(mode)})"
+            )
+        if not r["has_refresh_token"]:
+            issues.append(f"{identifier}: missing refresh token (re-auth required)")
+        if not r["valid"]:
+            issues.append(f"{identifier}: access token expired")
+        v = verify.get(identifier, {})
+        if v and not v.get("match", True):
+            issues.append(
+                f"{identifier}: token JWT upn ({v.get('jwt_upn')}) does not match filename"
+            )
+        upn = (v.get("jwt_upn") or "").lower()
+        if upn:
+            upn_to_ids.setdefault(upn, []).append(identifier)
+
+    for upn, ids in upn_to_ids.items():
+        if len(ids) > 1:
+            issues.append(f"duplicate identity {upn} across files: {', '.join(ids)}")
+
+    if args.json:
+        _print_json({"issues": issues, "accounts": health})
+        return 1 if issues else 0
+
+    if not health:
+        print("No saved accounts found.")
+        return 0
+    if not issues:
+        print(_c(f"  ✓ OK — {len(health)} account(s), no issues found.", "green"))
+        return 0
+    print(_c(f"  ✗ {len(issues)} issue(s) found:", "red"))
+    for msg in issues:
+        print(_c(f"    - {msg}", "yellow"))
+    return 1
+
+
+def _stat_mode(path: Path) -> int | None:
+    try:
+        import stat as _s
+
+        return _s.S_IMODE(path.stat().st_mode)
+    except OSError:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Shared disk helpers
 
@@ -356,6 +417,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p_list = sub.add_parser("list", help="list saved accounts")
     p_list.add_argument("--json", action="store_true")
     p_list.set_defaults(func=_cmd_list)
+
+    p_doctor = sub.add_parser(
+        "doctor", help="diagnose token health (perms, dups, mismatches)"
+    )
+    p_doctor.add_argument("--json", action="store_true")
+    p_doctor.set_defaults(func=_cmd_doctor)
 
     return parser
 

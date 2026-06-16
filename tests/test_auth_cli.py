@@ -138,3 +138,39 @@ def test_status_json(monkeypatch, tmp_path, capsys):
     assert parsed[0]["identifier"] == TEST_EMAIL
     assert parsed[0]["valid"] is True
     assert parsed[0]["has_refresh_token"] is True
+
+
+def test_doctor_flags_missing_refresh_token(monkeypatch, tmp_path, capsys):
+    _msal_env(monkeypatch, tmp_path)
+    _write_graph_token(tmp_path, TEST_EMAIL)
+    (tmp_path / f"{TEST_EMAIL}_refresh_only.txt").unlink()
+    rc = auth_cli.main(["doctor"])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "refresh token" in out.lower()
+
+
+def test_doctor_flags_loose_permissions(monkeypatch, tmp_path, capsys):
+    _msal_env(monkeypatch, tmp_path)
+    _write_graph_token(tmp_path, TEST_EMAIL)
+    f = tmp_path / f"{TEST_EMAIL}_access_token.json"
+    f.chmod(0o644)
+    rc = auth_cli.main(["doctor"])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "permission" in out.lower()
+
+
+def test_doctor_clean_passes(monkeypatch, tmp_path, capsys):
+    _msal_env(monkeypatch, tmp_path)
+    _write_graph_token(tmp_path, TEST_EMAIL)
+    (tmp_path / f"{TEST_EMAIL}_access_token.json").chmod(0o600)
+    (tmp_path / f"{TEST_EMAIL}_refresh_only.txt").chmod(0o600)
+    monkeypatch.setattr(
+        "microsoft_mcp.auth_msal.verify_account_tokens",
+        lambda **kw: [{"identifier": TEST_EMAIL, "jwt_upn": TEST_EMAIL, "match": True}],
+    )
+    rc = auth_cli.main(["doctor"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "OK" in out or "no issues" in out.lower()

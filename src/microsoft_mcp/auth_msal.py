@@ -749,10 +749,60 @@ class MSALRefreshTokenAuth:
         logger.info("Authentication cache cleared")
 
 
+def _refresh_one(
+    identifier: str,
+    tokens_dir: Path,
+    client_id: Optional[str],
+    tenant_id: Optional[str],
+    api_type: str = "graph",
+) -> dict[str, Any]:
+    """Run the valid/refresh/failed flow for a single account + api_type.
+
+    Builds a probe ``MSALRefreshTokenAuth`` for ``api_type`` and returns a
+    result dict with ``identifier``, ``status``, ``expires_at``, ``error``.
+    Failures do NOT call ``clear_cache()`` — the refresh token is preserved
+    for later retry. The caller is responsible for tagging the returned dict
+    with the ``api_type`` key.
+    """
+    probe = MSALRefreshTokenAuth(
+        tokens_dir=tokens_dir,
+        client_id=client_id,
+        tenant_id=tenant_id,
+        account_identifier=identifier,
+        api_type=api_type,
+    )
+    if probe._is_token_valid():
+        token_data = probe._load_access_token_data() or {}
+        return {
+            "identifier": identifier,
+            "status": "valid",
+            "expires_at": token_data.get("expires_at"),
+            "error": None,
+        }
+    try:
+        token_data = probe._do_refresh_locked()
+        return {
+            "identifier": identifier,
+            "status": "refreshed",
+            "expires_at": token_data.get("expires_at"),
+            "error": None,
+        }
+    except Exception as e:
+        stale = probe._load_access_token_data() or {}
+        logger.warning(f"_refresh_one: '{identifier}' ({api_type}) refresh failed: {e}")
+        return {
+            "identifier": identifier,
+            "status": "failed",
+            "expires_at": stale.get("expires_at"),
+            "error": str(e),
+        }
+
+
 def refresh_all_accounts(
     tokens_dir: Optional[Path] = None,
     client_id: Optional[str] = None,
     tenant_id: Optional[str] = None,
+    api_type: str = "graph",
 ) -> list[dict[str, Any]]:
     """Refresh access tokens for every saved MSAL account.
 
@@ -771,9 +821,14 @@ def refresh_all_accounts(
         client_id: MSAL client ID. Defaults to env var or Microsoft Office
             public client ID.
         tenant_id: MSAL tenant ID. Defaults to env var or "common".
+        api_type: API resource to refresh: "graph" (default), "outlook", or
+            "both". "both" emits one result entry per (account, api_type).
+            Outlook sibling token files (``*_outlook_access_token.json``) are
+            never enumerated as their own accounts.
 
     Returns:
-        A list of result dictionaries, one per account, each containing:
+        A list of result dictionaries, one per (account, api_type), each
+        containing:
         - identifier (str): the account identifier (filename stem)
         - status (str): "valid" if the token was already valid (no refresh
           needed), "refreshed" if a network refresh occurred, "failed" if
@@ -781,6 +836,7 @@ def refresh_all_accounts(
         - expires_at (str | None): ISO-format expiry timestamp after the
           operation, or None if the call failed
         - error (str | None): error message when status == "failed"
+        - api_type (str): the API resource this entry refreshed
     """
     # Resolve tokens_dir the same way MSALRefreshTokenAuth.__init__ does.
     if tokens_dir is not None:
@@ -800,67 +856,27 @@ def refresh_all_accounts(
         f"refresh_all_accounts: found {len(token_files)} account(s) in {resolved_dir}"
     )
 
+    api_types = ["graph", "outlook"] if api_type == "both" else [api_type]
+
     results: list[dict[str, Any]] = []
 
     for token_file in token_files:
         # Strip the "_access_token" suffix from the stem to get the identifier.
         identifier = token_file.stem[: -len("_access_token")]
+        if identifier.endswith("_outlook"):
+            continue  # skip outlook sibling files during enumeration
         logger.info(f"refresh_all_accounts: processing account '{identifier}'")
 
-        probe = MSALRefreshTokenAuth(
-            tokens_dir=resolved_dir,
-            client_id=client_id,
-            tenant_id=tenant_id,
-            account_identifier=identifier,
-        )
-
-        if probe._is_token_valid():
-            token_data = probe._load_access_token_data() or {}
-            expires_at = token_data.get("expires_at")
-            logger.info(
-                f"refresh_all_accounts: '{identifier}' token is valid, expires_at={expires_at}"
+        for current_api in api_types:
+            entry = _refresh_one(
+                identifier=identifier,
+                tokens_dir=resolved_dir,
+                client_id=client_id,
+                tenant_id=tenant_id,
+                api_type=current_api,
             )
-            results.append(
-                {
-                    "identifier": identifier,
-                    "status": "valid",
-                    "expires_at": expires_at,
-                    "error": None,
-                }
-            )
-            continue
-
-        # Token is not valid — attempt refresh.
-        # Use _do_refresh_locked() directly so that a per-account failure does
-        # NOT call clear_cache() and burn the refresh token. Only _acquire_token_data
-        # (the lazy get_token path) should evict on failure.
-        try:
-            token_data = probe._do_refresh_locked()
-            expires_at = token_data.get("expires_at")
-            logger.info(
-                f"refresh_all_accounts: '{identifier}' refreshed, expires_at={expires_at}"
-            )
-            results.append(
-                {
-                    "identifier": identifier,
-                    "status": "refreshed",
-                    "expires_at": expires_at,
-                    "error": None,
-                }
-            )
-        except Exception as e:
-            # Read the pre-existing file for expires_at (may be stale or absent).
-            stale_data = probe._load_access_token_data() or {}
-            expires_at = stale_data.get("expires_at")
-            logger.warning(f"refresh_all_accounts: '{identifier}' refresh failed: {e}")
-            results.append(
-                {
-                    "identifier": identifier,
-                    "status": "failed",
-                    "expires_at": expires_at,
-                    "error": str(e),
-                }
-            )
+            entry["api_type"] = current_api
+            results.append(entry)
 
     return results
 
@@ -1038,14 +1054,15 @@ def refresh_account(
     tokens_dir: Optional[Path] = None,
     client_id: Optional[str] = None,
     tenant_id: Optional[str] = None,
+    api_type: str = "graph",
 ) -> dict[str, Any]:
     """Refresh access token for a single MSAL account.
 
     Single-account analogue of :func:`refresh_all_accounts`. Looks up the
     token file at ``{tokens_dir}/{identifier}_access_token.json`` and runs
-    the same valid/refresh logic. Failures do NOT call ``clear_cache()`` —
-    consistent with refresh_all_accounts, this preserves the refresh token
-    for later retry.
+    the same valid/refresh logic via :func:`_refresh_one`. Failures do NOT
+    call ``clear_cache()`` — consistent with refresh_all_accounts, this
+    preserves the refresh token for later retry.
 
     Args:
         identifier: Account identifier (filename stem, typically email).
@@ -1055,6 +1072,7 @@ def refresh_account(
         client_id: MSAL client ID. Defaults to env var or Microsoft Office
             public client ID.
         tenant_id: MSAL tenant ID. Defaults to env var or "common".
+        api_type: API resource to refresh: "graph" (default) or "outlook".
 
     Returns:
         Result dict with the same shape as one entry of refresh_all_accounts:
@@ -1062,6 +1080,7 @@ def refresh_account(
         - status (str): "valid", "refreshed", "failed", or "missing"
         - expires_at (str | None)
         - error (str | None)
+        - api_type (str): the API resource this entry refreshed
     """
     if not identifier or not identifier.strip():
         raise ValueError("identifier must be a non-empty string")
@@ -1080,48 +1099,11 @@ def refresh_account(
             "error": f"no token file at {token_file}",
         }
 
-    probe = MSALRefreshTokenAuth(
-        tokens_dir=resolved_dir,
-        client_id=client_id,
-        tenant_id=tenant_id,
-        account_identifier=identifier,
+    result = _refresh_one(
+        identifier, resolved_dir, client_id, tenant_id, api_type=api_type
     )
-
-    if probe._is_token_valid():
-        token_data = probe._load_access_token_data() or {}
-        expires_at = token_data.get("expires_at")
-        logger.info(
-            f"refresh_account: '{identifier}' token is valid, expires_at={expires_at}"
-        )
-        return {
-            "identifier": identifier,
-            "status": "valid",
-            "expires_at": expires_at,
-            "error": None,
-        }
-
-    try:
-        token_data = probe._do_refresh_locked()
-        expires_at = token_data.get("expires_at")
-        logger.info(
-            f"refresh_account: '{identifier}' refreshed, expires_at={expires_at}"
-        )
-        return {
-            "identifier": identifier,
-            "status": "refreshed",
-            "expires_at": expires_at,
-            "error": None,
-        }
-    except Exception as e:
-        stale_data = probe._load_access_token_data() or {}
-        expires_at = stale_data.get("expires_at")
-        logger.warning(f"refresh_account: '{identifier}' refresh failed: {e}")
-        return {
-            "identifier": identifier,
-            "status": "failed",
-            "expires_at": expires_at,
-            "error": str(e),
-        }
+    result["api_type"] = api_type
+    return result
 
 
 def force_reauthenticate(

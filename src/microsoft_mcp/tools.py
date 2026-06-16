@@ -20,6 +20,7 @@ from . import rules as _rules
 from . import signatures as signatures_mod
 from .auth_base import AuthProvider
 from .response_shaping import (
+    _html_to_text,
     cleanup_graph_payload,
     compact_location,
     shape_contact_detail,
@@ -3629,6 +3630,83 @@ def delete_email(email_id: str) -> dict[str, Any]:
             f"delete_email failed for email_id={email_id}: {str(e)}",
             exc_info=True,
         )
+        raise
+
+
+_MAILTIPS_DEFAULT_OPTIONS = [
+    "automaticReplies",
+    "mailboxFullStatus",
+    "maxMessageSize",
+    "recipientScope",
+    "deliveryRestriction",
+]
+
+
+@mcp.tool
+def get_mailtips(
+    emails: list[str],
+    options: list[str] | None = None,
+) -> list[dict]:
+    """Retrieve mail tips for one or more recipient email addresses.
+
+    Queries the Graph /me/getMailTips endpoint and returns a flattened list of
+    tip objects — one per recipient — with auto-reply HTML stripped to plain
+    text.
+
+    Args:
+        emails: One or more recipient addresses to check.
+        options: MailTips categories to request. Defaults to
+            automaticReplies, mailboxFullStatus, maxMessageSize,
+            recipientScope, deliveryRestriction.
+
+    Returns:
+        List of dicts with keys: email, auto_reply, mailbox_full,
+        max_message_size_bytes, recipient_scope, delivery_restricted.
+    """
+    if not emails:
+        raise ValueError("emails must be a non-empty list")
+
+    chosen_options = options if options is not None else _MAILTIPS_DEFAULT_OPTIONS
+    payload = {
+        "EmailAddresses": emails,
+        "MailTipsOptions": ",".join(chosen_options),
+    }
+
+    logger.info("get_mailtips called: %d recipient(s)", len(emails))
+
+    try:
+        raw = graph.request("POST", "/me/getMailTips", json=payload)
+        tips = raw.get("value", []) if raw else []
+
+        result = []
+        for tip in tips:
+            addr_obj = tip.get("emailAddress", {})
+            email_addr = addr_obj.get("address")
+
+            ar = tip.get("automaticReplies", {})
+            ar_message = ar.get("message") if ar else None
+            auto_reply = _html_to_text(ar_message) if ar_message else None
+
+            dr = tip.get("deliveryRestriction", {})
+            delivery_restricted = (
+                bool(dr.get("isDeliveryRestricted", False)) if dr else False
+            )
+
+            result.append(
+                {
+                    "email": email_addr,
+                    "auto_reply": auto_reply,
+                    "mailbox_full": bool(tip.get("mailboxFull", False)),
+                    "max_message_size_bytes": tip.get("maxMessageSize"),
+                    "recipient_scope": tip.get("recipientScope"),
+                    "delivery_restricted": delivery_restricted,
+                }
+            )
+
+        logger.info("get_mailtips successful: %d tip(s) returned", len(result))
+        return result
+    except Exception as e:
+        logger.error("get_mailtips failed: %s", str(e), exc_info=True)
         raise
 
 

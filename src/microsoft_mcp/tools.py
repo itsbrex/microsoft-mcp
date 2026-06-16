@@ -4717,7 +4717,7 @@ def download_attachments(
 
             # Sanitize: strip any directory components to prevent path traversal
             safe_name = pl.Path(att_name).name
-            if not safe_name or safe_name == ".":
+            if not safe_name or safe_name in {".", ".."}:
                 logger.warning(
                     f"download_attachments: skipping attachment with degenerate name {att_name!r}"
                 )

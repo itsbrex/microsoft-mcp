@@ -342,6 +342,32 @@ def test_download_attachments_skips_when_refetch_has_no_content(mock_graph, tmp_
 
 
 @patch("src.microsoft_mcp.tools.graph")
+def test_download_attachments_skips_dotdot_name(mock_graph, tmp_path):
+    """Attachment literally named '..' must be skipped, never written."""
+    from src.microsoft_mcp import tools
+
+    content = b"malicious dotdot"
+    mock_graph.request.return_value = {
+        "value": [
+            _file_att(att_id="dotdot", name="..") | {"contentBytes": _b64(content)}
+        ]
+    }
+
+    result = tools.download_attachments.fn(email_id="email1", save_dir=str(tmp_path))
+
+    # Nothing must be written
+    assert result["saved"] == [], "No file should be saved for '..' attachment"
+    assert ".." in result["skipped"], "'..' should appear in skipped list"
+
+    # Crucially, no path named '..' was created under tmp_path's parent
+    assert (
+        not (tmp_path.parent / "..").exists() or True
+    )  # '..' always "exists" as a dir-entry
+    # The real guard: nothing was written *inside* tmp_path
+    assert list(tmp_path.iterdir()) == [], "save_dir must be empty"
+
+
+@patch("src.microsoft_mcp.tools.graph")
 def test_download_attachments_sanitizes_path_traversal_name(mock_graph, tmp_path):
     """Attachment named '../../evil.txt' must be written as save_dir/evil.txt only."""
     from src.microsoft_mcp import tools

@@ -13,9 +13,12 @@ Azure SDK path manages its own token cache.
 
 from __future__ import annotations
 
+import argparse
 import datetime as dt
+import json
 import os
 import sys
+from pathlib import Path
 from typing import Any
 
 # ---------------------------------------------------------------------------
@@ -64,3 +67,259 @@ def _format_expiry(expires_at: str | None) -> str:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=dt.timezone.utc)
     return parsed.astimezone(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+# ---------------------------------------------------------------------------
+# Environment / guards
+
+
+def _require_msal() -> None:
+    method = os.getenv("MICROSOFT_MCP_AUTH_METHOD", "azure").lower()
+    if method != "msal":
+        sys.stderr.write(
+            f"auth: MICROSOFT_MCP_AUTH_METHOD is '{method}', must be 'msal'.\n"
+            "Set MICROSOFT_MCP_AUTH_METHOD=msal to use this command.\n"
+        )
+        raise SystemExit(2)
+
+
+def _env_kwargs() -> dict[str, Any]:
+    return {
+        "tokens_dir": (
+            Path(os.environ["MICROSOFT_MCP_TOKENS_DIR"])
+            if os.getenv("MICROSOFT_MCP_TOKENS_DIR")
+            else None
+        ),
+        "client_id": os.getenv("MICROSOFT_MCP_CLIENT_ID"),
+        "tenant_id": os.getenv("MICROSOFT_MCP_TENANT_ID"),
+    }
+
+
+def _print_json(payload: Any) -> None:
+    print(json.dumps(payload, indent=2, default=str))
+
+
+# ---------------------------------------------------------------------------
+# Result rendering
+
+
+def _print_refresh_results(
+    results: list[dict[str, Any]], api_label: str = "Graph"
+) -> None:
+    if not results:
+        print("No saved accounts found.")
+        return
+    for r in results:
+        ident = r.get("identifier", "?")
+        status = r.get("status")
+        print(ident)
+        if status in ("valid", "refreshed", "reauthenticated"):
+            word = {
+                "valid": "Valid",
+                "refreshed": "Refreshed",
+                "reauthenticated": "Re-authenticated",
+            }[status]
+            exp = _format_expiry(r.get("expires_at"))
+            print(_c(f"  ✓ {api_label}: {word}, expires {exp}", "green"))
+        elif status == "missing":
+            print(_c(f"  ✗ {api_label}: no saved token", "red"))
+        else:  # failed / unknown
+            err = r.get("error") or "unknown error"
+            print(_c(f"  ✗ {api_label} refresh failed: {err}", "red"))
+
+
+# ---------------------------------------------------------------------------
+# Subcommand handlers
+
+
+def _cmd_refresh(args: argparse.Namespace) -> int:
+    _require_msal()
+    env = _env_kwargs()
+    if args.force:
+        if not args.email:
+            raise SystemExit("error: --force requires an EMAIL argument")
+        from .auth_msal import force_reauthenticate
+
+        result = force_reauthenticate(identifier=args.email, **env)
+        if args.json:
+            _print_json(result)
+        else:
+            _print_refresh_results([result])
+            if (
+                result.get("signed_in_as")
+                and result["signed_in_as"].lower() != args.email.lower()
+            ):
+                print(
+                    _c(
+                        f"  ⚠ WARNING: signed_in_as ({result['signed_in_as']}) "
+                        f"does not match requested email ({args.email}).",
+                        "yellow",
+                    )
+                )
+                return 1
+        return 0
+
+    if args.email:
+        from .auth_msal import refresh_account
+
+        result = refresh_account(identifier=args.email, **env)
+        if args.json:
+            _print_json(result)
+        else:
+            _print_refresh_results([result])
+        if result.get("status") == "failed":
+            return 1
+        if result.get("status") == "missing":
+            return 2
+        return 0
+
+    from .auth_msal import refresh_all_accounts
+
+    results = refresh_all_accounts(**env)
+    if args.json:
+        _print_json(results)
+    else:
+        _print_refresh_results(results)
+    return 1 if any(r.get("status") == "failed" for r in results) else 0
+
+
+def _cmd_verify(args: argparse.Namespace) -> int:
+    _require_msal()
+    from .auth_msal import verify_account_tokens
+
+    env = _env_kwargs()
+    results = verify_account_tokens(tokens_dir=env["tokens_dir"], live=args.live)
+    if args.json:
+        _print_json(results)
+        return 1 if any(not r.get("match") for r in results) else 0
+    if not results:
+        print("No saved accounts found.")
+        return 0
+    mismatches = 0
+    for r in results:
+        ident = r.get("identifier", "?")
+        match = r.get("match", False)
+        if match:
+            print(_c(f"  ✓ {ident}  jwt_upn={r.get('jwt_upn')}", "green"))
+        else:
+            mismatches += 1
+            extra = ""
+            if r.get("graph_error"):
+                extra = f"  graph_error={r['graph_error']}"
+            if r.get("jwt_decode_error"):
+                extra += f"  decode_error={r['jwt_decode_error']}"
+            print(_c(f"  ✗ {ident}  jwt_upn={r.get('jwt_upn')}{extra}", "red"))
+    print()
+    print(f"Summary: {len(results)} account(s), {mismatches} mismatch(es).")
+    return 1 if mismatches else 0
+
+
+def _cmd_status(args: argparse.Namespace) -> int:
+    # Implemented in Task 5.
+    raise NotImplementedError
+
+
+# ---------------------------------------------------------------------------
+# Shared disk helpers
+
+
+def _default_tokens_dir() -> Path:
+    default_dir = Path.home() / ".config" / "microsoft-mcp" / "tokens"
+    return Path(os.getenv("MICROSOFT_MCP_TOKENS_DIR", str(default_dir)))
+
+
+def _enumerate_accounts(tokens_dir: Path) -> list[dict[str, Any]]:
+    """List graph accounts (skips the *_outlook_access_token.json siblings)."""
+    if not tokens_dir.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    for f in sorted(tokens_dir.glob("*_access_token.json")):
+        if f.stem.endswith("_outlook_access_token"):
+            continue
+        identifier = f.stem[: -len("_access_token")]
+        try:
+            data = json.loads(f.read_text())
+        except Exception:
+            data = {}
+        rows.append(
+            {
+                "identifier": identifier,
+                "email": data.get("email", identifier),
+                "expires_at": data.get("expires_at"),
+            }
+        )
+    return rows
+
+
+def _cmd_list(args: argparse.Namespace) -> int:
+    _require_msal()
+    env = _env_kwargs()
+    tokens_dir = env["tokens_dir"] or _default_tokens_dir()
+    rows = _enumerate_accounts(tokens_dir)
+    if args.json:
+        _print_json(rows)
+        return 0
+    if not rows:
+        print("No saved accounts found.")
+        return 0
+    for row in rows:
+        print(f"{row['identifier']}  (expires {_format_expiry(row['expires_at'])})")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Argparse wiring
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="microsoft-mcp-auth",
+        description="Refresh, verify, and inspect MSAL tokens for microsoft-mcp.",
+    )
+    sub = parser.add_subparsers(dest="cmd", required=True, metavar="COMMAND")
+
+    p_refresh = sub.add_parser(
+        "refresh", help="refresh tokens (all / one / force re-auth)"
+    )
+    p_refresh.add_argument(
+        "email", nargs="?", default=None, help="account email; omit to refresh all"
+    )
+    p_refresh.add_argument(
+        "--force",
+        action="store_true",
+        help="clear EMAIL's tokens and re-run device-code flow",
+    )
+    p_refresh.add_argument("--json", action="store_true")
+    p_refresh.set_defaults(func=_cmd_refresh)
+
+    p_verify = sub.add_parser(
+        "verify", help="verify tokens match their filenames (JWT)"
+    )
+    p_verify.add_argument("--live", action="store_true", help="also call Graph /me")
+    p_verify.add_argument("--json", action="store_true")
+    p_verify.set_defaults(func=_cmd_verify)
+
+    p_status = sub.add_parser("status", help="read-only token health (no network)")
+    p_status.add_argument("--json", action="store_true")
+    p_status.set_defaults(func=_cmd_status)
+
+    p_list = sub.add_parser("list", help="list saved accounts")
+    p_list.add_argument("--json", action="store_true")
+    p_list.set_defaults(func=_cmd_list)
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    return args.func(args)
+
+
+def cli_main() -> None:
+    """Console-script entry point."""
+    sys.exit(main(sys.argv[1:]))
+
+
+if __name__ == "__main__":
+    cli_main()

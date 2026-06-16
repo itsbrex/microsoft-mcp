@@ -383,12 +383,97 @@ def test_import_inbox_rules_create_skips_existing_name(
     assert out["errors"] == []
 
 
-@patch("src.microsoft_mcp.tools._resolve_mail_folder")
-@patch("src.microsoft_mcp.tools.graph.request_paginated")
-@patch("src.microsoft_mcp.tools.graph.request")
-def test_import_inbox_rules_invalid_mode_raises(mock_req, mock_paged, mock_resolve):
+def test_import_inbox_rules_invalid_mode_raises():
     from src.microsoft_mcp.tools import import_inbox_rules
     import pytest
 
     with pytest.raises(ValueError, match="mode"):
         import_inbox_rules.fn(yaml_text=_IMPORT_YAML, mode="replace")
+
+
+@patch("src.microsoft_mcp.tools._resolve_mail_folder")
+@patch("src.microsoft_mcp.tools.graph.request_paginated")
+@patch("src.microsoft_mcp.tools.graph.request")
+def test_import_inbox_rules_sync_updates_existing(mock_req, mock_paged, mock_resolve):
+    from src.microsoft_mcp.tools import import_inbox_rules
+
+    existing_rule = {
+        "id": "existing-rule-id-123",
+        "displayName": "Newsletter",
+        "sequence": 1,
+        "isEnabled": True,
+        "conditions": {"senderContains": ["newsletter"]},
+        "actions": {"moveToFolder": "FOLDER_ID_NEWSLETTERS"},
+    }
+    mock_paged.return_value = iter([existing_rule])
+    mock_resolve.return_value = "FOLDER_ID_NEWSLETTERS"
+
+    out = import_inbox_rules.fn(yaml_text=_IMPORT_YAML, mode="sync")
+
+    # must PATCH (not POST) to the existing rule's id
+    mock_req.assert_called_once()
+    args, kwargs = mock_req.call_args
+    assert args[0] == "PATCH"
+    assert "existing-rule-id-123" in args[1]
+
+    assert out["updated"] == ["Newsletter"]
+    assert out["created"] == []
+    assert out["skipped"] == []
+    assert out["errors"] == []
+
+
+@patch("src.microsoft_mcp.tools._resolve_mail_folder")
+@patch("src.microsoft_mcp.tools.graph.request_paginated")
+@patch("src.microsoft_mcp.tools.graph.request")
+def test_import_inbox_rules_sync_creates_new(mock_req, mock_paged, mock_resolve):
+    from src.microsoft_mcp.tools import import_inbox_rules
+
+    # No existing rules — name not present
+    mock_paged.return_value = iter([])
+    mock_resolve.return_value = "FOLDER_ID_NEWSLETTERS"
+
+    out = import_inbox_rules.fn(yaml_text=_IMPORT_YAML, mode="sync")
+
+    # must POST (new rule)
+    mock_req.assert_called_once()
+    args, kwargs = mock_req.call_args
+    assert args[0] == "POST"
+    assert args[1] == "/me/mailFolders/inbox/messageRules"
+
+    assert out["created"] == ["Newsletter"]
+    assert out["updated"] == []
+    assert out["skipped"] == []
+    assert out["errors"] == []
+
+
+_INVALID_IMPORT_YAML = """\
+rules:
+  - enabled: true
+    sequence: 1
+    conditions:
+      sender_contains:
+        - newsletter
+    actions:
+      move_to: Newsletters
+"""
+
+
+@patch("src.microsoft_mcp.tools.graph.request_paginated")
+@patch("src.microsoft_mcp.tools.graph.request")
+def test_import_inbox_rules_surfaces_validation_errors(mock_req, mock_paged):
+    from src.microsoft_mcp.tools import import_inbox_rules
+
+    mock_paged.return_value = iter([])
+
+    out = import_inbox_rules.fn(yaml_text=_INVALID_IMPORT_YAML)
+
+    # errors list must be non-empty and identify the bad template
+    assert len(out["errors"]) > 0
+    assert any("name" in e.lower() for e in out["errors"])
+
+    # no POST or PATCH issued for invalid template
+    mock_req.assert_not_called()
+
+    assert out["created"] == []
+    assert out["updated"] == []
+    assert out["skipped"] == []

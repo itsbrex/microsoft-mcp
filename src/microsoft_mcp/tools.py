@@ -4715,11 +4715,20 @@ def download_attachments(
                 skipped.append(att_name)
                 continue
 
+            # Sanitize: strip any directory components to prevent path traversal
+            safe_name = pl.Path(att_name).name
+            if not safe_name or safe_name == ".":
+                logger.warning(
+                    f"download_attachments: skipping attachment with degenerate name {att_name!r}"
+                )
+                skipped.append(att_name)
+                continue
+
             content_bytes = base64.b64decode(content_b64)
-            dest = dir_path / att_name
+            dest = dir_path / safe_name
             dest.write_bytes(content_bytes)
             saved.append(str(dest))
-            logger.info(f"download_attachments: saved {att_name} to {dest}")
+            logger.info(f"download_attachments: saved {safe_name} to {dest}")
 
         logger.info(
             f"download_attachments successful: {len(saved)} saved, {len(skipped)} skipped"

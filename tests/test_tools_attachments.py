@@ -339,3 +339,40 @@ def test_download_attachments_skips_when_refetch_has_no_content(mock_graph, tmp_
 
     assert result["saved"] == []
     assert "mystery.bin" in result["skipped"]
+
+
+@patch("src.microsoft_mcp.tools.graph")
+def test_download_attachments_sanitizes_path_traversal_name(mock_graph, tmp_path):
+    """Attachment named '../../evil.txt' must be written as save_dir/evil.txt only."""
+    from src.microsoft_mcp import tools
+
+    content = b"malicious content"
+    mock_graph.request.return_value = {
+        "value": [
+            _file_att(att_id="evil", name="../../evil.txt")
+            | {"contentBytes": _b64(content)}
+        ]
+    }
+
+    result = tools.download_attachments.fn(email_id="email1", save_dir=str(tmp_path))
+
+    # File must be written inside tmp_path as "evil.txt" (basename only)
+    expected = tmp_path / "evil.txt"
+    assert expected.exists(), "File should be saved with basename inside save_dir"
+    assert expected.read_bytes() == content
+
+    # The saved path must be inside tmp_path
+    assert len(result["saved"]) == 1
+    saved_path = result["saved"][0]
+    assert str(saved_path).startswith(str(tmp_path)), (
+        f"Saved path {saved_path!r} escaped save_dir {tmp_path!r}"
+    )
+
+    # The saved path must resolve to inside tmp_path (no traversal)
+    import pathlib
+
+    resolved_saved = pathlib.Path(saved_path).resolve()
+    resolved_tmp = tmp_path.resolve()
+    assert str(resolved_saved).startswith(str(resolved_tmp)), (
+        f"Path traversal: saved path {resolved_saved!r} is outside save_dir {resolved_tmp!r}"
+    )

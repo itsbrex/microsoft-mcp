@@ -265,3 +265,34 @@ def test_refresh_api_invalid_rejected(monkeypatch, tmp_path):
     _msal_env(monkeypatch, tmp_path)
     with pytest.raises(SystemExit):
         auth_cli.main(["refresh", "--api", "bogus"])
+
+
+def test_refresh_single_email_api_both_refreshes_both(monkeypatch, tmp_path, capsys):
+    _msal_env(monkeypatch, tmp_path)
+    calls = []
+
+    def fake_refresh_account(identifier, api_type="graph", **kw):
+        calls.append(api_type)
+        return {
+            "identifier": identifier,
+            "status": "refreshed",
+            "expires_at": "2026-06-15T22:00:00Z",
+            "error": None,
+            "api_type": api_type,
+        }
+
+    monkeypatch.setattr("microsoft_mcp.auth_msal.refresh_account", fake_refresh_account)
+    rc = auth_cli.main(["refresh", TEST_EMAIL, "--api", "both"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert sorted(calls) == ["graph", "outlook"]  # both api types refreshed
+    assert "Graph: Refreshed" in out
+    assert "Outlook: Refreshed" in out
+
+
+def test_main_runs_without_dotenv(monkeypatch, tmp_path, capsys):
+    _msal_env(monkeypatch, tmp_path)
+    # no .env file in tmp; main() should not crash importing/loading dotenv
+    rc = auth_cli.main(["list"])
+    assert rc == 0
+    assert "No saved accounts found." in capsys.readouterr().out

@@ -163,6 +163,24 @@ def _cmd_refresh(args: argparse.Namespace) -> int:
     if args.email:
         from .auth_msal import refresh_account
 
+        if args.api == "both":
+            results = [
+                refresh_account(identifier=args.email, api_type=api, **env)
+                for api in ("graph", "outlook")
+            ]
+            if args.json:
+                _print_json(results)
+            else:
+                for r in results:
+                    _print_refresh_results(
+                        [r], api_label=_api_label(r.get("api_type", "graph"))
+                    )
+            if any(r.get("status") == "failed" for r in results):
+                return 1
+            if any(r.get("status") == "missing" for r in results):
+                return 2
+            return 0
+
         result = refresh_account(identifier=args.email, api_type=args.api, **env)
         if args.json:
             _print_json(result)
@@ -468,6 +486,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv()
+    except Exception:
+        pass
     parser = _build_parser()
     args = parser.parse_args(argv)
     return args.func(args)

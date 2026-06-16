@@ -12,26 +12,62 @@ from typing import Any, Sequence
 
 DEFAULT_BRIDGE_NAME = "code-mode-mcp"
 
+# Relative path from a code-mode repo root to the compiled MCP entry point.
+_CODE_MODE_DIST_REL = Path("code-mode-mcp") / "dist" / "index.js"
+
+
+def _local_code_mode_dist() -> Path | None:
+    """Return the resolved dist/index.js path when MICROSOFT_MCP_CODE_MODE_DIR is set.
+
+    Returns None if the env var is unset or the file does not exist.
+    """
+    local_dir = os.getenv("MICROSOFT_MCP_CODE_MODE_DIR")
+    if not local_dir:
+        return None
+    candidate = Path(local_dir) / _CODE_MODE_DIST_REL
+    return candidate if candidate.exists() else None
+
 
 def _resolve_default_bridge_command() -> str:
-    """Resolve the npx command path to use for the UTCP bridge.
+    """Resolve the command used to launch the UTCP code-mode bridge.
 
     Resolution order:
     1. MICROSOFT_MCP_UTCP_BRIDGE_COMMAND environment variable.
-    2. shutil.which("npx") — looks up npx on the current PATH.
-    3. The literal string "npx" — relies on PATH at exec time.
+    2. MICROSOFT_MCP_CODE_MODE_DIR set and dist/index.js present → node (via shutil.which).
+    3. shutil.which("npx") — looks up npx on the current PATH.
+    4. The literal string "npx" — relies on PATH at exec time.
     """
     override = os.getenv("MICROSOFT_MCP_UTCP_BRIDGE_COMMAND")
     if override:
         return override
+    if _local_code_mode_dist() is not None:
+        return shutil.which("node") or "node"
     discovered = shutil.which("npx")
     if discovered:
         return discovered
     return "npx"
 
 
+def _resolve_default_bridge_args() -> list[str]:
+    """Resolve the default args list for the UTCP bridge command.
+
+    When MICROSOFT_MCP_CODE_MODE_DIR points to a local code-mode checkout
+    whose dist/index.js exists, the args contain that path so the bridge
+    is launched without a network round-trip to npm.  Otherwise fall back
+    to the published npm package name.
+    """
+    if os.getenv("MICROSOFT_MCP_UTCP_BRIDGE_COMMAND"):
+        # Custom command supplied — keep the npm package name as the default arg
+        # so callers can still override via bridge_args when needed.
+        return ["@utcp/code-mode-mcp"]
+    dist = _local_code_mode_dist()
+    if dist is not None:
+        return [str(dist)]
+    return ["@utcp/code-mode-mcp"]
+
+
 DEFAULT_BRIDGE_COMMAND = _resolve_default_bridge_command()
-DEFAULT_BRIDGE_ARGS = ["@utcp/code-mode-mcp"]
+DEFAULT_BRIDGE_ARGS = _resolve_default_bridge_args()
 
 
 @dataclass(frozen=True, slots=True)

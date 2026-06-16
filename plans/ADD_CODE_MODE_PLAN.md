@@ -52,9 +52,12 @@
    - limited safe builtins
    - print/log capture
    - configurable timeout
-   - runtime context variables mirroring code-mode concepts:
-     - `__interfaces`
-     - `__get_tool_interface(...)`
+   - runtime context variables mirroring code-mode concepts (use the
+     non-underscore names; the dunder aliases are kept only for parity
+     with non-RestrictedPython environments and are blocked by the
+     default RestrictedPython sandbox — see code-mode upstream issue #24):
+     - `interfaces` (alias `__interfaces` in unrestricted contexts)
+     - `get_tool_interface(...)` (alias `__get_tool_interface(...)`)
 3. Add namespaced tool wrappers that invoke the underlying FastMCP `FunctionTool.fn` callables directly.
 4. Ensure result + logs are returned in a compact, structured payload.
 5. Handle execution failures with explicit runtime errors and captured logs.
@@ -84,7 +87,7 @@
 
 ### Deliverables
 - Integrated code-mode MCP surface in the same server process.
-- Prompt guidance that teaches `search_tools -> tools_info/__interfaces -> call_tool_chain`.
+- Prompt guidance that teaches `search_tools -> tools_info/interfaces -> call_tool_chain`.
 
 ---
 
@@ -164,7 +167,7 @@
 - Existing Microsoft Graph tools still work with current auth flows.
 - The server exposes integrated code-mode tools and a usage prompt.
 - `search_tools` returns relevant tool matches from the active registry.
-- `tools_info` and `__interfaces` expose generated Python interfaces.
+- `tools_info` and `interfaces` expose generated Python interfaces. (The legacy `__interfaces` alias is blocked by RestrictedPython defaults — see code-mode upstream issue #24.)
 - `call_tool_chain` can orchestrate multiple existing tools in one execution and returns both `result` and `logs`.
 - Teams tool visibility remains auth-aware.
 - Docs and examples describe the actual integrated flow, not an external simulated one.

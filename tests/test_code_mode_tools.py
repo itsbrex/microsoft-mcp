@@ -166,17 +166,21 @@ return {"ok": True}
     assert "hello from sandbox" in result["logs"]
 
 
-@patch("microsoft_mcp.tools.graph")
-def test_call_tool_chain_accepts_dict_arguments(mock_graph, load_tools_module):
-    module = load_tools_module("msal")
-    mock_graph.request_paginated.side_effect = [iter([]), iter([])]
+def test_call_tool_chain_accepts_dict_arguments(load_tools_module):
+    """The fixture re-imports the module; patch the *re-imported* module's
+    graph attribute so the mock actually applies (the prior pattern of
+    ``@patch("microsoft_mcp.tools.graph")`` over the fixture pops sys.modules
+    and the mock is replaced when the fresh module is loaded)."""
 
-    result = module.call_tool_chain.fn(
-        """
+    module = load_tools_module("msal")
+    with patch.object(module, "graph") as mock_graph:
+        mock_graph.request_paginated.side_effect = [iter([]), iter([])]
+        result = module.call_tool_chain.fn(
+            """
 summary = microsoft.list_inbox_items({"limit": 3})
 return {"returned": summary["meta"]["returned"]}
 """
-    )
+        )
 
     assert result["result"] == {"returned": 0}
 

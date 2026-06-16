@@ -292,15 +292,18 @@ Tools can dynamically discover and adapt to available interfaces:
 
 ```typescript
 const result = await client.callToolChain(`
-  // Discover available tools at runtime
-  console.log('Available interfaces:', __interfaces);
+  // Discover available tools at runtime.
+  // NOTE: Use the safe (non-dunder) names — RestrictedPython blocks
+  // identifiers starting with "_". The "__interfaces" / "__getToolInterface"
+  // legacy aliases only work in unrestricted environments.
+  console.log('Available interfaces:', interfaces);
 
   // Get specific tool interface for validation
-  const prInterface = __getToolInterface('github.get_pull_request');
+  const prInterface = getToolInterface('github.get_pull_request');
   console.log('PR tool expects:', prInterface);
 
   // Use interface info for dynamic workflows
-  const hasSlackTools = __interfaces.includes('namespace slack');
+  const hasSlackTools = interfaces.includes('namespace slack');
   if (hasSlackTools) {
     await slack.post_message({ channel: '#dev', text: 'Analysis complete' });
   }
@@ -406,9 +409,9 @@ const response = await openai.chat.completions.create({
 ```
 
 **The template provides comprehensive guidance on:**
-- Tool discovery workflow (`searchTools` → `__interfaces` → `callToolChain`)
+- Tool discovery workflow (`searchTools` → `interfaces` → `callToolChain`)
 - Hierarchical access patterns (`manual.tool()` syntax)
-- Interface introspection (`__getToolInterface()`)
+- Interface introspection (`getToolInterface()`)
 - Error handling and best practices
 
 ---

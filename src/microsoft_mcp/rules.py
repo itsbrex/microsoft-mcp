@@ -112,3 +112,73 @@ def shape_rule_summary(rule: dict[str, Any]) -> dict[str, Any]:
         "conditions_summary": summarize_conditions(rule.get("conditions")),
         "actions_summary": summarize_actions(rule.get("actions")),
     }
+
+
+def _recipients(emails: list[str] | None) -> list[dict[str, Any]] | None:
+    if not emails:
+        return None
+    return [{"emailAddress": {"address": e}} for e in emails]
+
+
+def build_rule_payload(
+    *,
+    display_name: str,
+    sequence: int = 1,
+    is_enabled: bool = True,
+    sender_contains: list[str] | None = None,
+    subject_contains: list[str] | None = None,
+    body_contains: list[str] | None = None,
+    from_addresses: list[str] | None = None,
+    has_attachments: bool | None = None,
+    importance: str | None = None,
+    move_to_folder: str | None = None,
+    copy_to_folder: str | None = None,
+    assign_categories: list[str] | None = None,
+    mark_as_read: bool | None = None,
+    mark_importance: str | None = None,
+    forward_to: list[str] | None = None,
+    delete: bool | None = None,
+    stop_processing_rules: bool | None = None,
+) -> dict[str, Any]:
+    conditions: dict[str, Any] = {}
+    if sender_contains:
+        conditions["senderContains"] = sender_contains
+    if subject_contains:
+        conditions["subjectContains"] = subject_contains
+    if body_contains:
+        conditions["bodyContains"] = body_contains
+    if from_addresses:
+        conditions["fromAddresses"] = _recipients(from_addresses)
+    if has_attachments is not None:
+        conditions["hasAttachments"] = has_attachments
+    if importance:
+        conditions["importance"] = importance
+
+    actions: dict[str, Any] = {}
+    if move_to_folder:
+        actions["moveToFolder"] = move_to_folder
+    if copy_to_folder:
+        actions["copyToFolder"] = copy_to_folder
+    if assign_categories:
+        actions["assignCategories"] = assign_categories
+    if mark_as_read is not None:
+        actions["markAsRead"] = mark_as_read
+    if mark_importance:
+        actions["markImportance"] = mark_importance
+    if forward_to:
+        actions["forwardTo"] = _recipients(forward_to)
+    if delete is not None:
+        actions["delete"] = delete
+    if stop_processing_rules is not None:
+        actions["stopProcessingRules"] = stop_processing_rules
+
+    payload: dict[str, Any] = {
+        "displayName": display_name,
+        "sequence": sequence,
+        "isEnabled": is_enabled,
+    }
+    if conditions:
+        payload["conditions"] = conditions
+    if actions:
+        payload["actions"] = actions
+    return payload

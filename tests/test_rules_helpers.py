@@ -39,3 +39,28 @@ def test_shape_rule_summary_keys():
         "actions_summary": s["actions_summary"],
     }
     assert "news" in s["conditions_summary"]
+
+
+def test_build_rule_payload_minimal_move():
+    p = rules.build_rule_payload(
+        display_name="News",
+        sender_contains=["news.com"],
+        move_to_folder="AAMkFolder",
+        mark_as_read=True,
+    )
+    assert p["displayName"] == "News"
+    assert p["sequence"] == 1 and p["isEnabled"] is True
+    assert p["conditions"] == {"senderContains": ["news.com"]}
+    assert p["actions"] == {"moveToFolder": "AAMkFolder", "markAsRead": True}
+
+
+def test_build_rule_payload_addresses_and_forward():
+    p = rules.build_rule_payload(
+        display_name="Fwd",
+        from_addresses=["a@x.com"],
+        forward_to=["b@y.com"],
+    )
+    assert p["conditions"]["fromAddresses"] == [
+        {"emailAddress": {"address": "a@x.com"}}
+    ]
+    assert p["actions"]["forwardTo"] == [{"emailAddress": {"address": "b@y.com"}}]

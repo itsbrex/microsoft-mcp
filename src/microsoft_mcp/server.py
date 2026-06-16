@@ -86,6 +86,13 @@ def main() -> None:
 
         sys.exit(auth_cli.main(argv[1:]))
 
+    # `microsoft-mcp rules ...` dispatches to the rules CLI before importing
+    # the full tools/Graph stack.
+    if argv and argv[0] == "rules":
+        from microsoft_mcp import rules_cli
+
+        sys.exit(rules_cli.main(argv[1:]))
+
     # Load local development configuration before importing modules that read env.
     load_dotenv()
 

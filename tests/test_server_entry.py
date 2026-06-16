@@ -97,6 +97,7 @@ def test_auth_subcommand_dispatches_to_auth_cli(monkeypatch):
     [
         ("signatures", "microsoft_mcp.signatures_cli.main"),
         ("auth", "microsoft_mcp.auth_cli.main"),
+        ("rules", "microsoft_mcp.rules_cli.main"),
     ],
 )
 def test_subcommand_dispatch_routes(monkeypatch, head, target):

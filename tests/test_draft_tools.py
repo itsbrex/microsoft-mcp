@@ -3,6 +3,22 @@ from unittest.mock import call, patch
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _clear_signature_env(monkeypatch):
+    """Force signature env vars to empty so drafts don't get a real local
+    signature appended during tests. The repo's .env file sets
+    MICROSOFT_MCP_DEFAULT_SIGNATURE; ``load_dotenv()`` calls inside auth
+    helpers can re-populate after ``monkeypatch.delenv``, so we set them
+    to empty strings (which python-dotenv preserves rather than overwrites)."""
+    for var in (
+        "MICROSOFT_MCP_DEFAULT_SIGNATURE",
+        "MICROSOFT_MCP_REPLY_SIGNATURE",
+        "MICROSOFT_MCP_SIGNATURE_ACCOUNT",
+        "MICROSOFT_MCP_SIGNATURES_DIR",
+    ):
+        monkeypatch.setenv(var, "")
+
+
 def _draft_message(draft_id: str, **overrides):
     draft = {
         "id": draft_id,

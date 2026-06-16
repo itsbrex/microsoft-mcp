@@ -71,6 +71,14 @@ def _maybe_refresh_on_startup() -> None:
 
 
 def main() -> None:
+    # `microsoft-mcp signatures ...` dispatches to the signatures CLI without
+    # paying the cost of importing the full tools/Graph stack.
+    argv = sys.argv[1:]
+    if argv and argv[0] == "signatures":
+        from microsoft_mcp import signatures_cli
+
+        sys.exit(signatures_cli.main(argv[1:]))
+
     # Load local development configuration before importing modules that read env.
     load_dotenv()
 

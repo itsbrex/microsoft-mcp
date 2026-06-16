@@ -53,6 +53,9 @@ TOKEN_ENDPOINT_TEMPLATE = "https://login.microsoftonline.com/{tenant}/oauth2/v2.
 # Default scopes for Microsoft Graph
 DEFAULT_SCOPES = ["https://graph.microsoft.com/.default"]
 
+GRAPH_SCOPE = "https://graph.microsoft.com/.default offline_access"
+OUTLOOK_SCOPE = "https://outlook.office365.com/.default offline_access"
+
 # File permissions for sensitive data (owner read/write only)
 TOKEN_FILE_MODE = stat.S_IRUSR | stat.S_IWUSR  # 0o600
 CONFIG_DIR_MODE = stat.S_IRWXU  # 0o700
@@ -133,6 +136,7 @@ class MSALRefreshTokenAuth:
         client_id: Optional[str] = None,
         tenant_id: Optional[str] = None,
         account_identifier: Optional[str] = None,
+        api_type: str = "graph",
     ):
         """Initialize MSAL authentication.
 
@@ -175,6 +179,10 @@ class MSALRefreshTokenAuth:
                 if explicit_client_id is None:
                     self.client_id = account_metadata["client_id"]
 
+        # API resource this instance targets ("graph" or "outlook"). Only the
+        # access-token files and refresh scope vary; the refresh token is shared.
+        self.api_type = api_type if api_type in ("graph", "outlook") else "graph"
+
         # MSAL app instance (lazy initialized)
         self._msal_app: Optional[PublicClientApplication] = None
         self._refresh_lock = threading.Lock()
@@ -206,10 +214,16 @@ class MSALRefreshTokenAuth:
             logger.info(f"Created MSAL app with authority: {self.authority}")
         return self._msal_app
 
+    def _default_scope(self) -> str:
+        return OUTLOOK_SCOPE if self.api_type == "outlook" else GRAPH_SCOPE
+
     # Token file paths
     def _access_token_json_path(self) -> Path:
         """Path to structured access token JSON file."""
-        return self.tokens_dir / f"{self.account_identifier}_access_token.json"
+        suffix = (
+            "_outlook_access_token" if self.api_type == "outlook" else "_access_token"
+        )
+        return self.tokens_dir / f"{self.account_identifier}{suffix}.json"
 
     def _refresh_token_path(self) -> Path:
         """Path to refresh token file."""
@@ -217,7 +231,10 @@ class MSALRefreshTokenAuth:
 
     def _access_token_raw_path(self) -> Path:
         """Path to raw access token file."""
-        return self.tokens_dir / f"{self.account_identifier}_access_only.txt"
+        suffix = (
+            "_outlook_access_only" if self.api_type == "outlook" else "_access_only"
+        )
+        return self.tokens_dir / f"{self.account_identifier}{suffix}.txt"
 
     def _secure_write_file(self, path: Path, content: str) -> None:
         """Write file with secure permissions (0o600) set at create time."""
@@ -308,7 +325,7 @@ class MSALRefreshTokenAuth:
             "expires_at": expires_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "refreshed_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "scopes": scopes,
-            "api_type": "graph",
+            "api_type": self.api_type,
         }
 
         self._secure_write_json(self._access_token_json_path(), access_token_data)
@@ -395,7 +412,7 @@ class MSALRefreshTokenAuth:
                 parts.append("offline_access")
             scopes = " ".join(parts)
         else:
-            scopes = "https://graph.microsoft.com/.default offline_access"
+            scopes = self._default_scope()
 
         # Prepare POST data
         data = urllib.parse.urlencode(

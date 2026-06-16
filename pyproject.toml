@@ -17,6 +17,7 @@ dependencies = [
     "black>=23.3.0",
     "markitdown>=0.1.3",
     "RestrictedPython>=6.0",
+    "pyyaml>=6.0,<7",
 ]
 
 [project.scripts]
@@ -38,3 +39,9 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/microsoft_mcp"]
+include = [
+    "/src/microsoft_mcp/templates_data/**/*.yaml",
+]

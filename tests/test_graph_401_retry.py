@@ -47,7 +47,7 @@ class TestForceRefresh:
         return MSALRefreshTokenAuth(
             tokens_dir=tmp_path,
             client_id="d3590ed6-52b3-4102-aeff-aad2292ab01c",
-            account_identifier="test@example.com",
+            account_identifier="broach@cresa.com",
         )
 
     def test_force_refresh_clears_and_replays(self, tmp_path: Path) -> None:
@@ -55,7 +55,7 @@ class TestForceRefresh:
         auth = self._make_auth(tmp_path)
 
         # Write a fake refresh token to disk
-        refresh_token_path = tmp_path / "test@example.com_refresh_only.txt"
+        refresh_token_path = tmp_path / "broach@cresa.com_refresh_only.txt"
         refresh_token_path.write_text("old-refresh-token")
 
         new_token_dict = {
@@ -73,18 +73,22 @@ class TestForceRefresh:
         mock_refresh.assert_called_once_with("old-refresh-token")
 
         # The new access token should be persisted
-        access_token_path = tmp_path / "test@example.com_access_token.json"
+        access_token_path = tmp_path / "broach@cresa.com_access_token.json"
         assert access_token_path.exists()
         saved = json.loads(access_token_path.read_text())
         assert saved["access_token"] == "new-access-token"
 
-    def test_force_refresh_raises_when_no_refresh_token(self, tmp_path: Path) -> None:
-        """force_refresh() raises RuntimeError when no refresh token file exists."""
+    def test_force_refresh_falls_back_to_authenticate_when_no_refresh_token(
+        self, tmp_path: Path
+    ) -> None:
+        """force_refresh() calls authenticate() when no refresh token file exists."""
         auth = self._make_auth(tmp_path)
         # No refresh token file present
 
-        with pytest.raises(RuntimeError, match="refresh token"):
+        with patch.object(auth, "authenticate") as mock_auth:
             auth.force_refresh()
+
+        mock_auth.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

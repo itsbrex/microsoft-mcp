@@ -24,6 +24,7 @@ Environment Variables:
 - MICROSOFT_MCP_TOKENS_DIR: Custom token storage directory
 """
 
+import base64
 import json
 import logging
 import os
@@ -609,6 +610,10 @@ class MSALRefreshTokenAuth:
 
         Returns the saved access-token-data dict (not just the token string)
         so the caller can extract either token or expires_at.
+
+        Falls back to interactive device code flow when no refresh token is
+        available or when the refresh token itself is expired/revoked, making
+        re-authentication invisible to the user as long as a browser is reachable.
         """
         # Fast path: no lock needed if token is already valid.
         if self._is_token_valid():
@@ -616,22 +621,27 @@ class MSALRefreshTokenAuth:
             if token_data and token_data.get("access_token"):
                 return token_data
 
-        if not self._load_refresh_token():
-            logger.error("No refresh token found. Authentication required.")
-            raise RuntimeError(
-                "No refresh token found. Run authentication first: "
-                "MICROSOFT_MCP_AUTH_METHOD=msal uv run authenticate.py"
+        if self._load_refresh_token():
+            try:
+                return self._do_refresh_locked()
+            except Exception as e:
+                logger.warning(
+                    f"Silent token refresh failed ({e}); falling back to interactive auth"
+                )
+                self.clear_cache()
+        else:
+            logger.warning(
+                "No refresh token found; initiating interactive authentication"
             )
 
-        try:
-            return self._do_refresh_locked()
-        except Exception as e:
-            logger.error(f"Token refresh failed: {e}")
-            self.clear_cache()
+        # Silent refresh unavailable — prompt the user via device code flow.
+        self.authenticate()
+        token_data = self._load_access_token_data()
+        if not token_data or not token_data.get("access_token"):
             raise RuntimeError(
-                f"Token refresh failed: {e}. Please re-authenticate: "
-                "MICROSOFT_MCP_AUTH_METHOD=msal uv run authenticate.py"
-            ) from e
+                "Interactive authentication completed but token data could not be loaded"
+            )
+        return token_data
 
     def force_refresh(self) -> None:
         """Force a token refresh even if the cached access token looks valid.
@@ -642,16 +652,21 @@ class MSALRefreshTokenAuth:
         refresh lock, loads the refresh token from disk, calls
         _refresh_access_token, and persists the new tokens.
 
-        Does NOT clear cache on failure — a 401 retry failure should not
-        burn the refresh token.
-
-        Raises:
-            RuntimeError: if no refresh token is on disk (caller must
-                re-authenticate via authenticate() / authenticate_new_account).
-            Exception: if the refresh network call itself fails.
+        Falls back to interactive device code flow when the refresh token is
+        itself expired or revoked, so the 401-retry path in graph.request can
+        succeed without the user having to run a separate script.
         """
         logger.info(f"Force-refreshing access token for {self.account_identifier}")
-        self._do_refresh_locked()
+        try:
+            self._do_refresh_locked()
+        except Exception as e:
+            logger.warning(
+                f"Force-refresh failed ({e}); falling back to interactive auth"
+            )
+            self.clear_cache()
+            self.authenticate()
+            # Tokens are now saved on disk; graph.request will call get_token()
+            # immediately after force_refresh() returns to pick up the new token.
 
     def get_token(self) -> str:
         """Get a valid access token, refreshing if needed."""
@@ -831,3 +846,332 @@ def refresh_all_accounts(
             )
 
     return results
+
+
+def _resolve_tokens_dir(tokens_dir: Optional[Path]) -> Path:
+    """Resolve tokens_dir using the same precedence as MSALRefreshTokenAuth."""
+    if tokens_dir is not None:
+        return Path(tokens_dir)
+    default_dir = Path.home() / ".config" / "microsoft-mcp" / "tokens"
+    return Path(os.getenv("MICROSOFT_MCP_TOKENS_DIR", str(default_dir)))
+
+
+def _decode_jwt_claims(token: str) -> dict[str, Any]:
+    """Decode the payload segment of a JWT without verifying the signature.
+
+    Microsoft access tokens are signed JWTs. The payload claims (`upn`,
+    `preferred_username`, `oid`, `tid`, `aud`, `exp`) are sufficient to
+    confirm which Azure AD identity the token represents. We do NOT verify
+    the signature here — AAD already validated it at issue time, and we
+    trust that any token that successfully calls Graph is well-formed.
+
+    Args:
+        token: Encoded JWT string (three base64url-encoded segments).
+
+    Returns:
+        Dict of claims, or {"_decode_error": str} if parsing fails.
+    """
+    try:
+        parts = token.split(".")
+        if len(parts) < 2:
+            return {"_decode_error": "token has fewer than 2 segments"}
+        payload = parts[1]
+        # Pad to multiple of 4 for urlsafe_b64decode.
+        payload += "=" * (-len(payload) % 4)
+        return json.loads(base64.urlsafe_b64decode(payload))
+    except Exception as e:
+        return {"_decode_error": str(e)}
+
+
+def verify_account_tokens(
+    tokens_dir: Optional[Path] = None,
+    live: bool = False,
+    timeout_seconds: float = 15.0,
+) -> list[dict[str, Any]]:
+    """Verify that each saved token belongs to the account named in its filename.
+
+    For every ``*_access_token.json`` file in the tokens directory, decode
+    the JWT payload and compare its ``upn`` / ``preferred_username`` claim
+    to the filename identifier. JWT claims are signed by Azure AD at issue
+    time, so a mismatch is a hard signal that the wrong tokens were saved
+    under that filename (e.g., the user authenticated while
+    ``MICROSOFT_MCP_ACCOUNT_ID`` pointed at a different account).
+
+    Optionally call ``GET https://graph.microsoft.com/v1.0/me`` for a live
+    confirmation. ``/me`` is heavily throttled, so this is off by default.
+
+    Args:
+        tokens_dir: Directory containing token files. Defaults to
+            ``MICROSOFT_MCP_TOKENS_DIR`` or
+            ``~/.config/microsoft-mcp/tokens/``.
+        live: If True, also call Graph ``/me`` for each token.
+        timeout_seconds: HTTP timeout for the optional Graph call.
+
+    Returns:
+        List of dicts, one per account, each with:
+        - identifier (str): the filename stem
+        - jwt_upn (str | None): JWT ``upn`` / ``preferred_username`` claim
+        - jwt_oid (str | None): JWT ``oid`` claim (immutable object id)
+        - jwt_tid (str | None): JWT ``tid`` claim (tenant id)
+        - jwt_aud (str | None): JWT ``aud`` claim
+        - expires_at (str | None): from the saved JSON metadata
+        - graph_userPrincipalName (str | None): present only when live=True
+        - graph_mail (str | None): present only when live=True
+        - graph_id (str | None): present only when live=True
+        - graph_error (str | None): present only when live=True
+        - match (bool): True if the filename identifier matches the JWT
+          ``upn`` (case-insensitive) or any live Graph identifier
+        - jwt_decode_error (str | None): present only on decode failure
+    """
+    resolved_dir = _resolve_tokens_dir(tokens_dir)
+
+    if not resolved_dir.exists():
+        logger.info(
+            f"verify_account_tokens: tokens_dir {resolved_dir} does not exist, returning []"
+        )
+        return []
+
+    token_files = sorted(resolved_dir.glob("*_access_token.json"))
+    logger.info(
+        f"verify_account_tokens: inspecting {len(token_files)} account(s) in {resolved_dir}"
+    )
+
+    results: list[dict[str, Any]] = []
+
+    for token_file in token_files:
+        identifier = token_file.stem[: -len("_access_token")]
+        entry: dict[str, Any] = {
+            "identifier": identifier,
+            "jwt_upn": None,
+            "jwt_oid": None,
+            "jwt_tid": None,
+            "jwt_aud": None,
+            "expires_at": None,
+            "match": False,
+        }
+
+        try:
+            data = json.loads(token_file.read_text())
+        except Exception as e:
+            entry["jwt_decode_error"] = f"could not read token file: {e}"
+            results.append(entry)
+            continue
+
+        entry["expires_at"] = data.get("expires_at")
+        access_token = data.get("access_token") or ""
+        claims = _decode_jwt_claims(access_token)
+
+        if "_decode_error" in claims:
+            entry["jwt_decode_error"] = claims["_decode_error"]
+            results.append(entry)
+            continue
+
+        jwt_upn = (
+            claims.get("upn")
+            or claims.get("preferred_username")
+            or claims.get("unique_name")
+        )
+        entry["jwt_upn"] = jwt_upn
+        entry["jwt_oid"] = claims.get("oid")
+        entry["jwt_tid"] = claims.get("tid")
+        entry["jwt_aud"] = claims.get("aud")
+
+        candidates = {c.lower() for c in (jwt_upn,) if c}
+
+        if live:
+            try:
+                import httpx
+
+                resp = httpx.get(
+                    "https://graph.microsoft.com/v1.0/me",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                    timeout=timeout_seconds,
+                )
+                if resp.status_code == 200:
+                    body = resp.json()
+                    entry["graph_userPrincipalName"] = body.get("userPrincipalName")
+                    entry["graph_mail"] = body.get("mail")
+                    entry["graph_id"] = body.get("id")
+                    entry["graph_error"] = None
+                    for v in (
+                        entry["graph_userPrincipalName"],
+                        entry["graph_mail"],
+                    ):
+                        if v:
+                            candidates.add(v.lower())
+                else:
+                    entry["graph_userPrincipalName"] = None
+                    entry["graph_mail"] = None
+                    entry["graph_id"] = None
+                    entry["graph_error"] = f"HTTP {resp.status_code}: {resp.text[:200]}"
+            except Exception as e:
+                entry["graph_userPrincipalName"] = None
+                entry["graph_mail"] = None
+                entry["graph_id"] = None
+                entry["graph_error"] = repr(e)
+
+        entry["match"] = identifier.lower() in candidates
+        results.append(entry)
+
+    return results
+
+
+def refresh_account(
+    identifier: str,
+    tokens_dir: Optional[Path] = None,
+    client_id: Optional[str] = None,
+    tenant_id: Optional[str] = None,
+) -> dict[str, Any]:
+    """Refresh access token for a single MSAL account.
+
+    Single-account analogue of :func:`refresh_all_accounts`. Looks up the
+    token file at ``{tokens_dir}/{identifier}_access_token.json`` and runs
+    the same valid/refresh logic. Failures do NOT call ``clear_cache()`` —
+    consistent with refresh_all_accounts, this preserves the refresh token
+    for later retry.
+
+    Args:
+        identifier: Account identifier (filename stem, typically email).
+        tokens_dir: Directory containing token files. Defaults to
+            ``MICROSOFT_MCP_TOKENS_DIR`` or
+            ``~/.config/microsoft-mcp/tokens/``.
+        client_id: MSAL client ID. Defaults to env var or Microsoft Office
+            public client ID.
+        tenant_id: MSAL tenant ID. Defaults to env var or "common".
+
+    Returns:
+        Result dict with the same shape as one entry of refresh_all_accounts:
+        - identifier (str)
+        - status (str): "valid", "refreshed", "failed", or "missing"
+        - expires_at (str | None)
+        - error (str | None)
+    """
+    if not identifier or not identifier.strip():
+        raise ValueError("identifier must be a non-empty string")
+
+    resolved_dir = _resolve_tokens_dir(tokens_dir)
+    token_file = resolved_dir / f"{identifier}_access_token.json"
+
+    if not token_file.exists():
+        logger.info(
+            f"refresh_account: no token file for '{identifier}' at {token_file}"
+        )
+        return {
+            "identifier": identifier,
+            "status": "missing",
+            "expires_at": None,
+            "error": f"no token file at {token_file}",
+        }
+
+    probe = MSALRefreshTokenAuth(
+        tokens_dir=resolved_dir,
+        client_id=client_id,
+        tenant_id=tenant_id,
+        account_identifier=identifier,
+    )
+
+    if probe._is_token_valid():
+        token_data = probe._load_access_token_data() or {}
+        expires_at = token_data.get("expires_at")
+        logger.info(
+            f"refresh_account: '{identifier}' token is valid, expires_at={expires_at}"
+        )
+        return {
+            "identifier": identifier,
+            "status": "valid",
+            "expires_at": expires_at,
+            "error": None,
+        }
+
+    try:
+        token_data = probe._do_refresh_locked()
+        expires_at = token_data.get("expires_at")
+        logger.info(
+            f"refresh_account: '{identifier}' refreshed, expires_at={expires_at}"
+        )
+        return {
+            "identifier": identifier,
+            "status": "refreshed",
+            "expires_at": expires_at,
+            "error": None,
+        }
+    except Exception as e:
+        stale_data = probe._load_access_token_data() or {}
+        expires_at = stale_data.get("expires_at")
+        logger.warning(f"refresh_account: '{identifier}' refresh failed: {e}")
+        return {
+            "identifier": identifier,
+            "status": "failed",
+            "expires_at": expires_at,
+            "error": str(e),
+        }
+
+
+def force_reauthenticate(
+    identifier: str,
+    tokens_dir: Optional[Path] = None,
+    client_id: Optional[str] = None,
+    tenant_id: Optional[str] = None,
+) -> dict[str, Any]:
+    """Clear an account's saved tokens and re-run the MSAL device-code flow.
+
+    Use when an account's refresh token is revoked or the saved credentials
+    are otherwise unrecoverable. This is interactive: it prints a device
+    code and verification URL to stdout/stderr and blocks until the user
+    completes the browser flow.
+
+    Args:
+        identifier: Account identifier (filename stem, typically email).
+        tokens_dir: Directory containing token files. Defaults to
+            ``MICROSOFT_MCP_TOKENS_DIR`` or
+            ``~/.config/microsoft-mcp/tokens/``.
+        client_id: MSAL client ID. Defaults to env var or Microsoft Office
+            public client ID.
+        tenant_id: MSAL tenant ID. Defaults to env var or "common".
+
+    Returns:
+        Dict with keys:
+        - identifier (str)
+        - status (str): "reauthenticated" on success
+        - expires_at (str | None)
+        - signed_in_as (str | None): identifier reported by the new token
+          (from JWT claims), useful for detecting drift between
+          ``identifier`` and the account the user actually signed into
+
+    Raises:
+        ValueError: if identifier is empty.
+        RuntimeError: if the device-code flow fails.
+    """
+    if not identifier or not identifier.strip():
+        raise ValueError("identifier must be a non-empty string")
+
+    resolved_dir = _resolve_tokens_dir(tokens_dir)
+
+    auth = MSALRefreshTokenAuth(
+        tokens_dir=resolved_dir,
+        client_id=client_id,
+        tenant_id=tenant_id,
+        account_identifier=identifier,
+    )
+
+    logger.info(f"force_reauthenticate: clearing cache for '{identifier}'")
+    auth.clear_cache()
+
+    logger.info(f"force_reauthenticate: starting device-code flow for '{identifier}'")
+    result = auth.authenticate()
+
+    token_data = auth._load_access_token_data() or {}
+    expires_at = token_data.get("expires_at")
+    claims = _decode_jwt_claims(result.get("access_token", ""))
+    signed_in_as = (
+        claims.get("upn")
+        or claims.get("preferred_username")
+        or claims.get("unique_name")
+    )
+
+    return {
+        "identifier": identifier,
+        "status": "reauthenticated",
+        "expires_at": expires_at,
+        "signed_in_as": signed_in_as,
+    }

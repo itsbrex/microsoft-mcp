@@ -7,7 +7,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-import pytest
 
 from src.microsoft_mcp.auth_msal import (
     MSALRefreshTokenAuth,
@@ -393,18 +392,31 @@ class TestMSALRefreshTokenAuthGetToken:
                 token = auth.get_token()
                 assert token == "new-access-token"
 
-    def test_get_token_raises_without_refresh_token(self):
-        """Test get_token raises error when no refresh token available."""
+    def test_get_token_falls_back_to_authenticate_without_refresh_token(self):
+        """Test get_token falls back to interactive auth when no refresh token."""
         with tempfile.TemporaryDirectory() as tmpdir:
             auth = MSALRefreshTokenAuth(
                 tokens_dir=Path(tmpdir), account_identifier="test@example.com"
             )
 
-            # No token files exist
-            with pytest.raises(Exception) as exc_info:
-                auth.get_token()
+            # No token files exist — should call authenticate() instead of raising.
+            mock_token_data = {
+                "access_token": "new-token-from-auth",
+                "expires_at": "2099-01-01T00:00:00Z",
+            }
+            with (
+                patch.object(
+                    auth,
+                    "authenticate",
+                    return_value={"access_token": "new-token-from-auth"},
+                ),
+                patch.object(
+                    auth, "_load_access_token_data", return_value=mock_token_data
+                ),
+            ):
+                token = auth.get_token()
 
-            assert "No refresh token found" in str(exc_info.value)
+            assert token == "new-token-from-auth"
 
 
 class TestMSALRefreshTokenAuthExistsValidToken:

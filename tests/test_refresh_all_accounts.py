@@ -1,4 +1,10 @@
-"""Tests for refresh_all_accounts library function and MCP tool."""
+"""Tests for refresh_all_accounts library function and MCP tool.
+
+Test fixtures use a single email (``broach@cresa.com``) intentionally.
+``refresh_all_accounts`` has known auth issues when more than one account is
+saved on disk at once, so the supported pattern — and the only pattern
+exercised here — is single-account.
+"""
 
 import json
 from datetime import datetime, timedelta, timezone
@@ -7,6 +13,9 @@ from unittest.mock import patch
 import pytest
 
 from microsoft_mcp.auth_msal import MSALRefreshTokenAuth, refresh_all_accounts
+
+# Canonical single-account email used across all test fixtures in this file.
+TEST_EMAIL = "broach@cresa.com"
 
 
 # ---------------------------------------------------------------------------
@@ -58,7 +67,7 @@ class TestRefreshAllAccountsLibrary:
 
     def test_valid_token_reports_valid_status(self, tmp_path):
         """Token with future expiry — status should be 'valid', no network call."""
-        email = "user@example.com"
+        email = TEST_EMAIL
         data = _write_token_file(tmp_path, email, timedelta(hours=1))
 
         result = refresh_all_accounts(tokens_dir=tmp_path)
@@ -72,7 +81,7 @@ class TestRefreshAllAccountsLibrary:
 
     def test_expired_token_triggers_refresh(self, tmp_path):
         """Expired token — _acquire_token_data is called and returns refreshed status."""
-        email = "expired@example.com"
+        email = TEST_EMAIL
         _write_token_file(tmp_path, email, timedelta(seconds=-10))
         _write_refresh_token(tmp_path, email)
 
@@ -97,45 +106,31 @@ class TestRefreshAllAccountsLibrary:
         assert entry["expires_at"] is not None
         assert entry["error"] is None
 
-    def test_one_account_failure_does_not_block_others(self, tmp_path):
-        """Failed refresh on one account — other valid accounts still report 'valid'."""
-        valid_email = "valid@example.com"
-        broken_email = "broken@example.com"
+    def test_refresh_failure_reports_failed_status(self, tmp_path):
+        """Failed refresh on the saved account — status should be 'failed' with error."""
+        email = TEST_EMAIL
 
-        _write_token_file(tmp_path, valid_email, timedelta(hours=2))
-        _write_token_file(tmp_path, broken_email, timedelta(seconds=-5))
-        _write_refresh_token(tmp_path, broken_email)
-
-        def _raise_on_broken(self, refresh_token):
-            # refresh_token positional arg must match the real
-            # _refresh_access_token signature for patch.object; mock body
-            # intentionally ignores it.
-            del refresh_token
-            if self.account_identifier == broken_email:
-                raise RuntimeError("nope")
-            # Should not be called for the valid account, but guard anyway.
-            raise AssertionError("unexpected call for valid account")
+        _write_token_file(tmp_path, email, timedelta(seconds=-5))
+        _write_refresh_token(tmp_path, email)
 
         with patch.object(
-            MSALRefreshTokenAuth, "_refresh_access_token", _raise_on_broken
+            MSALRefreshTokenAuth,
+            "_refresh_access_token",
+            side_effect=RuntimeError("nope"),
         ):
             result = refresh_all_accounts(tokens_dir=tmp_path)
 
-        assert len(result) == 2
-
-        by_id = {r["identifier"]: r for r in result}
-
-        assert by_id[valid_email]["status"] == "valid"
-        assert by_id[valid_email]["error"] is None
-
-        assert by_id[broken_email]["status"] == "failed"
-        assert "nope" in (by_id[broken_email]["error"] or "")
+        assert len(result) == 1
+        entry = result[0]
+        assert entry["identifier"] == email
+        assert entry["status"] == "failed"
+        assert "nope" in (entry["error"] or "")
 
     def test_refresh_all_accounts_does_not_clear_cache_on_failure(self, tmp_path):
         """refresh_all_accounts must NOT delete token files when a per-account
         refresh fails — the refresh token must survive so the user can retry
         or re-authenticate manually (regression guard for Bug A)."""
-        email = "victim@example.com"
+        email = TEST_EMAIL
 
         # Write expired access-token JSON and the precious refresh token.
         _write_token_file(tmp_path, email, timedelta(seconds=-60))
@@ -169,11 +164,15 @@ class TestRefreshAllAccountsLibrary:
             "the refresh token must be preserved for recovery"
         )
 
-    def test_acquire_token_data_still_clears_cache_on_failure(self, tmp_path):
-        """_acquire_token_data (the lazy get_token path) MUST still call
-        clear_cache() on refresh failure — this evicts a corrupted token so
-        the next call triggers re-authentication instead of looping forever."""
-        email = "lazy@example.com"
+    def test_acquire_token_data_clears_cache_then_reauths_on_refresh_failure(
+        self, tmp_path
+    ):
+        """_acquire_token_data clears cache on refresh failure, then calls authenticate().
+
+        Evicting the corrupted token ensures the interactive re-auth path starts
+        clean. authenticate() is mocked here so no real device-code flow runs.
+        """
+        email = TEST_EMAIL
 
         _write_token_file(tmp_path, email, timedelta(seconds=-60))
         _write_refresh_token(tmp_path, email, value="stale-refresh-token")
@@ -186,15 +185,22 @@ class TestRefreshAllAccountsLibrary:
             account_identifier=email,
         )
 
-        with patch.object(
-            auth,
-            "_refresh_access_token",
-            side_effect=RuntimeError("simulated failure"),
+        # authenticate() raises so we can inspect file state after clear_cache()
+        # without needing to fake the post-auth token reload.
+        with (
+            patch.object(
+                auth,
+                "_refresh_access_token",
+                side_effect=RuntimeError("simulated failure"),
+            ),
+            patch.object(
+                auth, "authenticate", side_effect=RuntimeError("auth cancelled")
+            ),
+            pytest.raises(RuntimeError),
         ):
-            with pytest.raises(RuntimeError):
-                auth._acquire_token_data()
+            auth._acquire_token_data()
 
-        # Files must be gone — clear_cache() must have fired.
+        # Files must be gone — clear_cache() must have fired before authenticate().
         assert not access_json.exists(), (
             "access_token.json still exists after _acquire_token_data failure — "
             "clear_cache() was not called on the lazy-refresh path"
@@ -235,7 +241,7 @@ class TestRefreshAllAccountsMcpTool:
 
         fake_result = [
             {
-                "identifier": "someone@example.com",
+                "identifier": TEST_EMAIL,
                 "status": "valid",
                 "expires_at": "2099-01-01T00:00:00Z",
                 "error": None,

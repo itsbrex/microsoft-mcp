@@ -23,6 +23,7 @@ dependencies = [
 microsoft-mcp = "microsoft_mcp.server:main"
 microsoft-mcp-utcp-config = "microsoft_mcp.utcp_bridge_config:main"
 microsoft-mcp-signatures = "microsoft_mcp.signatures_cli:cli_main"
+microsoft-mcp-auth = "microsoft_mcp.auth_cli:cli_main"
 
 [build-system]
 requires = ["hatchling"]

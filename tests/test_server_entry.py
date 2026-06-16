@@ -68,3 +68,25 @@ def test_server_console_script_imports_cleanly():
     """microsoft-mcp console script must reach the CLIENT_ID guard without ImportError."""
     proc = _run_server_form([CONSOLE_SCRIPT])  # type: ignore[list-item]
     _assert_clean_import(proc, "console script (microsoft-mcp)")
+
+
+def test_auth_subcommand_dispatches_to_auth_cli(monkeypatch):
+    from unittest import mock
+
+    from microsoft_mcp import server
+
+    called = {}
+
+    def fake_main(argv):
+        called["argv"] = argv
+        return 0
+
+    monkeypatch.setattr("microsoft_mcp.auth_cli.main", fake_main)
+    monkeypatch.setattr(sys, "argv", ["microsoft-mcp", "auth", "refresh", "--json"])
+    # Real sys.exit raises SystemExit and halts; mirror that so the dispatch
+    # actually short-circuits before reaching load_dotenv()/mcp.run().
+    with mock.patch.object(sys, "exit", side_effect=SystemExit) as fake_exit:
+        with pytest.raises(SystemExit):
+            server.main()
+    assert called["argv"] == ["refresh", "--json"]
+    fake_exit.assert_called_once_with(0)

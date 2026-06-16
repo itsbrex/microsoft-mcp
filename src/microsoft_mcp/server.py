@@ -79,6 +79,13 @@ def main() -> None:
 
         sys.exit(signatures_cli.main(argv[1:]))
 
+    # `microsoft-mcp auth ...` dispatches to the auth CLI (refresh/verify/list/
+    # status) before importing the full tools/Graph stack.
+    if argv and argv[0] == "auth":
+        from microsoft_mcp import auth_cli
+
+        sys.exit(auth_cli.main(argv[1:]))
+
     # Load local development configuration before importing modules that read env.
     load_dotenv()
 

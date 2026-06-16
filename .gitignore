@@ -51,6 +51,8 @@ mcp-tool-responses/
 .claude/state/
 .claude/chain/
 .claude/logs/
+.claude/hooks/logs/
+.claude/HANDOFF.md
 .claude/agents/session-state.json
 
 # Claude Code session transcripts (autosaved, dated)

@@ -6984,4 +6984,200 @@ def delete_task(list_name: str, task_id: str) -> dict[str, Any]:
         raise
 
 
+@mcp.tool
+def list_checklist_items(list_name: str, task_id: str) -> list[dict[str, Any]]:
+    """List all checklist items for a task in a To-Do list.
+
+    Args:
+        list_name: Display name or id of the task list.
+        task_id: The task id whose checklist items to list.
+
+    Returns:
+        List of checklistItem objects.
+    """
+    logger.info(
+        "list_checklist_items called: list_name=%s task_id=%s", list_name, task_id
+    )
+    try:
+        list_id = _resolve_todo_list(list_name)
+        result = graph.request(
+            "GET",
+            f"/me/todo/lists/{list_id}/tasks/{task_id}/checklistItems",
+        )
+        if not result:
+            return []
+        return result.get("value", [])
+    except Exception as e:
+        logger.error("list_checklist_items failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def add_checklist_item(
+    list_name: str,
+    task_id: str,
+    text: str,
+    is_checked: bool = False,
+) -> dict[str, Any]:
+    """Add a checklist item to a task in a To-Do list.
+
+    Args:
+        list_name: Display name or id of the task list.
+        task_id: The task id to add the checklist item to.
+        text: Display name of the checklist item.
+        is_checked: Whether the item is already checked (default: False).
+
+    Returns:
+        The created checklistItem object.
+    """
+    logger.info(
+        "add_checklist_item called: list_name=%s task_id=%s text=%s",
+        list_name,
+        task_id,
+        text,
+    )
+    try:
+        list_id = _resolve_todo_list(list_name)
+        result = graph.request(
+            "POST",
+            f"/me/todo/lists/{list_id}/tasks/{task_id}/checklistItems",
+            json={"displayName": text, "isChecked": is_checked},
+        )
+        if not result:
+            raise RuntimeError("add_checklist_item: no data returned from Graph")
+        return result
+    except Exception as e:
+        logger.error("add_checklist_item failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def update_checklist_item(
+    list_name: str,
+    task_id: str,
+    item_id: str,
+    text: str | None = None,
+    is_checked: bool | None = None,
+) -> dict[str, Any]:
+    """Partially update a checklist item (only provided fields are changed).
+
+    Args:
+        list_name: Display name or id of the task list.
+        task_id: The task id containing the checklist item.
+        item_id: The checklist item id to update.
+        text: New display name (optional).
+        is_checked: New checked state (optional).
+
+    Returns:
+        The updated checklistItem object.
+    """
+    logger.info(
+        "update_checklist_item called: list_name=%s task_id=%s item_id=%s",
+        list_name,
+        task_id,
+        item_id,
+    )
+    try:
+        list_id = _resolve_todo_list(list_name)
+        patch: dict[str, Any] = {}
+        if text is not None:
+            patch["displayName"] = text
+        if is_checked is not None:
+            patch["isChecked"] = is_checked
+        result = graph.request(
+            "PATCH",
+            f"/me/todo/lists/{list_id}/tasks/{task_id}/checklistItems/{item_id}",
+            json=patch,
+        )
+        if not result:
+            raise RuntimeError("update_checklist_item: no data returned from Graph")
+        return result
+    except Exception as e:
+        logger.error("update_checklist_item failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def delete_checklist_item(list_name: str, task_id: str, item_id: str) -> dict[str, Any]:
+    """Delete a checklist item from a task in a To-Do list.
+
+    Args:
+        list_name: Display name or id of the task list.
+        task_id: The task id containing the checklist item.
+        item_id: The checklist item id to delete.
+
+    Returns:
+        {"status": "deleted", "item_id": item_id}
+    """
+    logger.info(
+        "delete_checklist_item called: list_name=%s task_id=%s item_id=%s",
+        list_name,
+        task_id,
+        item_id,
+    )
+    try:
+        list_id = _resolve_todo_list(list_name)
+        graph.request(
+            "DELETE",
+            f"/me/todo/lists/{list_id}/tasks/{task_id}/checklistItems/{item_id}",
+        )
+        return {"status": "deleted", "item_id": item_id}
+    except Exception as e:
+        logger.error("delete_checklist_item failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def create_task_from_email(
+    email_id: str,
+    list_name: str,
+    title: str | None = None,
+    importance: str = "normal",
+) -> dict[str, Any]:
+    """Create a To-Do task linked to an email message.
+
+    Fetches the email subject and web link, then creates a task in the
+    specified list with a linkedResource pointing back to the email.
+
+    Args:
+        email_id: The message id to link.
+        list_name: Display name or id of the task list (created if missing).
+        title: Task title (default: "Follow up: <email subject>").
+        importance: Task importance: "low" | "normal" | "high" (default: "normal").
+
+    Returns:
+        The created task object.
+    """
+    logger.info(
+        "create_task_from_email called: email_id=%s list_name=%s", email_id, list_name
+    )
+    try:
+        message = graph.request(
+            "GET",
+            f"/me/messages/{email_id}",
+            params={"$select": "subject,webLink"},
+        )
+        if not message:
+            raise RuntimeError("create_task_from_email: could not fetch email")
+        subject = message.get("subject", "")
+        web_link = message.get("webLink", "")
+        task_title = title if title is not None else f"Follow up: {subject}"
+        list_id = _resolve_todo_list(list_name, create_if_missing=True)
+        payload = _todo.build_task_payload(title=task_title, importance=importance)
+        payload["linkedResources"] = [
+            _todo.build_linked_resource(web_link, "View Email")
+        ]
+        result = graph.request(
+            "POST",
+            f"/me/todo/lists/{list_id}/tasks",
+            json=payload,
+        )
+        if not result:
+            raise RuntimeError("create_task_from_email: no data returned from Graph")
+        return result
+    except Exception as e:
+        logger.error("create_task_from_email failed: %s", e, exc_info=True)
+        raise
+
+
 _configure_public_tool_mode()

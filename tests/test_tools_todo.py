@@ -303,3 +303,174 @@ def test_delete_task(mock_paged, mock_req):
     args = delete_call[0][0]
     assert "task1" in args[1]
     assert result == {"status": "deleted", "task_id": "task1"}
+
+
+# ---------------------------------------------------------------------------
+# list_checklist_items
+# ---------------------------------------------------------------------------
+
+_CHECKLIST_ITEMS = [
+    {"id": "ci1", "displayName": "Step 1", "isChecked": False},
+    {"id": "ci2", "displayName": "Step 2", "isChecked": True},
+]
+
+
+@patch("src.microsoft_mcp.tools.graph.request")
+@patch("src.microsoft_mcp.tools.graph.request_paginated")
+def test_list_checklist_items(mock_paged, mock_req):
+    mock_paged.return_value = iter(_LISTS_RESPONSE)
+    mock_req.return_value = {"value": _CHECKLIST_ITEMS}
+    result = tools.list_checklist_items.fn(list_name="Tasks", task_id="task1")
+    args = mock_req.call_args[0]
+    assert args[0] == "GET"
+    assert args[1] == "/me/todo/lists/list1/tasks/task1/checklistItems"
+    assert len(result) == 2
+    assert result[0]["id"] == "ci1"
+
+
+# ---------------------------------------------------------------------------
+# add_checklist_item
+# ---------------------------------------------------------------------------
+
+
+@patch("src.microsoft_mcp.tools.graph.request")
+@patch("src.microsoft_mcp.tools.graph.request_paginated")
+def test_add_checklist_item(mock_paged, mock_req):
+    mock_paged.return_value = iter(_LISTS_RESPONSE)
+    mock_req.return_value = {"id": "ci3", "displayName": "Step 3", "isChecked": False}
+    result = tools.add_checklist_item.fn(
+        list_name="Tasks", task_id="task1", text="Step 3"
+    )
+    args, kwargs = mock_req.call_args
+    assert args[0] == "POST"
+    assert args[1] == "/me/todo/lists/list1/tasks/task1/checklistItems"
+    assert kwargs["json"] == {"displayName": "Step 3", "isChecked": False}
+    assert result["id"] == "ci3"
+
+
+@patch("src.microsoft_mcp.tools.graph.request")
+@patch("src.microsoft_mcp.tools.graph.request_paginated")
+def test_add_checklist_item_pre_checked(mock_paged, mock_req):
+    mock_paged.return_value = iter(_LISTS_RESPONSE)
+    mock_req.return_value = {
+        "id": "ci4",
+        "displayName": "Already done",
+        "isChecked": True,
+    }
+    result = tools.add_checklist_item.fn(
+        list_name="Tasks", task_id="task1", text="Already done", is_checked=True
+    )
+    _, kwargs = mock_req.call_args
+    assert kwargs["json"] == {"displayName": "Already done", "isChecked": True}
+    assert result["isChecked"] is True
+
+
+# ---------------------------------------------------------------------------
+# update_checklist_item
+# ---------------------------------------------------------------------------
+
+
+@patch("src.microsoft_mcp.tools.graph.request")
+@patch("src.microsoft_mcp.tools.graph.request_paginated")
+def test_update_checklist_item_text(mock_paged, mock_req):
+    mock_paged.return_value = iter(_LISTS_RESPONSE)
+    mock_req.return_value = {
+        "id": "ci1",
+        "displayName": "Step 1 edited",
+        "isChecked": False,
+    }
+    result = tools.update_checklist_item.fn(
+        list_name="Tasks", task_id="task1", item_id="ci1", text="Step 1 edited"
+    )
+    args, kwargs = mock_req.call_args
+    assert args[0] == "PATCH"
+    assert args[1] == "/me/todo/lists/list1/tasks/task1/checklistItems/ci1"
+    assert kwargs["json"] == {"displayName": "Step 1 edited"}
+    assert result["displayName"] == "Step 1 edited"
+
+
+@patch("src.microsoft_mcp.tools.graph.request")
+@patch("src.microsoft_mcp.tools.graph.request_paginated")
+def test_update_checklist_item_checked(mock_paged, mock_req):
+    mock_paged.return_value = iter(_LISTS_RESPONSE)
+    mock_req.return_value = {"id": "ci1", "displayName": "Step 1", "isChecked": True}
+    result = tools.update_checklist_item.fn(
+        list_name="Tasks", task_id="task1", item_id="ci1", is_checked=True
+    )
+    _, kwargs = mock_req.call_args
+    assert kwargs["json"] == {"isChecked": True}
+    assert result["isChecked"] is True
+
+
+# ---------------------------------------------------------------------------
+# delete_checklist_item
+# ---------------------------------------------------------------------------
+
+
+@patch("src.microsoft_mcp.tools.graph.request")
+@patch("src.microsoft_mcp.tools.graph.request_paginated")
+def test_delete_checklist_item(mock_paged, mock_req):
+    mock_paged.return_value = iter(_LISTS_RESPONSE)
+    mock_req.return_value = None
+    result = tools.delete_checklist_item.fn(
+        list_name="Tasks", task_id="task1", item_id="ci1"
+    )
+    args = mock_req.call_args[0]
+    assert args[0] == "DELETE"
+    assert args[1] == "/me/todo/lists/list1/tasks/task1/checklistItems/ci1"
+    assert result == {"status": "deleted", "item_id": "ci1"}
+
+
+# ---------------------------------------------------------------------------
+# create_task_from_email
+# ---------------------------------------------------------------------------
+
+_EMAIL_WEB_LINK = "https://outlook.office365.com/mail/id/AAMkTest"
+
+
+@patch("src.microsoft_mcp.tools.graph.request")
+@patch("src.microsoft_mcp.tools.graph.request_paginated")
+def test_create_task_from_email(mock_paged, mock_req):
+    mock_paged.return_value = iter(_LISTS_RESPONSE)
+    mock_req.side_effect = [
+        # First: GET /me/messages/{id}?$select=subject,webLink
+        {"subject": "Q2 Budget Review", "webLink": _EMAIL_WEB_LINK},
+        # Second: POST task
+        {
+            "id": "new_task_email",
+            "title": "Follow up: Q2 Budget Review",
+            "status": "notStarted",
+        },
+    ]
+    result = tools.create_task_from_email.fn(email_id="AAMkTest", list_name="Tasks")
+    # First call: GET message
+    get_call = mock_req.call_args_list[0]
+    assert get_call[0][0] == "GET"
+    assert "AAMkTest" in get_call[0][1]
+    # Second call: POST task
+    post_call = mock_req.call_args_list[1]
+    assert post_call[0][0] == "POST"
+    assert post_call[0][1] == "/me/todo/lists/list1/tasks"
+    payload = post_call[1]["json"]
+    assert payload["title"] == "Follow up: Q2 Budget Review"
+    linked = payload["linkedResources"]
+    assert len(linked) == 1
+    assert linked[0]["webUrl"] == _EMAIL_WEB_LINK
+    assert result["id"] == "new_task_email"
+
+
+@patch("src.microsoft_mcp.tools.graph.request")
+@patch("src.microsoft_mcp.tools.graph.request_paginated")
+def test_create_task_from_email_custom_title(mock_paged, mock_req):
+    mock_paged.return_value = iter(_LISTS_RESPONSE)
+    mock_req.side_effect = [
+        {"subject": "Re: Meeting notes", "webLink": _EMAIL_WEB_LINK},
+        {"id": "new_task_custom", "title": "My custom title", "status": "notStarted"},
+    ]
+    result = tools.create_task_from_email.fn(
+        email_id="AAMkTest", list_name="Tasks", title="My custom title"
+    )
+    post_call = mock_req.call_args_list[1]
+    payload = post_call[1]["json"]
+    assert payload["title"] == "My custom title"
+    assert result["id"] == "new_task_custom"

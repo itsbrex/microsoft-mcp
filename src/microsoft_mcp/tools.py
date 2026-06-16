@@ -6760,9 +6760,20 @@ def list_todo_lists(response_profile: str = "auto") -> list[dict[str, Any]]:
         List of task list objects from Microsoft Graph.
     """
     logger.info("list_todo_lists called")
+    profile = get_response_profile(response_profile)
     try:
         raw = list(graph.request_paginated("/me/todo/lists", limit=500))
-        return raw
+        if profile == "assistant":
+            return [
+                {
+                    "id": lst["id"],
+                    "display_name": lst.get("displayName", ""),
+                    "is_owner": lst.get("isOwner"),
+                    "wellknown_name": lst.get("wellknownListName"),
+                }
+                for lst in raw
+            ]
+        return [cleanup_graph_payload(lst) for lst in raw]
     except Exception as e:
         logger.error("list_todo_lists failed: %s", e, exc_info=True)
         raise
@@ -6807,6 +6818,7 @@ def list_tasks(
         List of task objects.
     """
     logger.info("list_tasks called: list_name=%s status=%s", list_name, status)
+    profile = get_response_profile(response_profile)
     try:
         list_id = _resolve_todo_list(list_name)
         params: dict[str, Any] = {}
@@ -6819,7 +6831,20 @@ def list_tasks(
                 limit=500,
             )
         )
-        return raw
+        if profile == "assistant":
+            return [
+                {
+                    "id": t["id"],
+                    "title": t.get("title", ""),
+                    "status": t.get("status"),
+                    "importance": t.get("importance"),
+                    "due": (
+                        t["dueDateTime"]["dateTime"] if t.get("dueDateTime") else None
+                    ),
+                }
+                for t in raw
+            ]
+        return [cleanup_graph_payload(t) for t in raw]
     except Exception as e:
         logger.error("list_tasks failed: %s", e, exc_info=True)
         raise

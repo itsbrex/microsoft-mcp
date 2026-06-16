@@ -12,8 +12,13 @@ from src.microsoft_mcp import tools
 # ---------------------------------------------------------------------------
 
 _LISTS_RESPONSE = [
-    {"id": "list1", "displayName": "Tasks", "isOwner": True},
-    {"id": "list2", "displayName": "Work", "isOwner": True},
+    {
+        "id": "list1",
+        "displayName": "Tasks",
+        "isOwner": True,
+        "wellknownListName": "defaultList",
+    },
+    {"id": "list2", "displayName": "Work", "isOwner": True, "wellknownListName": None},
 ]
 
 
@@ -25,7 +30,38 @@ def test_list_todo_lists(mock_paged):
     assert call_path == "/me/todo/lists"
     assert len(result) == 2
     assert result[0]["id"] == "list1"
-    assert result[1]["displayName"] == "Work"
+
+
+@patch("src.microsoft_mcp.tools.graph.request_paginated")
+def test_list_todo_lists_assistant_profile(mock_paged):
+    mock_paged.return_value = iter(_LISTS_RESPONSE)
+    result = tools.list_todo_lists.fn(response_profile="assistant")
+    assert len(result) == 2
+    first = result[0]
+    assert set(first.keys()) == {"id", "display_name", "is_owner", "wellknown_name"}
+    assert first["id"] == "list1"
+    assert first["display_name"] == "Tasks"
+    assert first["is_owner"] is True
+    assert first["wellknown_name"] == "defaultList"
+
+
+@patch("src.microsoft_mcp.tools.graph.request_paginated")
+def test_list_todo_lists_legacy_profile(mock_paged):
+    # legacy profile: should return cleanup_graph_payload results (no @odata.* noise)
+    raw = [
+        {
+            "id": "list1",
+            "displayName": "Tasks",
+            "@odata.etag": "etag-val",
+            "@odata.context": "ctx",
+        }
+    ]
+    mock_paged.return_value = iter(raw)
+    result = tools.list_todo_lists.fn(response_profile="legacy")
+    assert len(result) == 1
+    assert "@odata.etag" not in result[0]
+    assert "@odata.context" not in result[0]
+    assert result[0]["id"] == "list1"
 
 
 # ---------------------------------------------------------------------------
@@ -61,14 +97,13 @@ _TASKS_RESPONSE = [
         "title": "Call dentist",
         "status": "completed",
         "importance": "high",
+        "dueDateTime": {"dateTime": "2026-06-20T23:59:00", "timeZone": "UTC"},
     },
 ]
 
 
 @patch("src.microsoft_mcp.tools.graph.request_paginated")
-@patch("src.microsoft_mcp.tools.graph.request")
-def test_list_tasks(mock_req, mock_paged):
-    mock_req.return_value = _LISTS_RESPONSE  # for /me/todo/lists
+def test_list_tasks(mock_paged):
     mock_paged.side_effect = [
         iter(_LISTS_RESPONSE),  # _resolve_todo_list call
         iter(_TASKS_RESPONSE),  # list_tasks call
@@ -87,24 +122,50 @@ def test_list_tasks_status_filter(mock_paged):
     tools.list_tasks.fn(list_name="Tasks", status="notStarted")
     # Second paginated call should include $filter param
     second_call = mock_paged.call_args_list[1]
-    (
-        second_call[1].get("params") or second_call[0][1]
-        if len(second_call[0]) > 1
-        else second_call[1].get("params", {})
+    task_params = second_call.kwargs.get("params") or (
+        second_call.args[1] if len(second_call.args) > 1 else {}
     )
-    # Check the $filter is in the params
-    all_calls = mock_paged.call_args_list
-    last_call_kwargs = all_calls[-1][1] if all_calls[-1][1] else {}
-    last_call_args = all_calls[-1][0]
-    # extract params from either positional or keyword
-    if "params" in last_call_kwargs:
-        task_params = last_call_kwargs["params"]
-    elif len(last_call_args) > 1:
-        task_params = last_call_args[1]
-    else:
-        task_params = {}
     assert "$filter" in task_params
-    assert "notStarted" in task_params["$filter"]
+    assert task_params["$filter"] == "status eq 'notStarted'"
+
+
+@patch("src.microsoft_mcp.tools.graph.request_paginated")
+def test_list_tasks_assistant_profile(mock_paged):
+    mock_paged.side_effect = [
+        iter(_LISTS_RESPONSE),
+        iter(_TASKS_RESPONSE),
+    ]
+    result = tools.list_tasks.fn(list_name="Tasks", response_profile="assistant")
+    assert len(result) == 2
+    first = result[0]
+    assert set(first.keys()) == {"id", "title", "status", "importance", "due"}
+    assert first["id"] == "task1"
+    assert first["title"] == "Buy milk"
+    assert first["status"] == "notStarted"
+    assert first["importance"] == "normal"
+    assert first["due"] is None  # no dueDateTime on task1
+    second = result[1]
+    assert second["due"] == "2026-06-20T23:59:00"
+
+
+@patch("src.microsoft_mcp.tools.graph.request_paginated")
+def test_list_tasks_legacy_profile(mock_paged):
+    raw_tasks = [
+        {
+            "id": "task1",
+            "title": "Buy milk",
+            "status": "notStarted",
+            "@odata.etag": "etag-val",
+        }
+    ]
+    mock_paged.side_effect = [
+        iter(_LISTS_RESPONSE),
+        iter(raw_tasks),
+    ]
+    result = tools.list_tasks.fn(list_name="Tasks", response_profile="legacy")
+    assert len(result) == 1
+    assert "@odata.etag" not in result[0]
+    assert result[0]["id"] == "task1"
 
 
 # ---------------------------------------------------------------------------
@@ -128,9 +189,10 @@ def test_create_task(mock_paged, mock_req):
     assert post_call, "Expected a POST call"
     args = post_call[0][0]
     assert "/me/todo/lists/list1/tasks" in args[1]
-    (
-        post_call[0][1]["json"] if post_call[0][1].get("json") else post_call[0][1]
-    )
+    # Assert the POST body contains expected title and importance
+    payload = post_call[0][1].get("json", {})
+    assert payload.get("title") == "Write docs"
+    assert payload.get("importance") == "normal"
     assert result["id"] == "new_task_1"
 
 

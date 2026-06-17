@@ -17,6 +17,7 @@ import yaml
 from fastmcp import FastMCP
 from . import graph
 from . import rules as _rules
+from . import signature_parser as _sigparse
 from . import signatures as signatures_mod
 from . import templates_engine as _templates
 from . import todo as _todo
@@ -7298,6 +7299,71 @@ def substitute_template_variables(
         return _templates.substitute_variables(content, values, strict=strict)
     except _templates.VariableSubstitutionError as exc:
         raise ValueError(str(exc)) from exc
+
+
+@mcp.tool
+def parse_email_signature(
+    email_body: str,
+    is_html: bool = False,
+    extract_alternatives: bool = True,
+) -> dict:
+    """Extract contact information and job-change signals from an email body.
+
+    Parses signature blocks and OOO (out-of-office) prose to surface contact
+    details (name, title, phone, email, URLs) and signals that the sender has
+    changed roles or companies.
+
+    Args:
+        email_body: Plain-text or HTML email body to parse.
+        is_html: When ``True``, strip HTML tags before parsing.
+        extract_alternatives: When ``True``, also scan the body prose for
+            alternative contact references (e.g. "contact Jane Doe at …").
+
+    Returns:
+        Dict with keys:
+          - ``contacts``: list of contact dicts (name, title, phone, email, …)
+          - ``job_changes``: dict with optional keys ``left_company``,
+            ``new_company``, ``new_email``
+    """
+    logger.info(
+        "parse_email_signature called: is_html=%s, extract_alternatives=%s",
+        is_html,
+        extract_alternatives,
+    )
+    try:
+        return _sigparse.parse_email_body(
+            email_body,
+            html=is_html,
+            extract_alternatives=extract_alternatives,
+        )
+    except Exception as e:
+        logger.error("parse_email_signature failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def normalize_phone_number(phone: str, region: str = "US") -> str:
+    """Normalize a phone number string to E.164 format.
+
+    Strips formatting characters and converts common North American phone
+    number representations to ``+1XXXXXXXXXX``. International numbers that
+    already start with ``+`` are preserved with non-digit characters removed.
+
+    Args:
+        phone: Raw phone number string (e.g. ``"(949) 462-4106"``).
+        region: ISO 3166-1 alpha-2 country code used as the default dialling
+            region when no country prefix is present. Defaults to ``"US"``.
+
+    Returns:
+        E.164-formatted string (e.g. ``"+19494624106"``), or ``""`` if the
+        input cannot be parsed as a valid phone number.
+    """
+    logger.info("normalize_phone_number called: phone=%r, region=%s", phone, region)
+    try:
+        return _sigparse.normalize_phone_e164(phone, default_region=region)
+    except Exception as e:
+        logger.error("normalize_phone_number failed: %s", e, exc_info=True)
+        raise
 
 
 _configure_public_tool_mode()

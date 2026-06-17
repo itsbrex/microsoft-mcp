@@ -18,6 +18,7 @@ from fastmcp import FastMCP
 from . import graph
 from . import rules as _rules
 from . import signatures as signatures_mod
+from . import templates_engine as _templates  # noqa: F401
 from . import todo as _todo
 from .auth_base import AuthProvider
 from .response_shaping import (
@@ -2649,6 +2650,8 @@ def create_email_draft(
     body: str | None = None,
     body_content_type: str = "text",
     signature: str | None = None,
+    template: str | None = None,
+    template_data: dict | None = None,
 ) -> dict[str, Any]:
     """Create an Outlook email draft without sending it.
 
@@ -2674,22 +2677,44 @@ def create_email_draft(
             reply/reply_all drafts (falling back to
             ``MICROSOFT_MCP_DEFAULT_SIGNATURE``), and
             ``MICROSOFT_MCP_DEFAULT_SIGNATURE`` is used for new drafts.
+        template: Optional template reference in ``"category/name"`` format
+            (e.g. ``"email/followup"``). When set, the body is rendered from
+            this template using *template_data* before signature application,
+            overriding any explicit *body* argument. The body content type is
+            automatically set to ``"html"``.
+        template_data: Mapping of placeholder names to values used when
+            rendering *template*. Defaults to ``{}`` when *template* is set.
 
     Returns:
         Draft metadata containing the created draft ID plus a shaped draft message object.
     """
 
     logger.info(
-        "create_email_draft called: draft_type=%s, email_id=%s, subject=%s, signature=%s",
+        "create_email_draft called: draft_type=%s, email_id=%s, subject=%s, signature=%s, template=%s",
         draft_type,
         email_id,
         subject,
         signature,
+        template,
     )
 
     try:
         normalized_draft_type = _normalize_draft_type(draft_type)
         normalized_body_type = _normalize_body_content_type(body_content_type)
+
+        # Template rendering: when a template reference is supplied, render it
+        # and use the result as the body (overriding any explicit body argument).
+        if template is not None:
+            parts = template.split("/", 1)
+            if len(parts) != 2 or not parts[0] or not parts[1]:
+                raise ValueError(
+                    f"template must be in 'category/name' format, got {template!r}"
+                )
+            tpl_category, tpl_name = parts
+            body = _templates.render_template(
+                tpl_category, tpl_name, template_data or {}
+            )
+            normalized_body_type = "html"
 
         to_objects = _build_recipient_objects(to_recipients)
         cc_objects = _build_recipient_objects(cc_recipients)
@@ -7178,6 +7203,101 @@ def create_task_from_email(
     except Exception as e:
         logger.error("create_task_from_email failed: %s", e, exc_info=True)
         raise
+
+
+# ---------------------------------------------------------------------------
+# Template tools
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool
+def list_email_templates(category: str = "") -> list[dict]:
+    """List available email/calendar templates bundled with microsoft-mcp.
+
+    Args:
+        category: Optional category filter (e.g. ``"email"`` or ``"calendar"``).
+            Pass an empty string (default) to list all categories.
+
+    Returns:
+        List of ``{name, description, version, category, source, placeholders}``
+        records, sorted by category then name.
+    """
+    return _templates.list_templates(category or None)
+
+
+@mcp.tool
+def get_template_placeholders(category: str, name: str) -> list[dict]:
+    """Return the placeholder definitions for a specific template.
+
+    Args:
+        category: Template category (e.g. ``"email"`` or ``"calendar"``).
+        name: Template name (e.g. ``"followup"`` or ``"meeting"``).
+
+    Returns:
+        List of placeholder dicts with ``name``, ``description``,
+        ``required``, and optionally ``default`` keys.
+
+    Raises:
+        ValueError: If the template is not found.
+    """
+    tpl = _templates.load_template(category, name)
+    return [p for p in tpl.get("placeholders", []) if isinstance(p, dict)]
+
+
+@mcp.tool
+def render_email_template(category: str, name: str, data: dict) -> str:
+    """Render a template with the supplied data and return the HTML body.
+
+    Args:
+        category: Template category (e.g. ``"email"`` or ``"calendar"``).
+        name: Template name (e.g. ``"followup"`` or ``"meeting"``).
+        data: Mapping of placeholder names to string values.
+
+    Returns:
+        Rendered HTML string.
+
+    Raises:
+        ValueError: If required placeholders are missing or the template is
+            not found.
+    """
+    return _templates.render_template(category, name, data)
+
+
+@mcp.tool
+def find_template_variables(content: str) -> list[str]:
+    """Scan content for ``{{var}}`` variable tokens and return their names.
+
+    Args:
+        content: Plain-text or HTML content to scan.
+
+    Returns:
+        Ordered list of unique variable names found (first-appearance order).
+    """
+    return _templates.find_template_variables(content)
+
+
+@mcp.tool
+def substitute_template_variables(
+    content: str, values: dict, strict: bool = False
+) -> str:
+    """Replace ``{{var}}`` tokens in content with the supplied values.
+
+    Args:
+        content: Content containing ``{{var}}`` tokens.
+        values: Mapping of variable name → replacement string.
+        strict: When ``True``, raise an error if any referenced variable
+            has no entry in *values*; otherwise leave the token unchanged.
+
+    Returns:
+        Content with variables substituted.
+
+    Raises:
+        ValueError: If *strict* is ``True`` and a variable is missing.
+    """
+    try:
+        return _templates.substitute_variables(content, values, strict=strict)
+    except _templates.VariableSubstitutionError as exc:
+        raise ValueError(str(exc)) from exc
 
 
 _configure_public_tool_mode()

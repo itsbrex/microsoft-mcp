@@ -129,6 +129,35 @@ def validate_template_data(tpl: dict[str, Any], data: dict[str, Any]) -> list[st
     return errors
 
 
+def _precompute_list_items(data: dict[str, Any], tpl: dict[str, Any]) -> dict[str, Any]:
+    """Merge defaults and pre-render comma-list fields into the data dict.
+
+    This is extracted so that both ``_render_conditional_sections`` and
+    ``_substitute_placeholders`` can operate on the same enriched mapping,
+    ensuring that tokens like ``{agenda_items}`` resolve correctly inside
+    conditional section templates.
+    """
+    defaults: dict[str, Any] = {
+        ph["name"]: ph["default"]
+        for ph in tpl.get("placeholders", [])
+        if isinstance(ph, dict) and "default" in ph
+    }
+    subs: dict[str, Any] = {**defaults, **data}
+
+    for src, (dest, numbered, bullet) in {
+        "agenda": ("agenda_items", True, "•"),
+        "interviewers": ("interviewer_items", False, "•"),
+        "focus_areas": ("focus_area_items", False, "•"),
+        "action_items": ("action_item_list", False, "•"),
+        "format": ("format_items", True, "•"),
+    }.items():
+        if subs.get(src):
+            subs[dest] = _render_list_items(
+                _parse_comma_list(subs[src]), numbered=numbered, bullet=bullet
+            )
+    return subs
+
+
 def render_template(category: str, name: str, data: dict[str, Any]) -> str:
     """Load and render a template. Raises ValueError on validation failure."""
     tpl = load_template(category, name)
@@ -137,8 +166,11 @@ def render_template(category: str, name: str, data: dict[str, Any]) -> str:
         raise ValueError(
             "Template validation failed:\n" + "\n".join(f"  - {e}" for e in errors)
         )
-    conditional_values = _render_conditional_sections(tpl, data)
-    render_data = {**data, **conditional_values}
+    # Pre-compute list items first so conditional section templates can reference
+    # pre-rendered keys like {agenda_items} and {interviewer_items}.
+    enriched = _precompute_list_items(data, tpl)
+    conditional_values = _render_conditional_sections(tpl, enriched)
+    render_data = {**enriched, **conditional_values}
     rendered = _substitute_placeholders(tpl.get("html_template", ""), render_data, tpl)
     lines = [line for line in rendered.split("\n") if line.strip()]
     return "\n".join(lines)

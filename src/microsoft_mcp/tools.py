@@ -18,7 +18,7 @@ from fastmcp import FastMCP
 from . import graph
 from . import rules as _rules
 from . import signatures as signatures_mod
-from . import templates_engine as _templates  # noqa: F401
+from . import templates_engine as _templates
 from . import todo as _todo
 from .auth_base import AuthProvider
 from .response_shaping import (

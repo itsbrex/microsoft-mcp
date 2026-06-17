@@ -16,6 +16,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from microsoft_mcp.intel._utils import paginate
 from microsoft_mcp.intel.types import (
     CalendarEvent,
     CalendarSignals,
@@ -120,8 +121,8 @@ def _fetch_calendar_view(
     tz_name: str,
 ) -> list[CalendarEvent]:
     tz = ZoneInfo(tz_name)
-    data = request(
-        "GET",
+    raw = paginate(
+        request,
         "/me/calendarView",
         params={
             "startDateTime": start.astimezone(UTC).strftime(
@@ -141,7 +142,7 @@ def _fetch_calendar_view(
     # client).  Convert each timed event's UTC datetimes to naive local time
     # in the target timezone so downstream free-block and conflict math is
     # correct for any non-UTC timezone.
-    return [_convert_event(e, tz) for e in data.get("value", [])]
+    return [_convert_event(e, tz) for e in raw]
 
 
 def _detect_conflicts(events: list[CalendarEvent]) -> list[ConflictPair]:

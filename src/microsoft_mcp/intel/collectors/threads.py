@@ -13,7 +13,7 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import Any
 
-from microsoft_mcp.intel._utils import parse_graph_datetime as _parse_dt
+from microsoft_mcp.intel._utils import paginate, parse_graph_datetime as _parse_dt
 from microsoft_mcp.intel.types import ThreadInfo, ThreadSignals
 
 
@@ -22,8 +22,8 @@ def _fetch_received_messages(
     since_iso: str,
 ) -> list[dict[str, Any]]:
     """Fetch received messages within the look-back window."""
-    data = request(
-        "GET",
+    return paginate(
+        request,
         "/me/messages",
         params={
             "$filter": f"receivedDateTime ge {since_iso}",
@@ -35,7 +35,6 @@ def _fetch_received_messages(
             ),
         },
     )
-    return data.get("value", [])
 
 
 def _fetch_sent_messages(
@@ -43,8 +42,8 @@ def _fetch_sent_messages(
     since_iso: str,
 ) -> list[dict[str, Any]]:
     """Fetch sent messages within the look-back window."""
-    data = request(
-        "GET",
+    return paginate(
+        request,
         "/me/mailFolders/sentitems/messages",
         params={
             "$filter": f"sentDateTime ge {since_iso}",
@@ -55,7 +54,6 @@ def _fetch_sent_messages(
             ),
         },
     )
-    return data.get("value", [])
 
 
 def _build_thread_info(

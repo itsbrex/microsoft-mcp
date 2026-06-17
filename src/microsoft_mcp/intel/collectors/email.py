@@ -15,7 +15,7 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import Any
 
-from microsoft_mcp.intel._utils import parse_graph_datetime as _parse_dt
+from microsoft_mcp.intel._utils import paginate, parse_graph_datetime as _parse_dt
 from microsoft_mcp.intel.types import (
     EmailNeedingResponse,
     EmailSignals,
@@ -49,8 +49,8 @@ def _fetch_folder_unread_counts(
     request: Callable[..., Any],
 ) -> list[FolderUnreadCount]:
     """Fetch unread and total counts for all mail folders."""
-    data = request(
-        "GET",
+    raw = paginate(
+        request,
         "/me/mailFolders",
         params={
             "$top": 50,
@@ -58,7 +58,7 @@ def _fetch_folder_unread_counts(
         },
     )
     folders: list[FolderUnreadCount] = []
-    for folder in data.get("value", []):
+    for folder in raw:
         folders.append(
             FolderUnreadCount(
                 folder_name=folder.get("displayName", ""),
@@ -91,8 +91,8 @@ def _fetch_inbox_messages(
     else:
         filter_str = f"receivedDateTime ge {since_iso}"
 
-    data = request(
-        "GET",
+    return paginate(
+        request,
         "/me/mailFolders/inbox/messages",
         params={
             "$filter": filter_str,
@@ -104,7 +104,6 @@ def _fetch_inbox_messages(
             ),
         },
     )
-    return data.get("value", [])
 
 
 def _fetch_sent_count(

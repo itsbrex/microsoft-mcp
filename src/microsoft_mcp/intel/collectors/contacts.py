@@ -14,6 +14,7 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import Any
 
+from microsoft_mcp.intel._utils import paginate
 from microsoft_mcp.intel.types import ContactInteraction, ContactSignals
 
 logger = logging.getLogger(__name__)
@@ -97,8 +98,8 @@ def _fetch_messages(
 ) -> list[dict[str, Any]]:
     """Fetch messages from a mail folder with a date filter."""
     try:
-        data = request(
-            "GET",
+        return paginate(
+            request,
             path,
             params={
                 "$filter": f"{filter_field} ge {since_iso}",
@@ -107,10 +108,9 @@ def _fetch_messages(
                 "$select": select,
             },
         )
-        return data.get("value", [])
     except Exception:
         logger.exception("Failed to fetch messages from %s", path)
-        return []
+        raise
 
 
 def collect_contact_signals(

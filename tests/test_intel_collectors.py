@@ -466,3 +466,151 @@ def test_contacts_no_messages_returns_empty() -> None:
     assert signals["pending_contacts"] == []
     assert signals["total_unique_senders"] == 0
     assert signals["total_unique_recipients"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Pagination tests (I2 + M3)
+# ---------------------------------------------------------------------------
+
+
+def _paged_email_request(page1: list, page2: list) -> MagicMock:
+    """Fake request that returns two pages for each inbox call, empty for folders/sent.
+
+    collect_email_signals calls inbox twice (unread_only=True, then unread_only=False).
+    Each call to paginate() will: first hit the normal path (returns page1 + nextLink),
+    then hit the stripped nextLink path (returns page2).  We track per-"base path"
+    whether we've already served page1 so both paginations get all items.
+    """
+    # Track how many times each logical path has been fetched at the first-page level
+    first_page_served: set[str] = set()
+
+    def fake(method: str, path: str, *, params: dict | None = None, **_: Any) -> dict:
+        if "/mailFolders" in path and "messages" not in path:
+            return {"value": []}
+        if "sentItems" in path or "sentitems" in path:
+            return {"value": [], "@odata.count": 0}
+        # If this is the stripped nextLink path, return page2 (second page)
+        if "$skip=50" in path:
+            return {"value": page2}
+        # First page for this inbox path
+        first_page_served.add(path)
+        return {
+            "value": page1,
+            "@odata.nextLink": "https://graph.microsoft.com/v1.0/me/messages?$skip=50",
+        }
+
+    return MagicMock(side_effect=fake)
+
+
+def test_email_inbox_pagination_merges_pages() -> None:
+    """paginate() follows @odata.nextLink and merges both pages."""
+    page1 = [_inbox_msg(f"p1m{i}", f"u{i}@ex.com", f"U{i}") for i in range(3)]
+    page2 = [_inbox_msg(f"p2m{i}", f"v{i}@ex.com", f"V{i}") for i in range(2)]
+    req = _paged_email_request(page1, page2)
+    signals = collect_email_signals(req, now=NOW)
+    # received_last_24h counts all inbox (unread_only=False path); should see all 5
+    assert signals["received_last_24h"] == 5
+
+
+def test_email_inbox_pagination_second_call_uses_stripped_path() -> None:
+    """The second call's path must be the base-stripped nextLink."""
+    page1 = [_inbox_msg("m1", "a@ex.com", "A")]
+    page2 = [_inbox_msg("m2", "b@ex.com", "B")]
+
+    second_call_path: list[str] = []
+    calls: list[str] = []
+
+    def fake(method: str, path: str, *, params: dict | None = None, **_: Any) -> dict:
+        if "/mailFolders" in path and "messages" not in path:
+            return {"value": []}
+        if "sentItems" in path or "sentitems" in path:
+            return {"value": [], "@odata.count": 0}
+        calls.append(path)
+        if len(calls) == 1:
+            return {
+                "value": page1,
+                "@odata.nextLink": "https://graph.microsoft.com/v1.0/me/messages?$skip=50",
+            }
+        second_call_path.append(path)
+        return {"value": page2}
+
+    req = MagicMock(side_effect=fake)
+    collect_email_signals(req, now=NOW)
+
+    # At least one second-page call must have been made
+    assert second_call_path, "No second page call was made"
+    # The path must be the stripped form, not the full URL
+    assert second_call_path[0] == "/me/messages?$skip=50"
+
+
+def _paged_contact_request(page1: list, page2: list) -> MagicMock:
+    """Fake request that returns two pages for the inbox path, empty for sent."""
+    calls: list[str] = []
+
+    def fake(method: str, path: str, *, params: dict | None = None, **_: Any) -> dict:
+        if "sentitems" in path.lower() or "sentItems" in path:
+            return {"value": []}
+        calls.append(path)
+        if len(calls) == 1:
+            return {
+                "value": page1,
+                "@odata.nextLink": "https://graph.microsoft.com/v1.0/me/messages?$skip=50",
+            }
+        return {"value": page2}
+
+    return MagicMock(side_effect=fake)
+
+
+def test_contacts_pagination_merges_pages() -> None:
+    """paginate() in contacts._fetch_messages merges items across pages."""
+    page1 = [_recv_contact_msg(f"p1r{i}", f"a{i}@ex.com", f"A{i}") for i in range(3)]
+    page2 = [_recv_contact_msg(f"p2r{i}", f"b{i}@ex.com", f"B{i}") for i in range(2)]
+    req = _paged_contact_request(page1, page2)
+    signals = collect_contact_signals(req, now=NOW)
+    # All 5 senders (3 from page1, 2 from page2) must be counted
+    assert signals["total_unique_senders"] == 5
+
+
+def test_contacts_pagination_second_call_uses_stripped_path() -> None:
+    """The second contacts fetch call's path is the base-stripped nextLink."""
+    page1 = [_recv_contact_msg("r1", "a@ex.com", "A")]
+    page2 = [_recv_contact_msg("r2", "b@ex.com", "B")]
+
+    second_call_path: list[str] = []
+    calls: list[str] = []
+
+    def fake(method: str, path: str, *, params: dict | None = None, **_: Any) -> dict:
+        if "sentitems" in path.lower() or "sentItems" in path:
+            return {"value": []}
+        calls.append(path)
+        if len(calls) == 1:
+            return {
+                "value": page1,
+                "@odata.nextLink": "https://graph.microsoft.com/v1.0/me/messages?$skip=50",
+            }
+        second_call_path.append(path)
+        return {"value": page2}
+
+    req = MagicMock(side_effect=fake)
+    collect_contact_signals(req, now=NOW)
+
+    assert second_call_path, "No second page call was made"
+    assert second_call_path[0] == "/me/messages?$skip=50"
+
+
+# ---------------------------------------------------------------------------
+# I3: contacts _fetch_messages re-raise test
+# ---------------------------------------------------------------------------
+
+
+def test_contacts_fetch_messages_propagates_exception() -> None:
+    """_fetch_messages (and collect_contact_signals) must propagate exceptions."""
+    import pytest
+
+    def failing_request(
+        method: str, path: str, *, params: dict | None = None, **_: Any
+    ) -> dict:
+        raise RuntimeError("simulated network failure")
+
+    with pytest.raises(RuntimeError, match="simulated network failure"):
+        collect_contact_signals(MagicMock(side_effect=failing_request), now=NOW)

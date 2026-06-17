@@ -48,7 +48,37 @@ def _extract_domain(email: str) -> str:
     return ""
 
 
-def _convert_event(event: dict[str, Any]) -> CalendarEvent:
+def _utc_to_local_naive(dt_str: str, tz: ZoneInfo) -> str:
+    """Convert a UTC dateTime string from Graph to a naive local ISO string.
+
+    Graph calendarView returns ``start.dateTime`` / ``end.dateTime`` in UTC
+    (e.g. ``"2026-06-17T14:00:00.0000000"``).  We parse it as UTC, convert to
+    *tz*, then strip the tzinfo so the rest of the pipeline — which expects
+    naive local datetimes — works correctly.  If parsing fails the original
+    string is returned unchanged.
+    """
+    if not dt_str:
+        return dt_str
+    try:
+        # Graph emits strings without a trailing "Z" but they are always UTC.
+        naive = datetime.fromisoformat(dt_str.rstrip("Z").split(".")[0])
+        utc_aware = naive.replace(tzinfo=UTC)
+        local_aware = utc_aware.astimezone(tz)
+        return local_aware.replace(tzinfo=None).isoformat()
+    except (ValueError, AttributeError):
+        return dt_str
+
+
+def _convert_event(event: dict[str, Any], tz: ZoneInfo | None = None) -> CalendarEvent:
+    """Convert a raw Graph calendarView event dict to a CalendarEvent.
+
+    If *tz* is provided, the ``start`` and ``end`` dateTime strings (which
+    Graph returns in UTC when no Prefer header can be sent) are converted to
+    naive local time in that timezone so the rest of the pipeline — which
+    works entirely with naive datetimes — produces correct local times.
+    All-day events are left as-is because their dateTime fields are date
+    strings that carry no time component.
+    """
     organizer_addr = (event.get("organizer") or {}).get("emailAddress") or {}
     organizer_email = organizer_addr.get("address", "")
     organizer_domain = _extract_domain(organizer_email)
@@ -60,13 +90,19 @@ def _convert_event(event: dict[str, Any]) -> CalendarEvent:
             if att_email and _extract_domain(att_email) != organizer_domain:
                 has_external = True
                 break
+    is_all_day = event.get("isAllDay", False)
+    start_dt = (event.get("start") or {}).get("dateTime", "")
+    end_dt = (event.get("end") or {}).get("dateTime", "")
+    if tz is not None and not is_all_day:
+        start_dt = _utc_to_local_naive(start_dt, tz)
+        end_dt = _utc_to_local_naive(end_dt, tz)
     return CalendarEvent(
         id=event.get("id", ""),
         subject=event.get("subject", ""),
-        start=(event.get("start") or {}).get("dateTime", ""),
-        end=(event.get("end") or {}).get("dateTime", ""),
+        start=start_dt,
+        end=end_dt,
         location=(event.get("location") or {}).get("displayName", ""),
-        is_all_day=event.get("isAllDay", False),
+        is_all_day=is_all_day,
         is_online=event.get("isOnlineMeeting", False),
         organizer_name=organizer_addr.get("name", ""),
         organizer_email=organizer_email,
@@ -83,6 +119,7 @@ def _fetch_calendar_view(
     end: datetime,
     tz_name: str,
 ) -> list[CalendarEvent]:
+    tz = ZoneInfo(tz_name)
     data = request(
         "GET",
         "/me/calendarView",
@@ -97,10 +134,14 @@ def _fetch_calendar_view(
                 "id,subject,start,end,location,isAllDay,isOnlineMeeting,"
                 "organizer,attendees,responseStatus,showAs"
             ),
-            "Prefer": f'outlook.timezone="{tz_name}"',
         },
     )
-    return [_convert_event(e) for e in data.get("value", [])]
+    # Graph returns start/end datetimes in UTC regardless of the requested
+    # timezone (the Prefer: outlook.timezone header cannot be sent via this
+    # client).  Convert each timed event's UTC datetimes to naive local time
+    # in the target timezone so downstream free-block and conflict math is
+    # correct for any non-UTC timezone.
+    return [_convert_event(e, tz) for e in data.get("value", [])]
 
 
 def _detect_conflicts(events: list[CalendarEvent]) -> list[ConflictPair]:
@@ -145,8 +186,8 @@ def _find_free_blocks(
 ) -> list[TimeBlock]:
     """Find free blocks during working hours (08:00–18:00).
 
-    Event datetimes are naive when Graph uses Prefer:outlook.timezone, so
-    day_start tzinfo is stripped for comparison.
+    Event datetimes are naive local times (converted from UTC by
+    _fetch_calendar_view), so day_start tzinfo is stripped for comparison.
     """
     work_start = day_start.replace(
         hour=_WORK_DAY_START_HOUR, minute=0, second=0, microsecond=0, tzinfo=None

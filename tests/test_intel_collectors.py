@@ -59,7 +59,9 @@ def _inbox_msg(mid: str, sender: str, name: str, *, is_read: bool = False) -> di
     }
 
 
-def _cal_event(eid: str, start: str, end: str, *, is_all_day: bool = False, attendees: int = 1) -> dict:
+def _cal_event(
+    eid: str, start: str, end: str, *, is_all_day: bool = False, attendees: int = 1
+) -> dict:
     return {
         "id": eid,
         "subject": f"Evt {eid}",
@@ -90,7 +92,9 @@ def _cal_request(today: list | None = None, tomorrow: list | None = None) -> Mag
     return MagicMock(side_effect=fake)
 
 
-def _thread_request(received: list | None = None, sent: list | None = None) -> MagicMock:
+def _thread_request(
+    received: list | None = None, sent: list | None = None
+) -> MagicMock:
     recv_data = received or []
     sent_data = sent or []
 
@@ -126,7 +130,9 @@ def _sent_msg(conv_id: str, mid: str, sent_at: str) -> dict:
     }
 
 
-def _contact_request(received: list | None = None, sent: list | None = None) -> MagicMock:
+def _contact_request(
+    received: list | None = None, sent: list | None = None
+) -> MagicMock:
     recv_data = received or []
     sent_data = sent or []
 
@@ -206,7 +212,9 @@ def test_email_sent_last_24h_from_count() -> None:
 
 
 def test_email_received_last_24h_counts_all_inbox() -> None:
-    msgs = [_inbox_msg(f"m{i}", f"u{i}@ex.com", f"U{i}", is_read=True) for i in range(4)]
+    msgs = [
+        _inbox_msg(f"m{i}", f"u{i}@ex.com", f"U{i}", is_read=True) for i in range(4)
+    ]
     signals = collect_email_signals(_email_request(inbox_msgs=msgs), now=NOW)
     assert signals["received_last_24h"] == 4
 
@@ -286,6 +294,54 @@ def test_calendar_no_events_zero_hours() -> None:
     assert signals["conflicts"] == []
 
 
+def test_calendar_timezone_converts_utc_to_local() -> None:
+    """UTC datetimes from Graph must be converted to naive local time.
+
+    NOW is 2026-06-17T09:00:00 UTC.  America/Chicago is CDT = UTC-5 in June,
+    so the local date is also 2026-06-17 (09:00 UTC = 04:00 CDT).
+
+    The Graph event starts at 14:00 UTC / 09:00 CDT and ends at 15:00 UTC /
+    10:00 CDT.  The collector must store the event times as naive local ISO
+    strings ("2026-06-17T09:00:00" / "2026-06-17T10:00:00") not as UTC
+    ("2026-06-17T14:00:00" / "2026-06-17T15:00:00").
+
+    Free blocks for the day run 08:00–18:00 local.  With one 09:00-10:00 CDT
+    event there should be a free block starting at 08:00 and another starting
+    at 10:00 local time — NOT at 14:00/15:00 which would be wrong (UTC).
+
+    These assertions would FAIL against the old code that passed times through
+    as UTC strings.
+    """
+    # Graph returns UTC regardless of timezone requested — simulate that.
+    ev_utc = _cal_event(
+        "tz1", "2026-06-17T14:00:00.0000000", "2026-06-17T15:00:00.0000000"
+    )
+    signals = collect_calendar_signals(
+        _cal_request(today=[ev_utc]),
+        now=NOW,
+        timezone="America/Chicago",
+    )
+
+    # 1. Event time stored as naive CDT (local), not UTC.
+    assert signals["today_events"][0]["start"] == "2026-06-17T09:00:00"
+    assert signals["today_events"][0]["end"] == "2026-06-17T10:00:00"
+
+    # 2. Meeting duration is tz-invariant: still 1 hour.
+    assert signals["meeting_hours_today"] == 1.0
+
+    # 3. Free blocks are anchored to local working hours 08:00–18:00 CDT.
+    #    With one event at 09:00–10:00 CDT there must be a pre-event gap
+    #    (08:00–09:00) — this would be absent if times were left in UTC.
+    free_starts = [b["start"] for b in signals["free_blocks"]]
+    assert "2026-06-17T08:00:00" in free_starts, (
+        f"Expected 08:00 CDT free block; got {free_starts}"
+    )
+    # There must be no free block starting at the UTC time 14:00.
+    assert "2026-06-17T14:00:00" not in free_starts, (
+        "Free block at 14:00 means timezone conversion was not applied"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Thread collector tests
 # ---------------------------------------------------------------------------
@@ -309,27 +365,35 @@ def test_threads_direction_by_most_recent() -> None:
     # recv older, sent newer → outbound
     recv = _recv_msg("conv3", "r3", TWO_DAYS_AGO_ISO)
     sent = _sent_msg("conv3", "s3", YESTERDAY_ISO)
-    signals = collect_thread_signals(_thread_request(received=[recv], sent=[sent]), now=NOW)
+    signals = collect_thread_signals(
+        _thread_request(received=[recv], sent=[sent]), now=NOW
+    )
     assert len(signals["awaiting_their_reply"]) == 1
     assert signals["awaiting_my_reply"] == []
 
 
 def test_threads_stale_when_exceeds_stale_hours() -> None:
     sent = _sent_msg("conv4", "s4", TWO_DAYS_AGO_ISO)
-    signals = collect_thread_signals(_thread_request(sent=[sent]), now=NOW, stale_hours=1)
+    signals = collect_thread_signals(
+        _thread_request(sent=[sent]), now=NOW, stale_hours=1
+    )
     assert len(signals["stale_threads"]) == 1
 
 
 def test_threads_not_stale_when_recent() -> None:
     sent = _sent_msg("conv5", "s5", YESTERDAY_ISO)
-    signals = collect_thread_signals(_thread_request(sent=[sent]), now=NOW, stale_hours=72)
+    signals = collect_thread_signals(
+        _thread_request(sent=[sent]), now=NOW, stale_hours=72
+    )
     assert signals["stale_threads"] == []
 
 
 def test_threads_message_count_combines_directions() -> None:
     recv = _recv_msg("conv6", "r6", TWO_DAYS_AGO_ISO)
     sent = _sent_msg("conv6", "s6", YESTERDAY_ISO)
-    signals = collect_thread_signals(_thread_request(received=[recv], sent=[sent]), now=NOW)
+    signals = collect_thread_signals(
+        _thread_request(received=[recv], sent=[sent]), now=NOW
+    )
     assert signals["awaiting_their_reply"][0]["message_count"] == 2
 
 
@@ -364,7 +428,9 @@ def test_contacts_top_sorted_by_total_interactions() -> None:
 def test_contacts_pending_has_unread() -> None:
     unread = _recv_contact_msg("u1", "unread@ex.com", "Unread", is_read=False)
     read = _recv_contact_msg("r1", "read@ex.com", "Read", is_read=True)
-    signals = collect_contact_signals(_contact_request(received=[unread, read]), now=NOW)
+    signals = collect_contact_signals(
+        _contact_request(received=[unread, read]), now=NOW
+    )
     pending_emails = {c["email"] for c in signals["pending_contacts"]}
     assert "unread@ex.com" in pending_emails
     assert "read@ex.com" not in pending_emails
@@ -385,7 +451,9 @@ def test_contacts_unique_recipients_count() -> None:
 def test_contacts_interaction_combines_sent_and_received() -> None:
     recv = _recv_contact_msg("r1", "shared@ex.com", "Shared")
     sent = _sent_contact_msg("s1", "shared@ex.com", "Shared")
-    signals = collect_contact_signals(_contact_request(received=[recv], sent=[sent]), now=NOW)
+    signals = collect_contact_signals(
+        _contact_request(received=[recv], sent=[sent]), now=NOW
+    )
     shared = next(c for c in signals["top_contacts"] if c["email"] == "shared@ex.com")
     assert shared["total_interactions"] == 2
     assert shared["received_from"] == 1

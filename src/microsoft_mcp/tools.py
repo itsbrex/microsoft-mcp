@@ -9,7 +9,7 @@ import mimetypes
 import os
 import pathlib as pl
 import re
-from typing import Any
+from typing import Any, cast
 from urllib.parse import quote
 
 import httpx
@@ -21,6 +21,7 @@ from . import signature_parser as _sigparse
 from . import signatures as signatures_mod
 from . import templates_engine as _templates
 from . import todo as _todo
+from .intel import engine as _intel_engine  # noqa: F401 – used by intel MCP tools
 from .auth_base import AuthProvider
 from .response_shaping import (
     _html_to_text,
@@ -7363,6 +7364,177 @@ def normalize_phone_number(phone: str, region: str = "US") -> str:
         return _sigparse.normalize_phone_e164(phone, default_region=region)
     except Exception as e:
         logger.error("normalize_phone_number failed: %s", e, exc_info=True)
+        raise
+
+
+# ---------------------------------------------------------------------------
+# Intel / briefing tools
+# ---------------------------------------------------------------------------
+
+_INTEL_VALID_LEVELS = {"all", "critical", "important", "informational"}
+
+
+@mcp.tool
+def generate_morning_briefing(timezone: str = "UTC", limit: int = 10) -> dict:
+    """Generate a comprehensive morning briefing for the current account.
+
+    Collects email, calendar, and thread signals and scores them by priority,
+    returning the top items for the day ahead.
+
+    Args:
+        timezone: IANA timezone name (e.g. "America/New_York"). Defaults to "UTC".
+        limit: Maximum number of priority items to return. Defaults to 10.
+
+    Returns:
+        BriefingReport dict with keys: generated_at, account, priority_items
+        (truncated to limit), email_summary, calendar_summary, schedule_analysis,
+        thread_summary.
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    logger.info(
+        "generate_morning_briefing called: timezone=%s, limit=%d", timezone, limit
+    )
+    try:
+        account = os.getenv("MICROSOFT_MCP_ACCOUNT_ID") or "default"
+        now = datetime.now(ZoneInfo(timezone))
+        report = _intel_engine.generate_briefing(
+            graph.request,
+            account=account,
+            timezone=timezone,
+            now=now,
+        )
+        report = dict(report)
+        items = cast(list, report["priority_items"])
+        report["priority_items"] = items[:limit]
+        return report
+    except Exception as e:
+        logger.error("generate_morning_briefing failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def get_priority_signals(timezone: str = "UTC", level: str = "all") -> dict:
+    """Get actionable priority signals bucketed by urgency level.
+
+    Args:
+        timezone: IANA timezone name (e.g. "America/Chicago"). Defaults to "UTC".
+        level: Filter which urgency bucket to return. One of:
+            "all" — full report with all three buckets (default),
+            "critical" — only items with score >= 80,
+            "important" — only items with score 50-79,
+            "informational" — only items with score < 50.
+
+    Returns:
+        SignalsReport dict (or filtered subset). Shape for "all":
+            {generated_at, account, critical, important, informational, total_signals}.
+        Shape for a specific level: same dict with the other two buckets emptied to [].
+
+    Raises:
+        ValueError: If level is not one of the allowed values.
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    logger.info("get_priority_signals called: timezone=%s, level=%s", timezone, level)
+    if level not in _INTEL_VALID_LEVELS:
+        raise ValueError(
+            f"Invalid level {level!r}. Must be one of: {sorted(_INTEL_VALID_LEVELS)}"
+        )
+    try:
+        account = os.getenv("MICROSOFT_MCP_ACCOUNT_ID") or "default"
+        now = datetime.now(ZoneInfo(timezone))
+        report = _intel_engine.generate_signals(
+            graph.request,
+            account=account,
+            timezone=timezone,
+            now=now,
+        )
+        if level == "all":
+            return dict(report)
+        # Return report with only the requested bucket populated.
+        result = dict(report)
+        for bucket in ("critical", "important", "informational"):
+            if bucket != level:
+                result[bucket] = []
+        return result
+    except Exception as e:
+        logger.error("get_priority_signals failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def get_contact_intelligence(target_email: str, days: int = 30) -> dict:
+    """Generate an intelligence report for a specific contact.
+
+    Combines contact interaction data, relationship analysis, thread tracking,
+    and pending email items for the given contact email address.
+
+    Args:
+        target_email: Email address of the contact to report on.
+        days: Look-back window in days. Defaults to 30.
+
+    Returns:
+        ContactReport dict with keys: generated_at, account, target_email,
+        target_name, relationship, recent_threads, recent_emails_from,
+        recent_emails_to, pending_items. Optional keys: company, job_title.
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    logger.info(
+        "get_contact_intelligence called: target_email=%s, days=%d", target_email, days
+    )
+    try:
+        account = os.getenv("MICROSOFT_MCP_ACCOUNT_ID") or "default"
+        now = datetime.now(ZoneInfo("UTC"))
+        return dict(
+            _intel_engine.generate_contact_report(
+                graph.request,
+                account=account,
+                target_email=target_email,
+                now=now,
+                lookback_days=days,
+            )
+        )
+    except Exception as e:
+        logger.error("get_contact_intelligence failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def get_end_of_day_recap(timezone: str = "UTC") -> dict:
+    """Generate an end-of-day recap summarising today's activity.
+
+    Summarises emails received and sent, meetings attended, unread count,
+    pending threads, and previews tomorrow's schedule.
+
+    Args:
+        timezone: IANA timezone name (e.g. "Europe/London"). Defaults to "UTC".
+
+    Returns:
+        RecapReport dict with keys: generated_at, account, emails_received_today,
+        emails_sent_today, emails_still_unread, meetings_attended,
+        threads_resolved, threads_still_pending, tomorrow_preview.
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    logger.info("get_end_of_day_recap called: timezone=%s", timezone)
+    try:
+        account = os.getenv("MICROSOFT_MCP_ACCOUNT_ID") or "default"
+        now = datetime.now(ZoneInfo(timezone))
+        return dict(
+            _intel_engine.generate_recap(
+                graph.request,
+                account=account,
+                timezone=timezone,
+                now=now,
+            )
+        )
+    except Exception as e:
+        logger.error("get_end_of_day_recap failed: %s", e, exc_info=True)
         raise
 
 

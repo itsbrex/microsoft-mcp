@@ -93,6 +93,13 @@ def main() -> None:
 
         sys.exit(rules_cli.main(argv[1:]))
 
+    # `microsoft-mcp intel ...` dispatches to the intel CLI before importing
+    # the full tools/Graph stack.
+    if argv and argv[0] == "intel":
+        from microsoft_mcp import intel_cli
+
+        sys.exit(intel_cli.main(argv[1:]))
+
     # Load local development configuration before importing modules that read env.
     load_dotenv()
 

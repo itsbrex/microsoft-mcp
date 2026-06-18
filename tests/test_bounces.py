@@ -4,6 +4,8 @@ Import convention follows the repo pattern:
     from src.microsoft_mcp import <module>
 """
 
+import pytest
+
 from src.microsoft_mcp import bounces
 from src.microsoft_mcp.bounces import (
     classify_bounce_message,
@@ -434,3 +436,138 @@ class TestModuleConstants:
 
     def test_excluded_subject_prefixes_is_tuple(self):
         assert isinstance(bounces.EXCLUDED_SUBJECT_PREFIXES, tuple)
+
+
+# ---------------------------------------------------------------------------
+# Parametrized regression — every BOUNCE_REASONS entry must be reachable
+# ---------------------------------------------------------------------------
+#
+# Matching is FIRST-MATCH-WINS (top-to-bottom).  Each trigger string below is
+# crafted to hit exactly the intended entry without being swallowed by an
+# earlier one.  Ordering notes that matter:
+#
+#   • Entry 1 (550 5.1.10) vs Entry 2 (550 5.1.1\b): the \b after the second
+#     "1" requires a non-word char at that position.  "550 5.1.10" has digit
+#     "0" after the second "1", so \b does NOT match — Entry 1 is safely
+#     distinct from Entry 2.
+#   • Entry 6 (552 5.2.2 → "Mailbox Full (552 5.2.2)") vs Entry 26 ("Mailbox
+#     full" → "Mailbox Full"): trigger Entry 26 without "552 5.2.2".
+#   • Entry 5 (550 5.2.1 → "Mailbox Disabled (550 5.2.1)") vs Entry 27
+#     ("Mailbox disabled" → "Mailbox Disabled"): trigger Entry 27 without
+#     "550 5.2.1".
+#   • Entry 38 ("Delivery not authorized" → "Delivery Not Authorized") is
+#     reachable because Entry 4 ("550 5.7.1") matches on the SMTP code, not
+#     on the phrase.  A body with only the phrase (no code) reaches Entry 38.
+
+
+@pytest.mark.parametrize(
+    "text, expected_reason",
+    [
+        # --- SMTP status codes (entries 1–6) ---
+        # Entry 1: 550 5.1.10  (must come before 5.1.1\b — digit "0" blocks \b)
+        ("550 5.1.10 Recipient not found", "Recipient Not Found (550 5.1.10)"),
+        # Entry 2: 550 5.1.1\b  (no trailing digit, so \b fires)
+        ("550 5.1.1 The account does not exist", "Invalid Recipient"),
+        # Entry 3: 550 5.4.1
+        ("550 5.4.1 No answer from host", "No Answer from Host (550 5.4.1)"),
+        # Entry 4: 550 5.7.1
+        (
+            "550 5.7.1 Delivery not authorized by policy",
+            "Delivery Not Authorized (550 5.7.1)",
+        ),
+        # Entry 5: 550 5.2.1
+        ("550 5.2.1 Mailbox disabled for this user", "Mailbox Disabled (550 5.2.1)"),
+        # Entry 6: 552 5.2.2
+        ("552 5.2.2 Over quota", "Mailbox Full (552 5.2.2)"),
+        # --- Mail loop (entries 7–8) ---
+        # Entry 7: 5.4.14
+        (
+            "Diagnostic-Code: smtp; 5.4.14 Hop count exceeded — mail loop",
+            "Mail Loop Detected (5.4.14)",
+        ),
+        # Entry 8: hop count exceeded (text only, no "5.4.14")
+        ("Hop count exceeded; message looped too many times", "Mail Loop Detected"),
+        # --- Exchange resolver codes (entries 9–10) ---
+        # Entry 9: RESOLVER.ADR.RecipientNotFound
+        (
+            "RESOLVER.ADR.RecipientNotFound; recipient lookup failed",
+            "Recipient Not Found",
+        ),
+        # Entry 10: RESOLVER.ADR.BadPrimary
+        ("RESOLVER.ADR.BadPrimary; primary SMTP address is bad", "Bad Primary Address"),
+        # --- Connection / network (entries 11–14) ---
+        # Entry 11: Communications error
+        ("Communications error occurred during SMTP handshake", "Communications Error"),
+        # Entry 12: Read timed out
+        ("Read timed out waiting for banner", "Read Timeout"),
+        # Entry 13: Connection timed out  (must not contain "Read timed out")
+        ("Connection timed out while connecting to MX", "Connection Timeout"),
+        # Entry 14: Connection refused
+        ("Connection refused by remote host on port 25", "Connection Refused"),
+        # Entry 15: Network unreachable
+        ("Network unreachable — no route to 203.0.113.1", "Network Unreachable"),
+        # --- DNS / MX (entries 16–19) ---
+        # Entry 16: MX records? (?:or )?is invalid
+        ("The MX records is invalid for this domain", "Invalid MX Records"),
+        # Entry 17: Domain has no MX records
+        ("Domain has no MX records configured", "No MX Records"),
+        # Entry 18: DNS lookup failed
+        ("DNS lookup failed for recipient domain", "DNS Lookup Failed"),
+        # Entry 19: Temporary error looking up MX
+        ("Temporary error looking up MX for example.com", "Temporary MX Lookup Error"),
+        # --- Recipient (entries 20–24) ---
+        # Entry 20: Recipient email address is possibly incorrect
+        ("Recipient email address is possibly incorrect", "Invalid Recipient Address"),
+        # Entry 21: User unknown
+        ("User unknown in local recipient table", "User Unknown"),
+        # Entry 22: No such user
+        ("No such user here", "No Such User"),
+        # Entry 23: Address not found
+        ("Address not found in directory", "Address Not Found"),
+        # Entry 24: not found by SMTP address lookup
+        ("550 not found by SMTP address lookup", "SMTP Address Not Found"),
+        # --- Mailbox (entries 25–29) ---
+        # Entry 25: Mailbox unavailable
+        ("Mailbox unavailable or access denied", "Mailbox Unavailable"),
+        # Entry 26: Mailbox full  (no "552 5.2.2" to avoid Entry 6)
+        ("Mailbox full — the recipient's storage is at capacity", "Mailbox Full"),
+        # Entry 27: Mailbox disabled  (no "550 5.2.1" to avoid Entry 5)
+        ("Mailbox disabled by administrator policy", "Mailbox Disabled"),
+        # Entry 28: Quota exceeded
+        ("Quota exceeded for this mailbox", "Quota Exceeded"),
+        # Entry 29: Insufficient storage
+        ("Insufficient storage on server", "Insufficient Storage"),
+        # --- Size / content (entry 30) ---
+        # Entry 30: Message too large
+        ("Message too large for server to accept", "Message Too Large"),
+        # --- Relay / policy (entries 31–38) ---
+        # Entry 31: Relay access denied
+        ("Relay access denied from this IP", "Relay Access Denied"),
+        # Entry 32: Sender address rejected
+        ("Sender address rejected: domain not found", "Sender Rejected"),
+        # Entry 33: Recipient address rejected
+        ("Recipient address rejected: access denied", "Recipient Rejected"),
+        # Entry 34: Blocked by recipient
+        ("Blocked by recipient's mail filter", "Blocked by Recipient"),
+        # Entry 35: Spam filter
+        ("Spam filter triggered by message content", "Spam Filter"),
+        # Entry 36: Content filter
+        ("Content filter rejected the message", "Content Filter"),
+        # Entry 37: Policy rejection
+        ("Policy rejection — message violates domain policy", "Policy Rejection"),
+        # Entry 38: Delivery not authorized  (plain phrase, no "550 5.7.1")
+        (
+            "Delivery not authorized by the destination server",
+            "Delivery Not Authorized",
+        ),
+        # --- Fallback / unknown ---
+        ("This text matches no known bounce pattern at all", "Unknown"),
+    ],
+)
+def test_determine_bounce_reason_all_patterns(text: str, expected_reason: str) -> None:
+    """Every BOUNCE_REASONS entry must be reachable via a crafted trigger string.
+
+    The trigger is passed as the *body* argument so the subject remains neutral
+    and cannot accidentally fire an earlier pattern.
+    """
+    assert bounces.determine_bounce_reason("", text) == expected_reason

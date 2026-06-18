@@ -16,6 +16,7 @@ import httpx
 import yaml
 from fastmcp import FastMCP
 from . import graph
+from . import bounces as _bounces
 from . import rules as _rules
 from . import signature_parser as _sigparse
 from . import signatures as signatures_mod
@@ -7535,6 +7536,50 @@ def get_end_of_day_recap(timezone: str = "UTC") -> dict:
         )
     except Exception as e:
         logger.error("get_end_of_day_recap failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def scan_bounces(
+    folder: str = "Inbox",
+    limit: int = 200,
+    save_csv: str | None = None,
+) -> dict[str, Any]:
+    """Scan a mail folder for bounce / NDR messages and return classified records.
+
+    Args:
+        folder: Folder alias (Inbox, Sent, …), display name, or Graph folder ID.
+            Well-known aliases: Inbox, Sent, Drafts, Deleted, Junk, Archive.
+        limit: Maximum number of messages to scan (caps ``iter_folder_messages``).
+            Default 200.
+        save_csv: Optional file path. When provided, the bounce rows are written
+            to a UTF-8 CSV file at this path.
+
+    Returns:
+        dict with keys:
+            - ``count``: number of bounce messages found
+            - ``reasons``: mapping of reason string to count
+            - ``rows``: list of classified bounce dicts
+    """
+    import collections
+
+    logger.info(
+        "scan_bounces called: folder=%s, limit=%s, save_csv=%s",
+        folder,
+        limit,
+        save_csv,
+    )
+    try:
+        folder_id = _resolve_mail_folder(folder)
+        rows = _bounces.scan_folder(graph.request, folder_id, limit=limit)
+        reasons: dict[str, int] = dict(
+            collections.Counter(row["reason"] for row in rows)
+        )
+        if save_csv:
+            _bounces.write_csv(rows, save_csv)
+        return {"count": len(rows), "reasons": reasons, "rows": rows}
+    except Exception as e:
+        logger.error("scan_bounces failed: %s", e, exc_info=True)
         raise
 
 

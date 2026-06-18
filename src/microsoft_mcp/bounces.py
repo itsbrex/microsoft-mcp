@@ -1,7 +1,7 @@
-"""Bounce/NDR (non-delivery report) classifier and DSN parser.
+"""Bounce/NDR (non-delivery report) classifier, DSN parser, and folder scanner.
 
-Pure module — no network I/O, no file I/O, no dependency injection.
-All functions operate on plain strings and dicts.
+Pure module — no global imports of graph or auth; all Graph interaction uses
+an injected ``request`` callable so the module remains unit-testable.
 
 Pattern catalogs consolidated from outlook-creds api/bounces.py so detection
 logic does not drift across scripts.
@@ -9,7 +9,10 @@ logic does not drift across scripts.
 
 from __future__ import annotations
 
+import csv
+import pathlib
 import re
+from collections.abc import Iterator
 from html import unescape
 from typing import Any
 
@@ -169,6 +172,40 @@ EXCLUDED_SUBJECT_PREFIXES: tuple[str, ...] = (
     "Automatic reply:",
     "Messages on hold",
 )
+
+# Fields the bounce scanner needs from a Graph message
+BOUNCE_MESSAGE_FIELDS = (
+    "id,subject,from,sender,receivedDateTime,body,bodyPreview,hasAttachments"
+)
+
+# CSV output columns (order determines column order in CSV)
+_CSV_FIELDNAMES = [
+    "first_name",
+    "last_name",
+    "email",
+    "reason",
+    "date",
+    "iso_date",
+    "subject",
+    "sender",
+    "body",
+    "message_id",
+    "has_attachments",
+]
+
+# Graph base URLs stripped from @odata.nextLink before passing to request()
+_GRAPH_BASES = (
+    "https://graph.microsoft.com/v1.0",
+    "https://graph.microsoft.com/beta",
+)
+
+
+def _strip_graph_base(url: str) -> str:
+    """Turn an absolute Graph @odata.nextLink into a path that request() accepts."""
+    for base in _GRAPH_BASES:
+        if url.startswith(base):
+            return url[len(base) :]
+    return url
 
 
 # ============================================================================
@@ -384,6 +421,24 @@ def _sender_email_from_message(message: dict[str, Any]) -> str:
     return ""
 
 
+# Public aliases — the brief and CLI reference these without the underscore prefix
+def message_body_text(message: dict[str, Any]) -> str:
+    """Public alias for ``_message_body_text``.
+
+    Extract plain text body content from a Graph-style message dict.
+    Strips HTML tags if contentType is HTML.
+    """
+    return _message_body_text(message)
+
+
+def sender_email_from_message(message: dict[str, Any]) -> str:
+    """Public alias for ``_sender_email_from_message``.
+
+    Pull the sender's email address from a Graph-style message dict.
+    """
+    return _sender_email_from_message(message)
+
+
 def classify_bounce_message(msg: dict[str, Any]) -> dict[str, Any] | None:
     """Build a structured bounce record from a Graph-style message dict.
 
@@ -423,3 +478,96 @@ def classify_bounce_message(msg: dict[str, Any]) -> dict[str, Any] | None:
         "message_id": msg.get("id"),
         "has_attachments": bool(msg.get("hasAttachments")),
     }
+
+
+# ============================================================================
+# Graph-backed folder scanner (injected request, no global graph import)
+# ============================================================================
+
+
+def iter_folder_messages(
+    request: Any,
+    folder_id: str,
+    *,
+    limit: int | None = None,
+    page_size: int = 50,
+    select: str = BOUNCE_MESSAGE_FIELDS,
+    order_by: str = "receivedDateTime desc",
+) -> Iterator[dict[str, Any]]:
+    """Yield messages from a Graph mail folder, paginating via @odata.nextLink.
+
+    ``request`` is the injected Graph request callable
+    (``graph.request`` in production, a fake in tests).
+
+    Stops once ``limit`` messages have been yielded (``None`` = no cap).
+    ``@odata.nextLink`` is an absolute URL; we strip the Graph base prefix
+    before passing it to ``request``, which expects a path.
+    """
+    path = f"/me/mailFolders/{folder_id}/messages"
+    params: dict[str, Any] | None = {
+        "$top": min(page_size, limit) if limit is not None else page_size,
+        "$select": select,
+        "$orderby": order_by,
+    }
+    yielded = 0
+
+    while True:
+        data = (
+            request("GET", path, params=params)
+            if params is not None
+            else request("GET", path)
+        )
+        if not data:
+            break
+        for msg in data.get("value", []):
+            yield msg
+            yielded += 1
+            if limit is not None and yielded >= limit:
+                return
+        next_link = data.get("@odata.nextLink")
+        if not next_link:
+            break
+        path = _strip_graph_base(next_link)
+        params = None  # nextLink already encodes all query params
+
+
+def scan_folder(
+    request: Any,
+    folder_id: str,
+    *,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    """Scan a mail folder and return classified bounce records.
+
+    Iterates up to ``limit`` messages (``None`` = no cap) via
+    ``iter_folder_messages``, checks each with ``is_bounce_message``, and
+    classifies matching messages with ``classify_bounce_message``.
+
+    Returns a list of bounce dicts (``None`` results from
+    ``classify_bounce_message`` are silently skipped).
+    """
+    results: list[dict[str, Any]] = []
+    for msg in iter_folder_messages(request, folder_id, limit=limit):
+        subject = msg.get("subject") or ""
+        sender = sender_email_from_message(msg)
+        body = message_body_text(msg)
+        if is_bounce_message(subject, sender, body):
+            record = classify_bounce_message(msg)
+            if record is not None:
+                results.append(record)
+    return results
+
+
+def write_csv(rows: list[dict[str, Any]], path: str | pathlib.Path) -> None:
+    """Write bounce records to a CSV file.
+
+    Columns follow ``_CSV_FIELDNAMES`` order.  If ``rows`` is empty, a
+    header-only CSV is written.  The file is always UTF-8 with proper
+    newline handling.
+    """
+    out_path = pathlib.Path(path)
+    with out_path.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=_CSV_FIELDNAMES, extrasaction="ignore")
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)

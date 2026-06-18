@@ -27,6 +27,7 @@ microsoft-mcp-signatures = "microsoft_mcp.signatures_cli:cli_main"
 microsoft-mcp-auth = "microsoft_mcp.auth_cli:cli_main"
 microsoft-mcp-rules = "microsoft_mcp.rules_cli:cli_main"
 microsoft-mcp-intel = "microsoft_mcp.intel_cli:cli_main"
+microsoft-mcp-bounces = "microsoft_mcp.bounces_cli:cli_main"
 
 [build-system]
 requires = ["hatchling"]

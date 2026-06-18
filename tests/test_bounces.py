@@ -1,8 +1,11 @@
-"""Tests for bounces.py — pure NDR classifier + DSN parser.
+"""Tests for bounces.py — NDR classifier, DSN parser, folder scanner, and CSV export.
 
 Import convention follows the repo pattern:
     from src.microsoft_mcp import <module>
 """
+
+import csv
+import io
 
 import pytest
 
@@ -12,8 +15,11 @@ from src.microsoft_mcp.bounces import (
     determine_bounce_reason,
     extract_email_from_text,
     is_bounce_message,
+    iter_folder_messages,
     parse_dsn_content,
     parse_name_from_email,
+    scan_folder,
+    write_csv,
 )
 
 # ---------------------------------------------------------------------------
@@ -571,3 +577,259 @@ def test_determine_bounce_reason_all_patterns(text: str, expected_reason: str) -
     and cannot accidentally fire an earlier pattern.
     """
     assert bounces.determine_bounce_reason("", text) == expected_reason
+
+
+# ---------------------------------------------------------------------------
+# Sample Graph message fixtures
+# ---------------------------------------------------------------------------
+
+_BOUNCE_MSG = {
+    "id": "AABounce001",
+    "subject": "Undeliverable: Hello bob",
+    "from": {
+        "emailAddress": {
+            "address": "postmaster@mailserver.com",
+            "name": "Postmaster",
+        }
+    },
+    "receivedDateTime": "2025-03-15T10:30:00Z",
+    "hasAttachments": False,
+    "body": {
+        "contentType": "text",
+        "content": (
+            "Your message to bob.jones@company.com could not be delivered.\n"
+            "550 5.1.1 The email account does not exist.\n"
+        ),
+    },
+}
+
+_NORMAL_MSG = {
+    "id": "AANormal001",
+    "subject": "Lunch plans",
+    "from": {"emailAddress": {"address": "alice@company.com", "name": "Alice"}},
+    "receivedDateTime": "2025-03-15T12:00:00Z",
+    "hasAttachments": False,
+    "body": {"contentType": "text", "content": "Let's grab lunch at noon!"},
+}
+
+
+# ---------------------------------------------------------------------------
+# iter_folder_messages
+# ---------------------------------------------------------------------------
+
+
+class TestIterFolderMessages:
+    """Tests for pagination and limit behaviour of iter_folder_messages."""
+
+    def _make_request(self, pages: list[dict]) -> object:
+        """Return a fake request callable that serves ``pages`` in sequence."""
+        calls: list[tuple] = []
+        page_iter = iter(pages)
+
+        def fake_request(method, path, **kwargs):
+            calls.append((method, path, kwargs))
+            try:
+                return next(page_iter)
+            except StopIteration:
+                return {"value": []}
+
+        fake_request.calls = calls  # type: ignore[attr-defined]
+        return fake_request
+
+    def test_single_page_no_next_link(self):
+        page = {"value": [_BOUNCE_MSG, _NORMAL_MSG]}
+        req = self._make_request([page])
+        result = list(iter_folder_messages(req, "inbox"))
+        assert len(result) == 2
+
+    def test_two_pages_via_next_link(self):
+        """Page 1 includes @odata.nextLink; page 2 does not. Both pages yielded."""
+        page1 = {
+            "value": [_BOUNCE_MSG],
+            "@odata.nextLink": "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages?$skip=50",
+        }
+        page2 = {"value": [_NORMAL_MSG]}
+        calls: list[tuple] = []
+
+        def fake_request(method, path, **kwargs):
+            calls.append((method, path))
+            if len(calls) == 1:
+                return page1
+            return page2
+
+        result = list(iter_folder_messages(fake_request, "inbox"))
+        assert len(result) == 2
+        # Second call must use the base-stripped path, not the full URL
+        assert calls[1][1] == "/me/mailFolders/inbox/messages?$skip=50"
+
+    def test_next_link_graph_base_stripped(self):
+        """_strip_graph_base is applied: the second call must not start with https://."""
+        next_link = (
+            "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages?$skip=50"
+        )
+        page1 = {"value": [_BOUNCE_MSG], "@odata.nextLink": next_link}
+        page2 = {"value": []}
+        second_path: list[str] = []
+
+        def fake_request(method, path, **kwargs):
+            if len(second_path) == 0 and path.startswith(
+                "/me/mailFolders/inbox/messages?"
+            ):
+                second_path.append(path)
+            return page1 if not second_path else page2
+
+        list(iter_folder_messages(fake_request, "inbox"))
+        assert second_path, "second call was never made"
+        assert not second_path[0].startswith("https://")
+        assert second_path[0] == "/me/mailFolders/inbox/messages?$skip=50"
+
+    def test_limit_caps_yielded_messages(self):
+        """limit=1 must stop after yielding one message even if more exist."""
+        page = {"value": [_BOUNCE_MSG, _NORMAL_MSG, _BOUNCE_MSG]}
+        req = self._make_request([page])
+        result = list(iter_folder_messages(req, "inbox", limit=1))
+        assert len(result) == 1
+
+    def test_limit_across_pages(self):
+        """limit=1 must stop after page 1 even when page 1 has a nextLink."""
+        page1 = {
+            "value": [_BOUNCE_MSG],
+            "@odata.nextLink": "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages?$skip=50",
+        }
+        page2 = {"value": [_NORMAL_MSG]}
+        call_count = [0]
+
+        def fake_request(method, path, **kwargs):
+            call_count[0] += 1
+            return page1 if call_count[0] == 1 else page2
+
+        result = list(iter_folder_messages(fake_request, "inbox", limit=1))
+        assert len(result) == 1
+        assert call_count[0] == 1  # page 2 was never fetched
+
+
+# ---------------------------------------------------------------------------
+# scan_folder
+# ---------------------------------------------------------------------------
+
+
+class TestScanFolder:
+    """Tests for scan_folder — filters bounces from a mix of messages."""
+
+    def test_returns_only_bounces(self):
+        """A mix of bounce + normal messages: only bounces are classified."""
+        page = {"value": [_BOUNCE_MSG, _NORMAL_MSG]}
+
+        def fake_request(method, path, **kwargs):
+            return page
+
+        rows = scan_folder(fake_request, "inbox")
+        assert len(rows) == 1
+        assert rows[0]["message_id"] == "AABounce001"
+
+    def test_no_bounces_returns_empty(self):
+        page = {"value": [_NORMAL_MSG]}
+
+        def fake_request(method, path, **kwargs):
+            return page
+
+        rows = scan_folder(fake_request, "inbox")
+        assert rows == []
+
+    def test_limit_passed_to_iter(self):
+        """scan_folder's limit caps messages SCANNED, not just returned."""
+        page = {
+            "value": [_BOUNCE_MSG, _BOUNCE_MSG, _BOUNCE_MSG],
+            "@odata.nextLink": "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages?$skip=50",
+        }
+        call_count = [0]
+
+        def fake_request(method, path, **kwargs):
+            call_count[0] += 1
+            return page if call_count[0] == 1 else {"value": []}
+
+        rows = scan_folder(fake_request, "inbox", limit=2)
+        assert len(rows) == 2
+        # Should NOT have fetched page 2 (limit=2 hit on page 1)
+        assert call_count[0] == 1
+
+    def test_classified_record_has_expected_keys(self):
+        page = {"value": [_BOUNCE_MSG]}
+
+        def fake_request(method, path, **kwargs):
+            return page
+
+        rows = scan_folder(fake_request, "inbox")
+        assert rows
+        expected_keys = {
+            "first_name",
+            "last_name",
+            "email",
+            "reason",
+            "date",
+            "iso_date",
+            "subject",
+            "sender",
+            "body",
+            "message_id",
+            "has_attachments",
+        }
+        assert set(rows[0].keys()) == expected_keys
+
+
+# ---------------------------------------------------------------------------
+# write_csv
+# ---------------------------------------------------------------------------
+
+
+class TestWriteCsv:
+    def test_writes_header_and_row(self, tmp_path):
+        row = {
+            "first_name": "Bob",
+            "last_name": "Jones",
+            "email": "bob.jones@company.com",
+            "reason": "Invalid Recipient",
+            "date": "2025-03-15T10:30:00Z",
+            "iso_date": "2025-03-15T10:30:00Z",
+            "subject": "Undeliverable: Hello bob",
+            "sender": "postmaster@mailserver.com",
+            "body": "Your message could not be delivered.",
+            "message_id": "AABounce001",
+            "has_attachments": False,
+        }
+        out = tmp_path / "out.csv"
+        write_csv([row], out)
+        content = out.read_text(encoding="utf-8")
+        reader = csv.DictReader(io.StringIO(content))
+        rows = list(reader)
+        assert len(rows) == 1
+        assert rows[0]["email"] == "bob.jones@company.com"
+        assert rows[0]["reason"] == "Invalid Recipient"
+
+    def test_empty_rows_writes_header_only(self, tmp_path):
+        out = tmp_path / "empty.csv"
+        write_csv([], out)
+        content = out.read_text(encoding="utf-8")
+        reader = csv.DictReader(io.StringIO(content))
+        rows = list(reader)
+        assert rows == []
+        # Header must still be present
+        assert reader.fieldnames is not None
+        assert "email" in reader.fieldnames
+        assert "reason" in reader.fieldnames
+
+    def test_accepts_string_path(self, tmp_path):
+        out = str(tmp_path / "str_path.csv")
+        write_csv([], out)
+        import pathlib
+
+        assert pathlib.Path(out).exists()
+
+    def test_csv_columns_match_fieldnames(self, tmp_path):
+        """All _CSV_FIELDNAMES columns must appear in the header."""
+        out = tmp_path / "cols.csv"
+        write_csv([], out)
+        content = out.read_text(encoding="utf-8")
+        header_line = content.splitlines()[0]
+        for field in bounces._CSV_FIELDNAMES:
+            assert field in header_line, f"Missing column: {field}"

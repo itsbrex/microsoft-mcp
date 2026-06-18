@@ -6,6 +6,7 @@ Import convention follows the repo pattern:
 
 import csv
 import io
+from unittest import mock
 
 import pytest
 
@@ -833,3 +834,186 @@ class TestWriteCsv:
         header_line = content.splitlines()[0]
         for field in bounces._CSV_FIELDNAMES:
             assert field in header_line, f"Missing column: {field}"
+
+
+# ---------------------------------------------------------------------------
+# scan_bounces MCP tool (Fix I2)
+# ---------------------------------------------------------------------------
+
+# Two canned bounce rows with known reason distribution:
+#   2x "Invalid Recipient", 1x "Mailbox Full"
+_TOOL_BOUNCE_ROWS = [
+    {
+        "first_name": "Bob",
+        "last_name": "Jones",
+        "email": "bob.jones@company.com",
+        "reason": "Invalid Recipient",
+        "date": "2025-03-15T10:30:00Z",
+        "iso_date": "2025-03-15T10:30:00Z",
+        "subject": "Undeliverable: Hello bob",
+        "sender": "postmaster@mailserver.com",
+        "body": "could not be delivered",
+        "message_id": "AAA001",
+        "has_attachments": False,
+    },
+    {
+        "first_name": "Alice",
+        "last_name": "Smith",
+        "email": "alice.smith@example.com",
+        "reason": "Invalid Recipient",
+        "date": "2025-03-16T11:00:00Z",
+        "iso_date": "2025-03-16T11:00:00Z",
+        "subject": "Undeliverable: Hello alice",
+        "sender": "postmaster@mailserver.com",
+        "body": "could not be delivered",
+        "message_id": "AAA002",
+        "has_attachments": False,
+    },
+    {
+        "first_name": "Carol",
+        "last_name": "White",
+        "email": "carol.white@example.com",
+        "reason": "Mailbox Full",
+        "date": "2025-03-17T12:00:00Z",
+        "iso_date": "2025-03-17T12:00:00Z",
+        "subject": "Delivery Failed",
+        "sender": "mailer-daemon@example.com",
+        "body": "Mailbox full",
+        "message_id": "AAA003",
+        "has_attachments": False,
+    },
+]
+
+
+class TestScanBouncesTool:
+    """Tests for the scan_bounces MCP tool in tools.py.
+
+    The test suite imports via ``from src.microsoft_mcp import tools``, so the
+    module lives under ``src.microsoft_mcp.tools`` in sys.modules.  Patch
+    targets must use that prefix, not ``microsoft_mcp.tools``.
+
+    Patch targets:
+      - src.microsoft_mcp.tools._resolve_mail_folder  (folder resolution)
+      - src.microsoft_mcp.tools._bounces.scan_folder  (folder scan)
+      - src.microsoft_mcp.tools._bounces.write_csv    (CSV output)
+    """
+
+    def _get_tool_fn(self):
+        from src.microsoft_mcp import tools
+
+        return tools.scan_bounces.fn
+
+    def test_returns_count_reasons_rows(self):
+        """Returns dict with count, reasons map, and rows list."""
+        with (
+            mock.patch(
+                "src.microsoft_mcp.tools._resolve_mail_folder",
+                return_value="inbox",
+            ) as mock_resolve,
+            mock.patch(
+                "src.microsoft_mcp.tools._bounces.scan_folder",
+                return_value=_TOOL_BOUNCE_ROWS,
+            ) as mock_scan,
+        ):
+            result = self._get_tool_fn()(folder="Inbox", limit=200)
+
+        assert result["count"] == 3
+        assert result["reasons"] == {"Invalid Recipient": 2, "Mailbox Full": 1}
+        assert result["rows"] is _TOOL_BOUNCE_ROWS
+
+        mock_resolve.assert_called_once_with("Inbox")
+        mock_scan.assert_called_once()
+        assert mock_scan.call_args[0][1] == "inbox"  # resolved folder_id
+        assert mock_scan.call_args[1]["limit"] == 200
+
+    def test_resolve_mail_folder_called_with_folder_arg(self):
+        """_resolve_mail_folder is called with the raw folder argument."""
+        with (
+            mock.patch(
+                "src.microsoft_mcp.tools._resolve_mail_folder",
+                return_value="sentitems",
+            ) as mock_resolve,
+            mock.patch(
+                "src.microsoft_mcp.tools._bounces.scan_folder",
+                return_value=[],
+            ),
+        ):
+            self._get_tool_fn()(folder="Sent", limit=50)
+
+        mock_resolve.assert_called_once_with("Sent")
+
+    def test_scan_folder_called_with_resolved_id_and_limit(self):
+        """scan_folder receives the resolved folder_id and the limit kwarg."""
+        with (
+            mock.patch(
+                "src.microsoft_mcp.tools._resolve_mail_folder",
+                return_value="deleteditems",
+            ),
+            mock.patch(
+                "src.microsoft_mcp.tools._bounces.scan_folder",
+                return_value=[],
+            ) as mock_scan,
+        ):
+            self._get_tool_fn()(folder="Deleted", limit=99)
+
+        mock_scan.assert_called_once()
+        assert mock_scan.call_args[0][1] == "deleteditems"
+        assert mock_scan.call_args[1]["limit"] == 99
+
+    def test_save_csv_calls_write_csv(self, tmp_path):
+        """When save_csv is provided, write_csv is called with rows and path."""
+        csv_path = str(tmp_path / "bounces.csv")
+        with (
+            mock.patch(
+                "src.microsoft_mcp.tools._resolve_mail_folder",
+                return_value="inbox",
+            ),
+            mock.patch(
+                "src.microsoft_mcp.tools._bounces.scan_folder",
+                return_value=_TOOL_BOUNCE_ROWS,
+            ),
+            mock.patch(
+                "src.microsoft_mcp.tools._bounces.write_csv",
+            ) as mock_write,
+        ):
+            result = self._get_tool_fn()(folder="Inbox", limit=200, save_csv=csv_path)
+
+        mock_write.assert_called_once_with(_TOOL_BOUNCE_ROWS, csv_path)
+        assert result["count"] == 3
+
+    def test_no_save_csv_does_not_call_write_csv(self):
+        """When save_csv is omitted, write_csv is NOT called."""
+        with (
+            mock.patch(
+                "src.microsoft_mcp.tools._resolve_mail_folder",
+                return_value="inbox",
+            ),
+            mock.patch(
+                "src.microsoft_mcp.tools._bounces.scan_folder",
+                return_value=_TOOL_BOUNCE_ROWS,
+            ),
+            mock.patch(
+                "src.microsoft_mcp.tools._bounces.write_csv",
+            ) as mock_write,
+        ):
+            self._get_tool_fn()(folder="Inbox", limit=200)
+
+        mock_write.assert_not_called()
+
+    def test_empty_folder_returns_zero_count(self):
+        """When scan_folder returns no rows, count is 0 and reasons is empty."""
+        with (
+            mock.patch(
+                "src.microsoft_mcp.tools._resolve_mail_folder",
+                return_value="inbox",
+            ),
+            mock.patch(
+                "src.microsoft_mcp.tools._bounces.scan_folder",
+                return_value=[],
+            ),
+        ):
+            result = self._get_tool_fn()(folder="Inbox", limit=200)
+
+        assert result["count"] == 0
+        assert result["reasons"] == {}
+        assert result["rows"] == []

@@ -540,21 +540,17 @@ def scan_folder(
     """Scan a mail folder and return classified bounce records.
 
     Iterates up to ``limit`` messages (``None`` = no cap) via
-    ``iter_folder_messages``, checks each with ``is_bounce_message``, and
-    classifies matching messages with ``classify_bounce_message``.
+    ``iter_folder_messages`` and classifies each message with
+    ``classify_bounce_message``, which returns ``None`` for non-bounce messages.
 
-    Returns a list of bounce dicts (``None`` results from
-    ``classify_bounce_message`` are silently skipped).
+    Returns a list of bounce dicts; non-bounces are excluded because
+    ``classify_bounce_message`` returns ``None`` for them.
     """
     results: list[dict[str, Any]] = []
     for msg in iter_folder_messages(request, folder_id, limit=limit):
-        subject = msg.get("subject") or ""
-        sender = sender_email_from_message(msg)
-        body = message_body_text(msg)
-        if is_bounce_message(subject, sender, body):
-            record = classify_bounce_message(msg)
-            if record is not None:
-                results.append(record)
+        record = classify_bounce_message(msg)
+        if record is not None:
+            results.append(record)
     return results
 
 

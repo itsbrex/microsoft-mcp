@@ -195,6 +195,88 @@ class TestCmdPatterns:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# _resolve_folder (Fix C1)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveFolderCli:
+    """Tests for bounces_cli._resolve_folder folder name resolution."""
+
+    def _make_graph_with_folders(self, folder_list: list[dict]) -> mock.MagicMock:
+        """Return a fake graph whose request returns the given mailFolders list."""
+        fake_graph = mock.MagicMock()
+        fake_graph.request.return_value = {"value": folder_list}
+        return fake_graph
+
+    def test_well_known_inbox_passes_through_without_request(self):
+        """Well-known name 'inbox' is resolved without a Graph request."""
+        fake_graph = self._make_graph_with_folders([])
+        result = bounces_cli._resolve_folder(fake_graph, "inbox")
+        assert result == "inbox"
+        fake_graph.request.assert_not_called()
+
+    def test_well_known_case_insensitive(self):
+        """Well-known names are matched case-insensitively ('Inbox', 'INBOX')."""
+        fake_graph = self._make_graph_with_folders([])
+        assert bounces_cli._resolve_folder(fake_graph, "Inbox") == "inbox"
+        assert bounces_cli._resolve_folder(fake_graph, "INBOX") == "inbox"
+        fake_graph.request.assert_not_called()
+
+    def test_display_name_resolves_to_folder_id(self):
+        """A non-well-known display name resolves to the matching folder id."""
+        # Use "Custom Bounces" — not in _WELL_KNOWN_FOLDERS so triggers a lookup.
+        fake_graph = self._make_graph_with_folders(
+            [
+                {"id": "AACustom001", "displayName": "Custom Bounces"},
+                {"id": "AAInbox001", "displayName": "Inbox"},
+            ]
+        )
+        result = bounces_cli._resolve_folder(fake_graph, "Custom Bounces")
+        assert result == "AACustom001"
+        fake_graph.request.assert_called_once()
+
+    def test_display_name_lookup_is_case_insensitive(self):
+        """Display name matching ignores case ('My Folder' vs 'my folder')."""
+        fake_graph = self._make_graph_with_folders(
+            [{"id": "AACustom001", "displayName": "My Folder"}]
+        )
+        result = bounces_cli._resolve_folder(fake_graph, "my folder")
+        assert result == "AACustom001"
+
+    def test_unknown_string_passes_through_unchanged(self):
+        """An unrecognised string (e.g. an opaque id) is returned as-is."""
+        fake_graph = self._make_graph_with_folders([])
+        opaque_id = "AAMkADExampleOpaqueId=="
+        result = bounces_cli._resolve_folder(fake_graph, opaque_id)
+        assert result == opaque_id
+
+    def test_well_known_inbox_direct(self):
+        """Direct unit call: well-known 'inbox' never touches graph.request."""
+        fake_graph = mock.MagicMock()
+        result = bounces_cli._resolve_folder(fake_graph, "inbox")
+        assert result == "inbox"
+        fake_graph.request.assert_not_called()
+
+    def test_display_name_direct_call(self):
+        """Direct unit call: display name 'Bounces Folder' resolves to its id."""
+        fake_graph = mock.MagicMock()
+        fake_graph.request.return_value = {
+            "value": [{"id": "AABounces999", "displayName": "Bounces Folder"}]
+        }
+        result = bounces_cli._resolve_folder(fake_graph, "Bounces Folder")
+        assert result == "AABounces999"
+        fake_graph.request.assert_called_once()
+
+    def test_opaque_id_direct_call(self):
+        """Direct unit call: an unrecognised string passes through unchanged."""
+        fake_graph = mock.MagicMock()
+        fake_graph.request.return_value = {"value": []}
+        opaque = "AAMkAGZlMWNhYWUx=="
+        result = bounces_cli._resolve_folder(fake_graph, opaque)
+        assert result == opaque
+
+
 class TestExitCodes:
     def test_missing_subcommand_exits_nonzero(self):
         """No subcommand → argparse exits with code 2."""

@@ -48,6 +48,50 @@ def _c(text: str, color: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Folder resolver (lightweight — no tools.py import)
+
+_WELL_KNOWN_FOLDERS = frozenset(
+    {
+        "inbox",
+        "sentitems",
+        "drafts",
+        "deleteditems",
+        "junkemail",
+        "archive",
+        "outbox",
+        "clutter",
+        "conversationhistory",
+        "recoverableitemsdeletions",
+        "scheduled",
+        "searchfolders",
+        "serverfailures",
+        "syncissues",
+        "msgfolderroot",
+    }
+)
+
+
+def _resolve_folder(graph: Any, folder: str) -> str:
+    """Resolve a folder name to a Graph folder id (or well-known name).
+
+    Well-known names (case-insensitive) pass through canonicalised; a display
+    name is looked up via /me/mailFolders; anything else (e.g. an opaque id) is
+    returned unchanged so it is never corrupted.
+    """
+    raw = folder.strip()
+    key = raw.casefold().replace(" ", "")
+    if key in _WELL_KNOWN_FOLDERS:
+        return key
+    data = graph.request(
+        "GET", "/me/mailFolders", params={"$top": 100, "$select": "id,displayName"}
+    )
+    for f in (data or {}).get("value", []):
+        if (f.get("displayName") or "").casefold() == raw.casefold():
+            return f["id"]
+    return raw  # assume caller passed a folder id
+
+
+# ---------------------------------------------------------------------------
 # Bootstrap helpers
 
 
@@ -96,8 +140,8 @@ def _cmd_scan(args: argparse.Namespace) -> int:
     from microsoft_mcp import bounces
 
     graph = _bootstrap_graph()
-    folder = args.folder.lower()
-    rows = bounces.scan_folder(graph.request, folder, limit=args.limit)
+    folder_id = _resolve_folder(graph, args.folder)
+    rows = bounces.scan_folder(graph.request, folder_id, limit=args.limit)
 
     if args.output:
         bounces.write_csv(rows, args.output)

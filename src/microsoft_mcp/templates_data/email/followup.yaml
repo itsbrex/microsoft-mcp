@@ -1,0 +1,36 @@
+name: followup
+description: Follow-up email after a meeting or conversation
+version: "1.0"
+category: email
+
+html_template: |
+  <p>Hi {recipient_name},</p>
+  <p>Thank you for {context}. I wanted to follow up{action_section}.</p>
+  {next_steps_section}
+  <p>Please let me know if you have any questions.</p>
+  <p>Best regards,<br>{sender_name}</p>
+
+placeholders:
+  - name: recipient_name
+    description: Name of the email recipient
+    required: true
+  - name: sender_name
+    description: Name of the email sender
+    required: true
+  - name: context
+    description: Context of the meeting or interaction (e.g. "our call yesterday")
+    required: true
+  - name: action
+    description: Optional specific action or ask
+    required: false
+  - name: next_steps
+    description: Comma-separated list of next steps
+    required: false
+
+conditional_sections:
+  action_section:
+    condition: action
+    template: " regarding {action}"
+  next_steps_section:
+    condition: next_steps
+    template: "<p><strong>Next steps:</strong> {next_steps}</p>"

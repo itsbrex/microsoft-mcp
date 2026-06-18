@@ -1,0 +1,63 @@
+from src.microsoft_mcp import rules
+
+
+def test_summarize_conditions_human_readable():
+    conds = {
+        "senderContains": ["acme.com"],
+        "subjectContains": ["invoice"],
+        "hasAttachments": True,
+    }
+    out = rules.summarize_conditions(conds)
+    assert "acme.com" in out and "invoice" in out and "attachment" in out.lower()
+
+
+def test_summarize_actions_human_readable():
+    acts = {"moveToFolder": "AAMk123", "markAsRead": True, "stopProcessingRules": True}
+    out = rules.summarize_actions(acts)
+    assert "move" in out.lower() and "read" in out.lower() and "stop" in out.lower()
+
+
+def test_shape_rule_summary_keys():
+    rule = {
+        "id": "r1",
+        "displayName": "Newsletters",
+        "sequence": 3,
+        "isEnabled": True,
+        "conditions": {"senderContains": ["news"]},
+        "actions": {"markAsRead": True},
+    }
+    s = rules.shape_rule_summary(rule)
+    assert s == {
+        "id": "r1",
+        "display_name": "Newsletters",
+        "sequence": 3,
+        "is_enabled": True,
+        "conditions_summary": s["conditions_summary"],
+        "actions_summary": s["actions_summary"],
+    }
+    assert "news" in s["conditions_summary"]
+
+
+def test_build_rule_payload_minimal_move():
+    p = rules.build_rule_payload(
+        display_name="News",
+        sender_contains=["news.com"],
+        move_to_folder="AAMkFolder",
+        mark_as_read=True,
+    )
+    assert p["displayName"] == "News"
+    assert p["sequence"] == 1 and p["isEnabled"] is True
+    assert p["conditions"] == {"senderContains": ["news.com"]}
+    assert p["actions"] == {"moveToFolder": "AAMkFolder", "markAsRead": True}
+
+
+def test_build_rule_payload_addresses_and_forward():
+    p = rules.build_rule_payload(
+        display_name="Fwd",
+        from_addresses=["a@x.com"],
+        forward_to=["b@y.com"],
+    )
+    assert p["conditions"]["fromAddresses"] == [
+        {"emailAddress": {"address": "a@x.com"}}
+    ]
+    assert p["actions"]["forwardTo"] == [{"emailAddress": {"address": "b@y.com"}}]

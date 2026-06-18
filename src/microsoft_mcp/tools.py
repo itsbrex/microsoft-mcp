@@ -9,14 +9,23 @@ import mimetypes
 import os
 import pathlib as pl
 import re
-from typing import Any
+from typing import Any, cast
 from urllib.parse import quote
+
 import httpx
+import yaml
 from fastmcp import FastMCP
 from . import graph
+from . import bounces as _bounces
+from . import rules as _rules
+from . import signature_parser as _sigparse
 from . import signatures as signatures_mod
+from . import templates_engine as _templates
+from . import todo as _todo
+from .intel import engine as _intel_engine  # noqa: F401 – used by intel MCP tools
 from .auth_base import AuthProvider
 from .response_shaping import (
+    _html_to_text,
     cleanup_graph_payload,
     compact_location,
     shape_contact_detail,
@@ -1580,6 +1589,706 @@ def ensure_master_categories(
 
 
 @mcp.tool
+def list_inbox_rules(response_profile: str = "auto") -> list[dict[str, Any]]:
+    """List Outlook inbox rules (server-side message rules).
+
+    Returns each rule with a human-readable summary of its conditions and
+    actions. Rules run top-to-bottom by `sequence` (lower = earlier).
+
+    Args:
+        response_profile: "auto" | "legacy" | "assistant".
+
+    Returns:
+        List of rules. assistant: {id, display_name, sequence, is_enabled,
+        conditions_summary, actions_summary}. legacy: cleaned raw Graph rules.
+    """
+    logger.info("list_inbox_rules called")
+    profile = get_response_profile(response_profile)
+    try:
+        raw = list(
+            graph.request_paginated(
+                "/me/mailFolders/inbox/messageRules",
+                params={"$select": _rules.RULE_LIST_FIELDS},
+                limit=None,
+            )
+        )
+        if profile == "assistant":
+            return [_rules.shape_rule_summary(r) for r in raw]
+        return [cleanup_graph_payload(r) for r in raw]
+    except Exception as e:
+        logger.error(f"list_inbox_rules failed: {e}", exc_info=True)
+        raise
+
+
+@mcp.tool
+def get_inbox_rule(rule_id: str, response_profile: str = "auto") -> dict[str, Any]:
+    """Get a single Outlook inbox rule by ID.
+
+    Args:
+        rule_id: The unique ID of the message rule.
+        response_profile: "auto" | "legacy" | "assistant".
+
+    Returns:
+        assistant: {id, display_name, sequence, is_enabled, conditions_summary,
+        actions_summary, exceptions_summary}. legacy: cleaned raw Graph rule.
+    """
+    logger.info("get_inbox_rule called: rule_id=%s", rule_id)
+    profile = get_response_profile(response_profile)
+    try:
+        rule = graph.request(
+            "GET",
+            f"/me/mailFolders/inbox/messageRules/{rule_id}",
+            params={"$select": _rules.RULE_DETAIL_FIELDS},
+        )
+        if not rule:
+            raise RuntimeError(
+                f"get_inbox_rule: no data returned for rule_id={rule_id}"
+            )
+        if profile == "assistant":
+            shaped = _rules.shape_rule_summary(rule)
+            shaped["exceptions_summary"] = _rules.summarize_conditions(
+                rule.get("exceptions")
+            )
+            return shaped
+        return cleanup_graph_payload(rule)
+    except Exception as e:
+        logger.error("get_inbox_rule failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def create_inbox_rule(
+    display_name: str,
+    sequence: int = 1,
+    is_enabled: bool = True,
+    sender_contains: list[str] | None = None,
+    subject_contains: list[str] | None = None,
+    body_contains: list[str] | None = None,
+    from_addresses: list[str] | None = None,
+    has_attachments: bool | None = None,
+    importance: str | None = None,
+    move_to_folder: str | None = None,
+    copy_to_folder: str | None = None,
+    assign_categories: list[str] | None = None,
+    mark_as_read: bool | None = None,
+    mark_importance: str | None = None,
+    forward_to: list[str] | None = None,
+    delete: bool | None = None,
+    stop_processing_rules: bool | None = None,
+    response_profile: str = "auto",
+) -> dict[str, Any]:
+    """Create a new Outlook inbox rule.
+
+    Folder arguments (move_to_folder, copy_to_folder) accept either a folder
+    display name or an existing folder ID; names are resolved automatically.
+
+    Args:
+        display_name: Name for the rule.
+        sequence: Processing order (lower = earlier). Defaults to 1.
+        is_enabled: Whether the rule is active. Defaults to True.
+        sender_contains: Match if sender address/name contains any of these strings.
+        subject_contains: Match if subject contains any of these strings.
+        body_contains: Match if body contains any of these strings.
+        from_addresses: Match if from one of these email addresses.
+        has_attachments: Match if message has (True) or lacks (False) attachments.
+        importance: Match by importance: "low" | "normal" | "high".
+        move_to_folder: Folder name or ID to move matched messages into.
+        copy_to_folder: Folder name or ID to copy matched messages into.
+        assign_categories: List of category names to assign.
+        mark_as_read: Mark matched messages as read.
+        mark_importance: Set importance: "low" | "normal" | "high".
+        forward_to: Forward to these email addresses.
+        delete: Move to Deleted Items if True.
+        stop_processing_rules: Stop evaluating further rules if True.
+        response_profile: "auto" | "legacy" | "assistant".
+
+    Returns:
+        The created rule. assistant: shaped summary. legacy: cleaned raw Graph object.
+    """
+    logger.info("create_inbox_rule called: display_name=%s", display_name)
+    profile = get_response_profile(response_profile)
+    try:
+        if move_to_folder:
+            move_to_folder = _resolve_mail_folder(move_to_folder)
+        if copy_to_folder:
+            copy_to_folder = _resolve_mail_folder(copy_to_folder)
+        payload = _rules.build_rule_payload(
+            display_name=display_name,
+            sequence=sequence,
+            is_enabled=is_enabled,
+            sender_contains=sender_contains,
+            subject_contains=subject_contains,
+            body_contains=body_contains,
+            from_addresses=from_addresses,
+            has_attachments=has_attachments,
+            importance=importance,
+            move_to_folder=move_to_folder,
+            copy_to_folder=copy_to_folder,
+            assign_categories=assign_categories,
+            mark_as_read=mark_as_read,
+            mark_importance=mark_importance,
+            forward_to=forward_to,
+            delete=delete,
+            stop_processing_rules=stop_processing_rules,
+        )
+        created = graph.request(
+            "POST",
+            "/me/mailFolders/inbox/messageRules",
+            json=payload,
+        )
+        if not created:
+            raise RuntimeError("create_inbox_rule: no data returned from Graph")
+        if profile == "assistant":
+            return _rules.shape_rule_summary(created)
+        return cleanup_graph_payload(created)
+    except Exception as e:
+        logger.error("create_inbox_rule failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def update_inbox_rule(
+    rule_id: str,
+    display_name: str | None = None,
+    sequence: int | None = None,
+    is_enabled: bool | None = None,
+    sender_contains: list[str] | None = None,
+    subject_contains: list[str] | None = None,
+    body_contains: list[str] | None = None,
+    from_addresses: list[str] | None = None,
+    has_attachments: bool | None = None,
+    importance: str | None = None,
+    move_to_folder: str | None = None,
+    copy_to_folder: str | None = None,
+    assign_categories: list[str] | None = None,
+    mark_as_read: bool | None = None,
+    mark_importance: str | None = None,
+    forward_to: list[str] | None = None,
+    delete: bool | None = None,
+    stop_processing_rules: bool | None = None,
+    response_profile: str = "auto",
+) -> dict[str, Any]:
+    """Update fields on an existing Outlook inbox rule (partial PATCH).
+
+    Only fields explicitly supplied are sent; omitted arguments are left untouched.
+
+    Args:
+        rule_id: The unique ID of the rule to update.
+        display_name: New display name.
+        sequence: New processing order.
+        is_enabled: Enable or disable the rule.
+        sender_contains: Replace sender-contains condition strings.
+        subject_contains: Replace subject-contains condition strings.
+        body_contains: Replace body-contains condition strings.
+        from_addresses: Replace from-addresses condition.
+        has_attachments: Replace has-attachments condition.
+        importance: Replace importance condition.
+        move_to_folder: Replace move-to-folder action (name or ID).
+        copy_to_folder: Replace copy-to-folder action (name or ID).
+        assign_categories: Replace assign-categories action.
+        mark_as_read: Replace mark-as-read action.
+        mark_importance: Replace mark-importance action.
+        forward_to: Replace forward-to action.
+        delete: Replace delete action.
+        stop_processing_rules: Replace stop-processing-rules action.
+        response_profile: "auto" | "legacy" | "assistant".
+
+    Returns:
+        The updated rule. assistant: shaped summary. legacy: cleaned raw Graph object.
+    """
+    logger.info("update_inbox_rule called: rule_id=%s", rule_id)
+    profile = get_response_profile(response_profile)
+    try:
+        partial: dict[str, Any] = {}
+        if display_name is not None:
+            partial["displayName"] = display_name
+        if sequence is not None:
+            partial["sequence"] = sequence
+        if is_enabled is not None:
+            partial["isEnabled"] = is_enabled
+
+        # Build conditions sub-object only from provided fields.
+        conditions: dict[str, Any] = {}
+        if sender_contains is not None:
+            conditions["senderContains"] = sender_contains
+        if subject_contains is not None:
+            conditions["subjectContains"] = subject_contains
+        if body_contains is not None:
+            conditions["bodyContains"] = body_contains
+        if from_addresses is not None:
+            conditions["fromAddresses"] = _rules._recipients(from_addresses)
+        if has_attachments is not None:
+            conditions["hasAttachments"] = has_attachments
+        if importance is not None:
+            conditions["importance"] = importance
+        if conditions:
+            partial["conditions"] = conditions
+
+        # Build actions sub-object only from provided fields.
+        if move_to_folder is not None:
+            move_to_folder = _resolve_mail_folder(move_to_folder)
+        if copy_to_folder is not None:
+            copy_to_folder = _resolve_mail_folder(copy_to_folder)
+        actions: dict[str, Any] = {}
+        if move_to_folder is not None:
+            actions["moveToFolder"] = move_to_folder
+        if copy_to_folder is not None:
+            actions["copyToFolder"] = copy_to_folder
+        if assign_categories is not None:
+            actions["assignCategories"] = assign_categories
+        if mark_as_read is not None:
+            actions["markAsRead"] = mark_as_read
+        if mark_importance is not None:
+            actions["markImportance"] = mark_importance
+        if forward_to is not None:
+            actions["forwardTo"] = _rules._recipients(forward_to)
+        if delete is not None:
+            actions["delete"] = delete
+        if stop_processing_rules is not None:
+            actions["stopProcessingRules"] = stop_processing_rules
+        if actions:
+            partial["actions"] = actions
+
+        updated = graph.request(
+            "PATCH",
+            f"/me/mailFolders/inbox/messageRules/{rule_id}",
+            json=partial,
+        )
+        if not updated:
+            raise RuntimeError(
+                f"update_inbox_rule: no data returned for rule_id={rule_id}"
+            )
+        if profile == "assistant":
+            return _rules.shape_rule_summary(updated)
+        return cleanup_graph_payload(updated)
+    except Exception as e:
+        logger.error("update_inbox_rule failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def delete_inbox_rule(rule_id: str) -> dict[str, Any]:
+    """Delete an Outlook inbox rule.
+
+    Args:
+        rule_id: The unique ID of the rule to delete.
+
+    Returns:
+        {"status": "deleted", "rule_id": <rule_id>}
+    """
+    logger.info("delete_inbox_rule called: rule_id=%s", rule_id)
+    try:
+        graph.request("DELETE", f"/me/mailFolders/inbox/messageRules/{rule_id}")
+        return {"status": "deleted", "rule_id": rule_id}
+    except Exception as e:
+        logger.error("delete_inbox_rule failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def toggle_inbox_rule(rule_id: str) -> dict[str, Any]:
+    """Toggle an Outlook inbox rule between enabled and disabled.
+
+    Fetches the current isEnabled state and flips it with a single PATCH.
+
+    Args:
+        rule_id: The unique ID of the rule to toggle.
+
+    Returns:
+        {"rule_id": <rule_id>, "is_enabled": <new bool value>}
+    """
+    logger.info("toggle_inbox_rule called: rule_id=%s", rule_id)
+    try:
+        current = graph.request(
+            "GET",
+            f"/me/mailFolders/inbox/messageRules/{rule_id}",
+            params={"$select": "id,isEnabled"},
+        )
+        if not current:
+            raise RuntimeError(
+                f"toggle_inbox_rule: no data returned for rule_id={rule_id}"
+            )
+        new_enabled = not current.get("isEnabled", False)
+        graph.request(
+            "PATCH",
+            f"/me/mailFolders/inbox/messageRules/{rule_id}",
+            json={"isEnabled": new_enabled},
+        )
+        return {"rule_id": rule_id, "is_enabled": new_enabled}
+    except Exception as e:
+        logger.error("toggle_inbox_rule failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def reorder_inbox_rules(rule_ids_in_order: list[str]) -> list[dict]:
+    """Reorder Outlook inbox rules by assigning each a new sequence number.
+
+    Iterates over *rule_ids_in_order* and PATCHes sequence=index+1 for each
+    rule, so the first entry becomes sequence 1, the second sequence 2, etc.
+
+    Args:
+        rule_ids_in_order: Rule IDs in the desired priority order (first = highest priority).
+
+    Returns:
+        List of {"rule_id": <id>, "sequence": <int>} for each rule patched.
+    """
+    logger.info("reorder_inbox_rules called: %d rules", len(rule_ids_in_order))
+    try:
+        results = []
+        for seq, rid in enumerate(rule_ids_in_order, start=1):
+            graph.request(
+                "PATCH",
+                f"/me/mailFolders/inbox/messageRules/{rid}",
+                json={"sequence": seq},
+            )
+            results.append({"rule_id": rid, "sequence": seq})
+        return results
+    except Exception as e:
+        logger.error("reorder_inbox_rules failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def export_inbox_rules(path: str | None = None) -> dict[str, Any]:
+    """Export all Outlook inbox rules to a YAML string or file.
+
+    Fetches all inbox rules from Graph, resolves folder IDs to display names,
+    and serialises them as a YAML template list compatible with
+    ``import_inbox_rules``.
+
+    Args:
+        path: Optional file path. When given, the YAML is written to disk and
+            the tool returns ``{"path": path, "count": n}``. When omitted,
+            the YAML string is returned inline as ``{"yaml": ..., "count": n}``.
+
+    Returns:
+        dict with either ``yaml`` (inline) or ``path`` (file), plus ``count``.
+    """
+    logger.info("export_inbox_rules called: path=%s", path)
+    try:
+        raw_rules = list(
+            graph.request_paginated(
+                "/me/mailFolders/inbox/messageRules",
+                params={"$select": _rules.RULE_LIST_FIELDS},
+                limit=None,
+            )
+        )
+
+        # Build a folder-id → display-name map from the full folder list.
+        raw_folders = list(
+            graph.request_paginated(
+                "/me/mailFolders",
+                params={"$select": "id,displayName", "$top": 100},
+                limit=None,
+            )
+        )
+        folder_name_map: dict[str, str] = {
+            f["id"]: f.get("displayName", f["id"]) for f in raw_folders if f.get("id")
+        }
+
+        def _folder_namer(folder_id: str) -> str:
+            return folder_name_map.get(folder_id, folder_id)
+
+        templates = [
+            _rules.rule_to_template(r, folder_namer=_folder_namer) for r in raw_rules
+        ]
+        yaml_text = yaml.safe_dump({"rules": templates}, sort_keys=False)
+
+        if path:
+            pl.Path(path).write_text(yaml_text, encoding="utf-8")
+            return {"path": path, "count": len(templates)}
+        return {"yaml": yaml_text, "count": len(templates)}
+    except Exception as e:
+        logger.error("export_inbox_rules failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def import_inbox_rules(
+    yaml_text: str | None = None,
+    path: str | None = None,
+    mode: str = "create",
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Import Outlook inbox rules from a YAML template string or file.
+
+    Loads rule templates (in the same format produced by ``export_inbox_rules``),
+    validates each, resolves folder names to IDs, and creates or updates rules
+    via the Graph API.
+
+    Args:
+        yaml_text: YAML string containing a ``rules:`` list. Mutually exclusive
+            with ``path``.
+        path: Path to a YAML file. Mutually exclusive with ``yaml_text``.
+        mode: ``"create"`` (default) — skip templates whose ``name`` already
+            exists among current rules; ``"sync"`` — PATCH existing rules by
+            name, POST new ones.
+        dry_run: When ``True``, return the planned actions without making any
+            POST or PATCH calls to Graph.
+
+    Returns:
+        ``{"created": [...], "updated": [...], "skipped": [...], "errors": [...]}``.
+    """
+    logger.info(
+        "import_inbox_rules called: mode=%s, dry_run=%s, has_yaml=%s, has_path=%s",
+        mode,
+        dry_run,
+        yaml_text is not None,
+        path is not None,
+    )
+
+    if mode not in {"create", "sync"}:
+        raise ValueError(f"mode must be 'create' or 'sync', got {mode!r}")
+
+    try:
+        # Load YAML source.
+        if path:
+            raw_text = pl.Path(path).read_text(encoding="utf-8")
+        elif yaml_text:
+            raw_text = yaml_text
+        else:
+            raise ValueError("Either yaml_text or path must be provided")
+
+        doc = yaml.safe_load(raw_text) or {}
+        templates: list[dict[str, Any]] = doc.get("rules") or []
+
+        # Fetch existing rules for name-based deduplication / sync lookup.
+        existing_rules = list(
+            graph.request_paginated(
+                "/me/mailFolders/inbox/messageRules",
+                params={"$select": _rules.RULE_LIST_FIELDS},
+                limit=None,
+            )
+        )
+        existing_by_name: dict[str, dict[str, Any]] = {
+            r["displayName"]: r for r in existing_rules if r.get("displayName")
+        }
+
+        created: list[str] = []
+        updated: list[str] = []
+        skipped: list[str] = []
+        errors: list[str] = []
+
+        for tpl in templates:
+            name = tpl.get("name", "<unnamed>")
+
+            # Validate template.
+            errs = _rules.validate_template(tpl)
+            if errs:
+                errors.append(f"{name}: {'; '.join(errs)}")
+                continue
+
+            # Resolve folder names to IDs.
+            acts = tpl.get("actions") or {}
+            folder_resolver_errors: list[str] = []
+
+            def _resolve_folder(folder_name: str) -> str:
+                try:
+                    return _resolve_mail_folder(folder_name)
+                except Exception as exc:
+                    folder_resolver_errors.append(
+                        f"{name}: cannot resolve folder {folder_name!r}: {exc}"
+                    )
+                    return folder_name  # placeholder — will be caught below
+
+            move_to = acts.get("move_to")
+            copy_to = acts.get("copy_to")
+
+            resolved_tpl = dict(tpl)
+            if move_to or copy_to:
+                resolved_acts = dict(acts)
+                if move_to:
+                    resolved_acts["move_to"] = _resolve_folder(move_to)
+                if copy_to:
+                    resolved_acts["copy_to"] = _resolve_folder(copy_to)
+                resolved_tpl = {**tpl, "actions": resolved_acts}
+
+            if folder_resolver_errors:
+                errors.extend(folder_resolver_errors)
+                continue
+
+            payload = _rules.template_to_rule_payload(resolved_tpl)
+
+            if name in existing_by_name:
+                if mode == "create":
+                    skipped.append(name)
+                    continue
+                # mode == "sync": PATCH existing
+                existing_id = existing_by_name[name]["id"]
+                if not dry_run:
+                    graph.request(
+                        "PATCH",
+                        f"/me/mailFolders/inbox/messageRules/{existing_id}",
+                        json=payload,
+                    )
+                updated.append(name)
+            else:
+                if not dry_run:
+                    graph.request(
+                        "POST",
+                        "/me/mailFolders/inbox/messageRules",
+                        json=payload,
+                    )
+                created.append(name)
+
+        return {
+            "created": created,
+            "updated": updated,
+            "skipped": skipped,
+            "errors": errors,
+        }
+    except ValueError:
+        raise
+    except Exception as e:
+        logger.error("import_inbox_rules failed: %s", e, exc_info=True)
+        raise
+
+
+# ---------------------------------------------------------------------------
+# Focused Inbox override CRUD
+# ---------------------------------------------------------------------------
+
+_FOCUSED_CLASSIFY_AS_VALUES = {"focused", "other"}
+
+_FOCUSED_OVERRIDE_SELECT = "id,classifyAs,senderEmailAddress"
+
+
+def _validate_classify_as(classify_as: str) -> None:
+    if classify_as not in _FOCUSED_CLASSIFY_AS_VALUES:
+        raise ValueError(
+            f"classify_as must be one of {sorted(_FOCUSED_CLASSIFY_AS_VALUES)!r}, got {classify_as!r}"
+        )
+
+
+@mcp.tool
+def list_focused_overrides(response_profile: str = "auto") -> list[dict[str, Any]]:
+    """List Focused Inbox sender overrides.
+
+    Returns the overrides that control whether messages from specific senders
+    land in the Focused or Other inbox tab.
+
+    Args:
+        response_profile: "auto" | "legacy" | "assistant".
+
+    Returns:
+        assistant: [{id, classify_as, email, name}, ...].
+        legacy: cleaned raw Graph objects.
+    """
+    logger.info("list_focused_overrides called")
+    profile = get_response_profile(response_profile)
+    try:
+        raw = list(
+            graph.request_paginated(
+                "/me/inferenceClassification/overrides",
+                params={"$select": _FOCUSED_OVERRIDE_SELECT},
+                limit=None,
+            )
+        )
+        if profile == "assistant":
+            return [
+                {
+                    "id": item["id"],
+                    "classify_as": item.get("classifyAs", ""),
+                    "email": item.get("senderEmailAddress", {}).get("address", ""),
+                    "name": item.get("senderEmailAddress", {}).get("name", ""),
+                }
+                for item in raw
+            ]
+        return [cleanup_graph_payload(item) for item in raw]
+    except Exception as e:
+        logger.error("list_focused_overrides failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def create_focused_override(
+    sender_email: str,
+    classify_as: str = "focused",
+    name: str = "",
+) -> dict[str, Any]:
+    """Create a Focused Inbox sender override.
+
+    Args:
+        sender_email: The sender's email address to classify.
+        classify_as: "focused" (default) or "other".
+        name: Display name for the sender. Defaults to sender_email when empty.
+
+    Returns:
+        The created override object from Graph.
+    """
+    logger.info("create_focused_override called: sender_email=%s", sender_email)
+    _validate_classify_as(classify_as)
+    try:
+        payload = {
+            "classifyAs": classify_as,
+            "senderEmailAddress": {
+                "address": sender_email,
+                "name": name or sender_email,
+            },
+        }
+        created = graph.request(
+            "POST",
+            "/me/inferenceClassification/overrides",
+            json=payload,
+        )
+        if not created:
+            raise RuntimeError("create_focused_override: no data returned from Graph")
+        return created
+    except Exception as e:
+        logger.error("create_focused_override failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def update_focused_override(override_id: str, classify_as: str) -> dict[str, Any]:
+    """Update the classification of a Focused Inbox sender override.
+
+    Args:
+        override_id: The unique ID of the override to update.
+        classify_as: "focused" or "other".
+
+    Returns:
+        The updated override object from Graph.
+    """
+    logger.info("update_focused_override called: override_id=%s", override_id)
+    _validate_classify_as(classify_as)
+    try:
+        updated = graph.request(
+            "PATCH",
+            f"/me/inferenceClassification/overrides/{override_id}",
+            json={"classifyAs": classify_as},
+        )
+        if not updated:
+            raise RuntimeError(
+                f"update_focused_override: no data returned for override_id={override_id}"
+            )
+        return updated
+    except Exception as e:
+        logger.error("update_focused_override failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def delete_focused_override(override_id: str) -> dict[str, Any]:
+    """Delete a Focused Inbox sender override.
+
+    Args:
+        override_id: The unique ID of the override to delete.
+
+    Returns:
+        {"status": "deleted", "override_id": <override_id>}
+    """
+    logger.info("delete_focused_override called: override_id=%s", override_id)
+    try:
+        graph.request("DELETE", f"/me/inferenceClassification/overrides/{override_id}")
+        return {"status": "deleted", "override_id": override_id}
+    except Exception as e:
+        logger.error("delete_focused_override failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
 def list_emails(
     folder: str = "inbox",
     limit: int = 10,
@@ -1944,6 +2653,8 @@ def create_email_draft(
     body: str | None = None,
     body_content_type: str = "text",
     signature: str | None = None,
+    template: str | None = None,
+    template_data: dict | None = None,
 ) -> dict[str, Any]:
     """Create an Outlook email draft without sending it.
 
@@ -1969,22 +2680,44 @@ def create_email_draft(
             reply/reply_all drafts (falling back to
             ``MICROSOFT_MCP_DEFAULT_SIGNATURE``), and
             ``MICROSOFT_MCP_DEFAULT_SIGNATURE`` is used for new drafts.
+        template: Optional template reference in ``"category/name"`` format
+            (e.g. ``"email/followup"``). When set, the body is rendered from
+            this template using *template_data* before signature application,
+            overriding any explicit *body* argument. The body content type is
+            automatically set to ``"html"``.
+        template_data: Mapping of placeholder names to values used when
+            rendering *template*. Defaults to ``{}`` when *template* is set.
 
     Returns:
         Draft metadata containing the created draft ID plus a shaped draft message object.
     """
 
     logger.info(
-        "create_email_draft called: draft_type=%s, email_id=%s, subject=%s, signature=%s",
+        "create_email_draft called: draft_type=%s, email_id=%s, subject=%s, signature=%s, template=%s",
         draft_type,
         email_id,
         subject,
         signature,
+        template,
     )
 
     try:
         normalized_draft_type = _normalize_draft_type(draft_type)
         normalized_body_type = _normalize_body_content_type(body_content_type)
+
+        # Template rendering: when a template reference is supplied, render it
+        # and use the result as the body (overriding any explicit body argument).
+        if template is not None:
+            parts = template.split("/", 1)
+            if len(parts) != 2 or not parts[0] or not parts[1]:
+                raise ValueError(
+                    f"template must be in 'category/name' format, got {template!r}"
+                )
+            tpl_category, tpl_name = parts
+            body = _templates.render_template(
+                tpl_category, tpl_name, template_data or {}
+            )
+            normalized_body_type = "html"
 
         to_objects = _build_recipient_objects(to_recipients)
         cc_objects = _build_recipient_objects(cc_recipients)
@@ -2158,6 +2891,299 @@ def update_email_draft(
         logger.error(
             "update_email_draft failed: email_id=%s, error=%s",
             email_id,
+            str(e),
+            exc_info=True,
+        )
+        raise
+
+
+def _create_reply_draft_impl(
+    *,
+    email_id: str,
+    action: str,
+    body: str,
+    signature: str | None,
+    response_profile: str,
+    tool_name: str,
+) -> dict[str, Any]:
+    """Shared implementation for reply_email_draft and reply_all_email_draft."""
+    logger.info(
+        "%s called: email_id=%s, signature=%s",
+        tool_name,
+        email_id,
+        signature,
+    )
+
+    try:
+        draft_type = "reply" if action == "createReply" else "reply_all"
+        raw: dict[str, Any] | None = graph.request(
+            "POST", f"/me/messages/{email_id}/{action}"
+        )
+
+        if not raw or not raw.get("id"):
+            raise ValueError("Draft could not be created")
+
+        if body:
+            signed_body, signature_applied, signature_warning = (
+                _apply_signature_to_body(
+                    body=body,
+                    body_content_type="HTML",
+                    signature=signature,
+                    draft_type=draft_type,
+                )
+            )
+            patch_payload: dict[str, Any] = {
+                "body": {"contentType": "HTML", "content": signed_body}
+            }
+            raw = _patch_email_message(raw["id"], patch_payload)
+            if not raw or not raw.get("id"):
+                raise ValueError("Draft could not be updated")
+        else:
+            signature_applied = None
+            signature_warning = None
+
+        profile = get_response_profile(response_profile)
+        if profile == "assistant":
+            draft_out: dict[str, Any] = {
+                "id": raw["id"],
+                "web_link": raw.get("webLink", ""),
+                "is_draft": raw.get("isDraft", True),
+            }
+        else:
+            draft_out = _shape_email_draft(raw)
+
+        result: dict[str, Any] = {
+            "status": "draft_created",
+            "draft_id": raw["id"],
+            "draft": draft_out,
+        }
+        if signature_applied is not None:
+            result["signature_applied"] = signature_applied
+        if signature_warning is not None:
+            result["signature_warning"] = signature_warning
+        return result
+    except Exception as e:
+        logger.error(
+            "%s failed: email_id=%s, error=%s",
+            tool_name,
+            email_id,
+            str(e),
+            exc_info=True,
+        )
+        raise
+
+
+@mcp.tool
+def reply_email_draft(
+    email_id: str,
+    body: str = "",
+    signature: str | None = None,
+    response_profile: str = "auto",
+) -> dict[str, Any]:
+    """Create a reply draft to an existing email message without sending it.
+
+    Uses Graph's ``createReply`` action to seed the draft with the original
+    message quoted inline. If ``body`` is supplied the draft body is replaced
+    (with optional signature) via a follow-up PATCH. The draft is never sent.
+
+    Args:
+        email_id: ID of the message to reply to.
+        body: Optional HTML body for the reply. When omitted the Graph-generated
+            quoted reply body is left unchanged.
+        signature: Optional local signature name. Pass ``"none"`` to suppress
+            the env-default signature. When omitted,
+            ``MICROSOFT_MCP_REPLY_SIGNATURE`` is used (falling back to
+            ``MICROSOFT_MCP_DEFAULT_SIGNATURE``).
+        response_profile: Response shaping profile (``"auto"``, ``"legacy"``,
+            or ``"assistant"``). ``"auto"`` defers to
+            ``MICROSOFT_MCP_RESPONSE_PROFILE``.
+
+    Returns:
+        ``{status, draft_id, draft}`` — the created draft message. Never sends.
+    """
+    return _create_reply_draft_impl(
+        email_id=email_id,
+        action="createReply",
+        body=body,
+        signature=signature,
+        response_profile=response_profile,
+        tool_name="reply_email_draft",
+    )
+
+
+@mcp.tool
+def reply_all_email_draft(
+    email_id: str,
+    body: str = "",
+    signature: str | None = None,
+    response_profile: str = "auto",
+) -> dict[str, Any]:
+    """Create a reply-all draft to an existing email thread without sending it.
+
+    Uses Graph's ``createReplyAll`` action to seed the draft with all original
+    recipients and the quoted message body. If ``body`` is supplied it replaces
+    the draft body (with optional signature) via a follow-up PATCH. The draft
+    is never sent.
+
+    Args:
+        email_id: ID of the message to reply-all to.
+        body: Optional HTML body for the reply-all. When omitted the
+            Graph-generated quoted reply body is left unchanged.
+        signature: Optional local signature name. Pass ``"none"`` to suppress
+            the env-default signature. When omitted,
+            ``MICROSOFT_MCP_REPLY_SIGNATURE`` is used (falling back to
+            ``MICROSOFT_MCP_DEFAULT_SIGNATURE``).
+        response_profile: Response shaping profile (``"auto"``, ``"legacy"``,
+            or ``"assistant"``). ``"auto"`` defers to
+            ``MICROSOFT_MCP_RESPONSE_PROFILE``.
+
+    Returns:
+        ``{status, draft_id, draft}`` — the created draft message. Never sends.
+    """
+    return _create_reply_draft_impl(
+        email_id=email_id,
+        action="createReplyAll",
+        body=body,
+        signature=signature,
+        response_profile=response_profile,
+        tool_name="reply_all_email_draft",
+    )
+
+
+@mcp.tool
+def forward_email_draft(
+    email_id: str,
+    to: list[str],
+    comment: str = "",
+    signature: str | None = None,
+    response_profile: str = "auto",
+) -> dict[str, Any]:
+    """Create a forward draft for an existing email message without sending it.
+
+    Uses Graph's ``createForward`` action to seed the draft, then PATCHes the
+    ``toRecipients`` and optionally the body (with optional signature). The
+    draft is never sent.
+
+    Args:
+        email_id: ID of the message to forward.
+        to: Non-empty list of recipient email addresses.
+        comment: Optional HTML comment/body to prepend. When omitted the
+            ``toRecipients`` patch is still applied so the forwarded draft has
+            the correct recipients.
+        signature: Optional local signature name. Pass ``"none"`` to suppress
+            the env-default signature. When omitted,
+            ``MICROSOFT_MCP_DEFAULT_SIGNATURE`` is used when ``comment`` is
+            supplied.
+        response_profile: Response shaping profile (``"auto"``, ``"legacy"``,
+            or ``"assistant"``). ``"auto"`` defers to
+            ``MICROSOFT_MCP_RESPONSE_PROFILE``.
+
+    Returns:
+        ``{status, draft_id, draft}`` — the created forward draft. Never sends.
+
+    Raises:
+        ValueError: If ``to`` is empty.
+    """
+    logger.info(
+        "forward_email_draft called: email_id=%s, to=%s, signature=%s",
+        email_id,
+        to,
+        signature,
+    )
+
+    try:
+        if not to:
+            raise ValueError(
+                "forward_email_draft requires at least one recipient in 'to'"
+            )
+
+        raw: dict[str, Any] | None = graph.request(
+            "POST", f"/me/messages/{email_id}/createForward"
+        )
+
+        if not raw or not raw.get("id"):
+            raise ValueError("Draft could not be created")
+
+        patch_payload: dict[str, Any] = {
+            "toRecipients": [{"emailAddress": {"address": addr}} for addr in to],
+        }
+
+        signature_applied = None
+        signature_warning = None
+
+        if comment:
+            signed_comment, signature_applied, signature_warning = (
+                _apply_signature_to_body(
+                    body=comment,
+                    body_content_type="HTML",
+                    signature=signature,
+                    draft_type="new",
+                )
+            )
+            patch_payload["body"] = {"contentType": "HTML", "content": signed_comment}
+
+        raw = _patch_email_message(raw["id"], patch_payload)
+        if not raw or not raw.get("id"):
+            raise ValueError("Draft could not be updated")
+
+        profile = get_response_profile(response_profile)
+        if profile == "assistant":
+            draft_out: dict[str, Any] = {
+                "id": raw["id"],
+                "web_link": raw.get("webLink", ""),
+                "is_draft": raw.get("isDraft", True),
+            }
+        else:
+            draft_out = _shape_email_draft(raw)
+
+        result: dict[str, Any] = {
+            "status": "draft_created",
+            "draft_id": raw["id"],
+            "draft": draft_out,
+        }
+        if signature_applied is not None:
+            result["signature_applied"] = signature_applied
+        if signature_warning is not None:
+            result["signature_warning"] = signature_warning
+        return result
+    except Exception as e:
+        logger.error(
+            "forward_email_draft failed: email_id=%s, error=%s",
+            email_id,
+            str(e),
+            exc_info=True,
+        )
+        raise
+
+
+@mcp.tool
+def send_email_draft(draft_id: str) -> dict[str, Any]:
+    """Send an existing draft message — the ONLY tool that puts mail on the wire.
+
+    This is the single, explicit send gate for the microsoft-mcp server. All
+    other tools (``create_email_draft``, ``reply_email_draft``,
+    ``reply_all_email_draft``, ``forward_email_draft``) only create or mutate
+    drafts and never transmit them. Call this tool when you are ready to
+    transmit a draft that was previously created by one of those tools.
+
+    Uses Graph's ``POST /me/messages/{draft_id}/send`` action (returns 202 No
+    Content on success).
+
+    Args:
+        draft_id: ID of the draft message to send (as returned in the
+            ``draft_id`` field from any of the draft-creating tools).
+
+    Returns:
+        ``{"status": "sent", "draft_id": draft_id}``
+    """
+    logger.info("send_email_draft called: draft_id=%s", draft_id)
+    try:
+        graph.request("POST", f"/me/messages/{draft_id}/send")
+        return {"status": "sent", "draft_id": draft_id}
+    except Exception as e:
+        logger.error(
+            "send_email_draft failed: draft_id=%s, error=%s",
+            draft_id,
             str(e),
             exc_info=True,
         )
@@ -2633,6 +3659,83 @@ def delete_email(email_id: str) -> dict[str, Any]:
             f"delete_email failed for email_id={email_id}: {str(e)}",
             exc_info=True,
         )
+        raise
+
+
+_MAILTIPS_DEFAULT_OPTIONS = [
+    "automaticReplies",
+    "mailboxFullStatus",
+    "maxMessageSize",
+    "recipientScope",
+    "deliveryRestriction",
+]
+
+
+@mcp.tool
+def get_mailtips(
+    emails: list[str],
+    options: list[str] | None = None,
+) -> list[dict]:
+    """Retrieve mail tips for one or more recipient email addresses.
+
+    Queries the Graph /me/getMailTips endpoint and returns a flattened list of
+    tip objects — one per recipient — with auto-reply HTML stripped to plain
+    text.
+
+    Args:
+        emails: One or more recipient addresses to check.
+        options: MailTips categories to request. Defaults to
+            automaticReplies, mailboxFullStatus, maxMessageSize,
+            recipientScope, deliveryRestriction.
+
+    Returns:
+        List of dicts with keys: email, auto_reply, mailbox_full,
+        max_message_size_bytes, recipient_scope, delivery_restricted.
+    """
+    if not emails:
+        raise ValueError("emails must be a non-empty list")
+
+    chosen_options = options if options is not None else _MAILTIPS_DEFAULT_OPTIONS
+    payload = {
+        "EmailAddresses": emails,
+        "MailTipsOptions": ",".join(chosen_options),
+    }
+
+    logger.info("get_mailtips called: %d recipient(s)", len(emails))
+
+    try:
+        raw = graph.request("POST", "/me/getMailTips", json=payload)
+        tips = raw.get("value", []) if raw else []
+
+        result = []
+        for tip in tips:
+            addr_obj = tip.get("emailAddress", {})
+            email_addr = addr_obj.get("address")
+
+            ar = tip.get("automaticReplies", {})
+            ar_message = ar.get("message") if ar else None
+            auto_reply = _html_to_text(ar_message) if ar_message else None
+
+            dr = tip.get("deliveryRestriction", {})
+            delivery_restricted = (
+                bool(dr.get("isDeliveryRestricted", False)) if dr else False
+            )
+
+            result.append(
+                {
+                    "email": email_addr,
+                    "auto_reply": auto_reply,
+                    "mailbox_full": bool(tip.get("mailboxFull", False)),
+                    "max_message_size_bytes": tip.get("maxMessageSize"),
+                    "recipient_scope": tip.get("recipientScope"),
+                    "delivery_restricted": delivery_restricted,
+                }
+            )
+
+        logger.info("get_mailtips successful: %d tip(s) returned", len(result))
+        return result
+    except Exception as e:
+        logger.error("get_mailtips failed: %s", str(e), exc_info=True)
         raise
 
 
@@ -3514,6 +4617,155 @@ def add_email_attachment(
     except Exception as e:
         logger.error(
             f"add_email_attachment failed for email_id={email_id}, file_path={file_path}: {str(e)}",
+            exc_info=True,
+        )
+        raise
+
+
+@mcp.tool
+def list_attachments(email_id: str) -> list[dict]:
+    """List all attachments on an email message.
+
+    Returns metadata for every attachment without downloading content.
+    Use this to inspect what attachments are present before deciding which to download.
+
+    Args:
+        email_id: Unique identifier of the email message.
+
+    Returns:
+        List of attachment metadata dicts, each containing:
+        - id: Attachment identifier
+        - name: Filename or display name
+        - content_type: MIME type
+        - size: Size in bytes
+        - is_inline: True if the attachment is embedded inline in the body
+        - kind: "file" for downloadable file attachments, "item" for embedded Outlook items
+    """
+    logger.info(f"list_attachments called: email_id={email_id}")
+    try:
+        result = graph.request(
+            "GET",
+            f"/me/messages/{email_id}/attachments",
+            params={"$select": "id,name,contentType,size,isInline"},
+        )
+        attachments = (result or {}).get("value", [])
+        out = []
+        for a in attachments:
+            odata_type = a.get("@odata.type", "")
+            kind = "file" if "fileAttachment" in odata_type else "item"
+            out.append(
+                {
+                    "id": a.get("id"),
+                    "name": a.get("name"),
+                    "content_type": a.get("contentType"),
+                    "size": a.get("size"),
+                    "is_inline": a.get("isInline", False),
+                    "kind": kind,
+                }
+            )
+        logger.info(
+            f"list_attachments successful: {len(out)} attachment(s) on email_id={email_id}"
+        )
+        return out
+    except Exception as e:
+        logger.error(
+            f"list_attachments failed for email_id={email_id}: {str(e)}", exc_info=True
+        )
+        raise
+
+
+@mcp.tool
+def download_attachments(
+    email_id: str,
+    save_dir: str,
+    names: list[str] | None = None,
+) -> dict[str, Any]:
+    """Download file attachments from an email to a local directory.
+
+    Lists the email's attachments, optionally filters by name, then writes each
+    file attachment to save_dir. Item attachments (embedded Outlook objects such as
+    calendar invites) are always skipped. If contentBytes is absent from the list
+    response the attachment is re-fetched individually before decoding.
+
+    Args:
+        email_id: Unique identifier of the email message.
+        save_dir: Local directory path where attachment files will be saved.
+                  Created (including parents) if it does not exist.
+        names: Optional list of attachment filenames to download. When omitted all
+               file attachments are downloaded.
+
+    Returns:
+        Dict with two keys:
+        - saved: List of absolute paths to files that were written.
+        - skipped: List of attachment names that were not saved (item attachments,
+                   name-filtered-out, or missing content after re-fetch).
+    """
+    logger.info(
+        f"download_attachments called: email_id={email_id}, save_dir={save_dir}, names={names}"
+    )
+    try:
+        dir_path = pl.Path(save_dir).expanduser().resolve()
+        dir_path.mkdir(parents=True, exist_ok=True)
+
+        # Fetch attachment list (without $select so @odata.type is included)
+        list_result = graph.request("GET", f"/me/messages/{email_id}/attachments")
+        attachments = (list_result or {}).get("value", [])
+
+        saved: list[str] = []
+        skipped: list[str] = []
+
+        for a in attachments:
+            att_name = a.get("name", "unknown")
+            odata_type = a.get("@odata.type", "")
+
+            # Skip non-file attachments (embedded Outlook items, etc.)
+            if "fileAttachment" not in odata_type:
+                skipped.append(att_name)
+                continue
+
+            # Apply name filter if provided
+            if names is not None and att_name not in names:
+                skipped.append(att_name)
+                continue
+
+            # Re-fetch single attachment if contentBytes is missing
+            if "contentBytes" not in a:
+                att_id = a.get("id")
+                logger.info(
+                    f"download_attachments: re-fetching attachment {att_id} for contentBytes"
+                )
+                a = graph.request(
+                    "GET", f"/me/messages/{email_id}/attachments/{att_id}"
+                )
+                a = a or {}
+
+            content_b64 = a.get("contentBytes")
+            if not content_b64:
+                skipped.append(att_name)
+                continue
+
+            # Sanitize: strip any directory components to prevent path traversal
+            safe_name = pl.Path(att_name).name
+            if not safe_name or safe_name in {".", ".."}:
+                logger.warning(
+                    f"download_attachments: skipping attachment with degenerate name {att_name!r}"
+                )
+                skipped.append(att_name)
+                continue
+
+            content_bytes = base64.b64decode(content_b64)
+            dest = dir_path / safe_name
+            dest.write_bytes(content_bytes)
+            saved.append(str(dest))
+            logger.info(f"download_attachments: saved {safe_name} to {dest}")
+
+        logger.info(
+            f"download_attachments successful: {len(saved)} saved, {len(skipped)} skipped"
+        )
+        return {"saved": saved, "skipped": skipped}
+    except Exception as e:
+        logger.error(
+            f"download_attachments failed for email_id={email_id}: {str(e)}",
             exc_info=True,
         )
         raise
@@ -5489,6 +6741,846 @@ def get_inbox_item_detail(item_id: str, kind: str) -> dict[str, Any]:
         return _shape_invite_message(raw, include_body=True)
 
     raise ValueError(f"Unsupported kind: {kind}")
+
+
+# ---------------------------------------------------------------------------
+# Microsoft To-Do helpers + tools
+# ---------------------------------------------------------------------------
+
+
+def _resolve_todo_list(name_or_id: str, *, create_if_missing: bool = False) -> str:
+    """Resolve a To-Do list by displayName or id; optionally create if missing.
+
+    Args:
+        name_or_id: List display name or id.
+        create_if_missing: When True, POST to create the list if not found.
+
+    Returns:
+        The list id string.
+
+    Raises:
+        ValueError: When the list is not found and create_if_missing is False.
+    """
+    lists = list(graph.request_paginated("/me/todo/lists", limit=500))
+    target = name_or_id.strip()
+
+    for lst in lists:
+        if lst.get("id") == target or lst.get("displayName", "") == target:
+            return str(lst["id"])
+
+    if create_if_missing:
+        created = graph.request("POST", "/me/todo/lists", json={"displayName": target})
+        if not created:
+            raise RuntimeError("_resolve_todo_list: no data returned from Graph")
+        return str(created["id"])
+
+    raise ValueError(f"To-Do list '{name_or_id}' not found")
+
+
+@mcp.tool
+def list_todo_lists(response_profile: str = "auto") -> list[dict[str, Any]]:
+    """List all Microsoft To-Do task lists for the current user.
+
+    Args:
+        response_profile: "auto" | "legacy" | "assistant".
+
+    Returns:
+        List of task list objects from Microsoft Graph.
+    """
+    logger.info("list_todo_lists called")
+    profile = get_response_profile(response_profile)
+    try:
+        raw = list(graph.request_paginated("/me/todo/lists", limit=500))
+        if profile == "assistant":
+            return [
+                {
+                    "id": lst["id"],
+                    "display_name": lst.get("displayName", ""),
+                    "is_owner": lst.get("isOwner"),
+                    "wellknown_name": lst.get("wellknownListName"),
+                }
+                for lst in raw
+            ]
+        return [cleanup_graph_payload(lst) for lst in raw]
+    except Exception as e:
+        logger.error("list_todo_lists failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def create_todo_list(name: str) -> dict[str, Any]:
+    """Create a new Microsoft To-Do task list.
+
+    Args:
+        name: Display name for the new list.
+
+    Returns:
+        The newly created task list object.
+    """
+    logger.info("create_todo_list called: name=%s", name)
+    try:
+        result = graph.request("POST", "/me/todo/lists", json={"displayName": name})
+        if not result:
+            raise RuntimeError("create_todo_list: no data returned from Graph")
+        return result
+    except Exception as e:
+        logger.error("create_todo_list failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def list_tasks(
+    list_name: str,
+    status: str | None = None,
+    response_profile: str = "auto",
+) -> list[dict[str, Any]]:
+    """List tasks in a To-Do list, optionally filtered by status.
+
+    Args:
+        list_name: Display name or id of the task list.
+        status: Optional status filter: "notStarted" | "inProgress" | "completed"
+            | "waitingOnOthers" | "deferred".
+        response_profile: "auto" | "legacy" | "assistant".
+
+    Returns:
+        List of task objects.
+    """
+    logger.info("list_tasks called: list_name=%s status=%s", list_name, status)
+    profile = get_response_profile(response_profile)
+    try:
+        list_id = _resolve_todo_list(list_name)
+        params: dict[str, Any] = {}
+        if status:
+            params["$filter"] = f"status eq '{status}'"
+        raw = list(
+            graph.request_paginated(
+                f"/me/todo/lists/{list_id}/tasks",
+                params=params,
+                limit=500,
+            )
+        )
+        if profile == "assistant":
+            return [
+                {
+                    "id": t["id"],
+                    "title": t.get("title", ""),
+                    "status": t.get("status"),
+                    "importance": t.get("importance"),
+                    "due": (
+                        t["dueDateTime"]["dateTime"] if t.get("dueDateTime") else None
+                    ),
+                }
+                for t in raw
+            ]
+        return [cleanup_graph_payload(t) for t in raw]
+    except Exception as e:
+        logger.error("list_tasks failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def create_task(
+    list_name: str,
+    title: str,
+    importance: str = "normal",
+    body: str = "",
+    due: str = "",
+) -> dict[str, Any]:
+    """Create a task in a To-Do list, auto-creating the list if it doesn't exist.
+
+    Args:
+        list_name: Display name or id of the task list (created if missing).
+        title: Task title.
+        importance: "low" | "normal" | "high" (default: "normal").
+        body: Optional task body/description.
+        due: Optional due date: "today", "tomorrow", "+Nd", or "YYYY-MM-DD".
+
+    Returns:
+        The newly created task object.
+    """
+    logger.info("create_task called: list_name=%s title=%s", list_name, title)
+    try:
+        list_id = _resolve_todo_list(list_name, create_if_missing=True)
+        due_dict = _todo.parse_due_date(due, today=dt.date.today()) if due else None
+        payload = _todo.build_task_payload(
+            title=title,
+            importance=importance,
+            body=body or None,
+            due=due_dict,
+        )
+        result = graph.request("POST", f"/me/todo/lists/{list_id}/tasks", json=payload)
+        if not result:
+            raise RuntimeError("create_task: no data returned from Graph")
+        return result
+    except Exception as e:
+        logger.error("create_task failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def update_task(
+    list_name: str,
+    task_id: str,
+    title: str | None = None,
+    importance: str | None = None,
+    body: str | None = None,
+    due: str | None = None,
+) -> dict[str, Any]:
+    """Partially update a task in a To-Do list (only provided fields are changed).
+
+    Args:
+        list_name: Display name or id of the task list.
+        task_id: The task id to update.
+        title: New title (optional).
+        importance: New importance: "low" | "normal" | "high" (optional).
+        body: New body/description (optional).
+        due: New due date: "today", "tomorrow", "+Nd", or "YYYY-MM-DD" (optional).
+
+    Returns:
+        The updated task object.
+    """
+    logger.info("update_task called: list_name=%s task_id=%s", list_name, task_id)
+    try:
+        list_id = _resolve_todo_list(list_name)
+        patch: dict[str, Any] = {}
+        if title is not None:
+            patch["title"] = title
+        if importance is not None:
+            patch["importance"] = importance
+        if body is not None:
+            patch["body"] = {"content": body, "contentType": "text"}
+        if due is not None:
+            patch["dueDateTime"] = _todo.parse_due_date(due, today=dt.date.today())
+        result = graph.request(
+            "PATCH",
+            f"/me/todo/lists/{list_id}/tasks/{task_id}",
+            json=patch,
+        )
+        if not result:
+            raise RuntimeError("update_task: no data returned from Graph")
+        return result
+    except Exception as e:
+        logger.error("update_task failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def complete_task(list_name: str, task_id: str) -> dict[str, Any]:
+    """Mark a task as completed in a To-Do list.
+
+    Args:
+        list_name: Display name or id of the task list.
+        task_id: The task id to complete.
+
+    Returns:
+        The updated task object with status "completed".
+    """
+    logger.info("complete_task called: list_name=%s task_id=%s", list_name, task_id)
+    try:
+        list_id = _resolve_todo_list(list_name)
+        result = graph.request(
+            "PATCH",
+            f"/me/todo/lists/{list_id}/tasks/{task_id}",
+            json={"status": "completed"},
+        )
+        if not result:
+            raise RuntimeError("complete_task: no data returned from Graph")
+        return result
+    except Exception as e:
+        logger.error("complete_task failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def delete_task(list_name: str, task_id: str) -> dict[str, Any]:
+    """Delete a task from a To-Do list.
+
+    Args:
+        list_name: Display name or id of the task list.
+        task_id: The task id to delete.
+
+    Returns:
+        {"status": "deleted", "task_id": task_id}
+    """
+    logger.info("delete_task called: list_name=%s task_id=%s", list_name, task_id)
+    try:
+        list_id = _resolve_todo_list(list_name)
+        graph.request("DELETE", f"/me/todo/lists/{list_id}/tasks/{task_id}")
+        return {"status": "deleted", "task_id": task_id}
+    except Exception as e:
+        logger.error("delete_task failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def list_checklist_items(list_name: str, task_id: str) -> list[dict[str, Any]]:
+    """List all checklist items for a task in a To-Do list.
+
+    Args:
+        list_name: Display name or id of the task list.
+        task_id: The task id whose checklist items to list.
+
+    Returns:
+        List of checklistItem objects.
+    """
+    logger.info(
+        "list_checklist_items called: list_name=%s task_id=%s", list_name, task_id
+    )
+    try:
+        list_id = _resolve_todo_list(list_name)
+        result = graph.request(
+            "GET",
+            f"/me/todo/lists/{list_id}/tasks/{task_id}/checklistItems",
+        )
+        if not result:
+            return []
+        return result.get("value", [])
+    except Exception as e:
+        logger.error("list_checklist_items failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def add_checklist_item(
+    list_name: str,
+    task_id: str,
+    text: str,
+    is_checked: bool = False,
+) -> dict[str, Any]:
+    """Add a checklist item to a task in a To-Do list.
+
+    Args:
+        list_name: Display name or id of the task list.
+        task_id: The task id to add the checklist item to.
+        text: Display name of the checklist item.
+        is_checked: Whether the item is already checked (default: False).
+
+    Returns:
+        The created checklistItem object.
+    """
+    logger.info(
+        "add_checklist_item called: list_name=%s task_id=%s text=%s",
+        list_name,
+        task_id,
+        text,
+    )
+    try:
+        list_id = _resolve_todo_list(list_name)
+        result = graph.request(
+            "POST",
+            f"/me/todo/lists/{list_id}/tasks/{task_id}/checklistItems",
+            json={"displayName": text, "isChecked": is_checked},
+        )
+        if not result:
+            raise RuntimeError("add_checklist_item: no data returned from Graph")
+        return result
+    except Exception as e:
+        logger.error("add_checklist_item failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def update_checklist_item(
+    list_name: str,
+    task_id: str,
+    item_id: str,
+    text: str | None = None,
+    is_checked: bool | None = None,
+) -> dict[str, Any]:
+    """Partially update a checklist item (only provided fields are changed).
+
+    Args:
+        list_name: Display name or id of the task list.
+        task_id: The task id containing the checklist item.
+        item_id: The checklist item id to update.
+        text: New display name (optional).
+        is_checked: New checked state (optional).
+
+    Returns:
+        The updated checklistItem object.
+    """
+    logger.info(
+        "update_checklist_item called: list_name=%s task_id=%s item_id=%s",
+        list_name,
+        task_id,
+        item_id,
+    )
+    try:
+        list_id = _resolve_todo_list(list_name)
+        patch: dict[str, Any] = {}
+        if text is not None:
+            patch["displayName"] = text
+        if is_checked is not None:
+            patch["isChecked"] = is_checked
+        result = graph.request(
+            "PATCH",
+            f"/me/todo/lists/{list_id}/tasks/{task_id}/checklistItems/{item_id}",
+            json=patch,
+        )
+        if not result:
+            raise RuntimeError("update_checklist_item: no data returned from Graph")
+        return result
+    except Exception as e:
+        logger.error("update_checklist_item failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def delete_checklist_item(list_name: str, task_id: str, item_id: str) -> dict[str, Any]:
+    """Delete a checklist item from a task in a To-Do list.
+
+    Args:
+        list_name: Display name or id of the task list.
+        task_id: The task id containing the checklist item.
+        item_id: The checklist item id to delete.
+
+    Returns:
+        {"status": "deleted", "item_id": item_id}
+    """
+    logger.info(
+        "delete_checklist_item called: list_name=%s task_id=%s item_id=%s",
+        list_name,
+        task_id,
+        item_id,
+    )
+    try:
+        list_id = _resolve_todo_list(list_name)
+        graph.request(
+            "DELETE",
+            f"/me/todo/lists/{list_id}/tasks/{task_id}/checklistItems/{item_id}",
+        )
+        return {"status": "deleted", "item_id": item_id}
+    except Exception as e:
+        logger.error("delete_checklist_item failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def create_task_from_email(
+    email_id: str,
+    list_name: str,
+    title: str | None = None,
+    importance: str = "normal",
+) -> dict[str, Any]:
+    """Create a To-Do task linked to an email message.
+
+    Fetches the email subject and web link, then creates a task in the
+    specified list with a linkedResource pointing back to the email.
+
+    Args:
+        email_id: The message id to link.
+        list_name: Display name or id of the task list (created if missing).
+        title: Task title (default: "Follow up: <email subject>").
+        importance: Task importance: "low" | "normal" | "high" (default: "normal").
+
+    Returns:
+        The created task object.
+    """
+    logger.info(
+        "create_task_from_email called: email_id=%s list_name=%s", email_id, list_name
+    )
+    try:
+        message = graph.request(
+            "GET",
+            f"/me/messages/{email_id}",
+            params={"$select": "subject,webLink"},
+        )
+        if not message:
+            raise RuntimeError("create_task_from_email: could not fetch email")
+        subject = message.get("subject", "")
+        web_link = message.get("webLink", "")
+        task_title = title if title is not None else f"Follow up: {subject}"
+        list_id = _resolve_todo_list(list_name, create_if_missing=True)
+        payload = _todo.build_task_payload(title=task_title, importance=importance)
+        payload["linkedResources"] = [
+            _todo.build_linked_resource(web_link, "View Email")
+        ]
+        result = graph.request(
+            "POST",
+            f"/me/todo/lists/{list_id}/tasks",
+            json=payload,
+        )
+        if not result:
+            raise RuntimeError("create_task_from_email: no data returned from Graph")
+        return result
+    except Exception as e:
+        logger.error("create_task_from_email failed: %s", e, exc_info=True)
+        raise
+
+
+# ---------------------------------------------------------------------------
+# Template tools
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool
+def list_email_templates(category: str = "") -> list[dict]:
+    """List available email/calendar templates bundled with microsoft-mcp.
+
+    Args:
+        category: Optional category filter (e.g. ``"email"`` or ``"calendar"``).
+            Pass an empty string (default) to list all categories.
+
+    Returns:
+        List of ``{name, description, version, category, source, placeholders}``
+        records, sorted by category then name.
+    """
+    return _templates.list_templates(category or None)
+
+
+@mcp.tool
+def get_template_placeholders(category: str, name: str) -> list[dict]:
+    """Return the placeholder definitions for a specific template.
+
+    Args:
+        category: Template category (e.g. ``"email"`` or ``"calendar"``).
+        name: Template name (e.g. ``"followup"`` or ``"meeting"``).
+
+    Returns:
+        List of placeholder dicts with ``name``, ``description``,
+        ``required``, and optionally ``default`` keys.
+
+    Raises:
+        ValueError: If the template is not found.
+    """
+    tpl = _templates.load_template(category, name)
+    return [p for p in tpl.get("placeholders", []) if isinstance(p, dict)]
+
+
+@mcp.tool
+def render_email_template(category: str, name: str, data: dict) -> str:
+    """Render a template with the supplied data and return the HTML body.
+
+    Args:
+        category: Template category (e.g. ``"email"`` or ``"calendar"``).
+        name: Template name (e.g. ``"followup"`` or ``"meeting"``).
+        data: Mapping of placeholder names to string values.
+
+    Returns:
+        Rendered HTML string.
+
+    Raises:
+        ValueError: If required placeholders are missing or the template is
+            not found.
+    """
+    return _templates.render_template(category, name, data)
+
+
+@mcp.tool
+def find_template_variables(content: str) -> list[str]:
+    """Scan content for ``{{var}}`` variable tokens and return their names.
+
+    Args:
+        content: Plain-text or HTML content to scan.
+
+    Returns:
+        Ordered list of unique variable names found (first-appearance order).
+    """
+    return _templates.find_template_variables(content)
+
+
+@mcp.tool
+def substitute_template_variables(
+    content: str, values: dict, strict: bool = False
+) -> str:
+    """Replace ``{{var}}`` tokens in content with the supplied values.
+
+    Args:
+        content: Content containing ``{{var}}`` tokens.
+        values: Mapping of variable name → replacement string.
+        strict: When ``True``, raise an error if any referenced variable
+            has no entry in *values*; otherwise leave the token unchanged.
+
+    Returns:
+        Content with variables substituted.
+
+    Raises:
+        ValueError: If *strict* is ``True`` and a variable is missing.
+    """
+    try:
+        return _templates.substitute_variables(content, values, strict=strict)
+    except _templates.VariableSubstitutionError as exc:
+        raise ValueError(str(exc)) from exc
+
+
+@mcp.tool
+def parse_email_signature(
+    email_body: str,
+    is_html: bool = False,
+    extract_alternatives: bool = True,
+) -> dict:
+    """Extract contact information and job-change signals from an email body.
+
+    Parses signature blocks and OOO (out-of-office) prose to surface contact
+    details (name, title, phone, email, URLs) and signals that the sender has
+    changed roles or companies.
+
+    Args:
+        email_body: Plain-text or HTML email body to parse.
+        is_html: When ``True``, strip HTML tags before parsing.
+        extract_alternatives: When ``True``, also scan the body prose for
+            alternative contact references (e.g. "contact Jane Doe at …").
+
+    Returns:
+        Dict with keys:
+          - ``contacts``: list of contact dicts (name, title, phone, email, …)
+          - ``job_changes``: dict with optional keys ``left_company``,
+            ``new_company``, ``new_email``
+    """
+    logger.info(
+        "parse_email_signature called: is_html=%s, extract_alternatives=%s",
+        is_html,
+        extract_alternatives,
+    )
+    try:
+        return _sigparse.parse_email_body(
+            email_body,
+            html=is_html,
+            extract_alternatives=extract_alternatives,
+        )
+    except Exception as e:
+        logger.error("parse_email_signature failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def normalize_phone_number(phone: str, region: str = "US") -> str:
+    """Normalize a phone number string to E.164 format.
+
+    Strips formatting characters and converts common North American phone
+    number representations to ``+1XXXXXXXXXX``. International numbers that
+    already start with ``+`` are preserved with non-digit characters removed.
+
+    Args:
+        phone: Raw phone number string (e.g. ``"(949) 462-4106"``).
+        region: ISO 3166-1 alpha-2 country code used as the default dialling
+            region when no country prefix is present. Defaults to ``"US"``.
+
+    Returns:
+        E.164-formatted string (e.g. ``"+19494624106"``), or ``""`` if the
+        input cannot be parsed as a valid phone number.
+    """
+    logger.info("normalize_phone_number called: phone=%r, region=%s", phone, region)
+    try:
+        return _sigparse.normalize_phone_e164(phone, default_region=region)
+    except Exception as e:
+        logger.error("normalize_phone_number failed: %s", e, exc_info=True)
+        raise
+
+
+# ---------------------------------------------------------------------------
+# Intel / briefing tools
+# ---------------------------------------------------------------------------
+
+_INTEL_VALID_LEVELS = {"all", "critical", "important", "informational"}
+
+
+@mcp.tool
+def generate_morning_briefing(timezone: str = "UTC", limit: int = 10) -> dict:
+    """Generate a comprehensive morning briefing for the current account.
+
+    Collects email, calendar, and thread signals and scores them by priority,
+    returning the top items for the day ahead.
+
+    Args:
+        timezone: IANA timezone name (e.g. "America/New_York"). Defaults to "UTC".
+        limit: Maximum number of priority items to return. Defaults to 10.
+
+    Returns:
+        BriefingReport dict with keys: generated_at, account, priority_items
+        (truncated to limit), email_summary, calendar_summary, schedule_analysis,
+        thread_summary.
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    logger.info(
+        "generate_morning_briefing called: timezone=%s, limit=%d", timezone, limit
+    )
+    try:
+        account = os.getenv("MICROSOFT_MCP_ACCOUNT_ID") or "default"
+        now = datetime.now(ZoneInfo(timezone))
+        report = _intel_engine.generate_briefing(
+            graph.request,
+            account=account,
+            timezone=timezone,
+            now=now,
+        )
+        report = dict(report)
+        items = cast(list, report["priority_items"])
+        report["priority_items"] = items[:limit]
+        return report
+    except Exception as e:
+        logger.error("generate_morning_briefing failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def get_priority_signals(timezone: str = "UTC", level: str = "all") -> dict:
+    """Get actionable priority signals bucketed by urgency level.
+
+    Args:
+        timezone: IANA timezone name (e.g. "America/Chicago"). Defaults to "UTC".
+        level: Filter which urgency bucket to return. One of:
+            "all" — full report with all three buckets (default),
+            "critical" — only items with score >= 80,
+            "important" — only items with score 50-79,
+            "informational" — only items with score < 50.
+
+    Returns:
+        SignalsReport dict (or filtered subset). Shape for "all":
+            {generated_at, account, critical, important, informational, total_signals}.
+        Shape for a specific level: same dict with the other two buckets emptied to [].
+
+    Raises:
+        ValueError: If level is not one of the allowed values.
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    logger.info("get_priority_signals called: timezone=%s, level=%s", timezone, level)
+    if level not in _INTEL_VALID_LEVELS:
+        raise ValueError(
+            f"Invalid level {level!r}. Must be one of: {sorted(_INTEL_VALID_LEVELS)}"
+        )
+    try:
+        account = os.getenv("MICROSOFT_MCP_ACCOUNT_ID") or "default"
+        now = datetime.now(ZoneInfo(timezone))
+        report = _intel_engine.generate_signals(
+            graph.request,
+            account=account,
+            timezone=timezone,
+            now=now,
+        )
+        if level == "all":
+            return dict(report)
+        # Return report with only the requested bucket populated.
+        result = dict(report)
+        for bucket in ("critical", "important", "informational"):
+            if bucket != level:
+                result[bucket] = []
+        return result
+    except Exception as e:
+        logger.error("get_priority_signals failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def get_contact_intelligence(target_email: str, days: int = 30) -> dict:
+    """Generate an intelligence report for a specific contact.
+
+    Combines contact interaction data, relationship analysis, thread tracking,
+    and pending email items for the given contact email address.
+
+    Args:
+        target_email: Email address of the contact to report on.
+        days: Look-back window in days. Defaults to 30.
+
+    Returns:
+        ContactReport dict with keys: generated_at, account, target_email,
+        target_name, relationship, recent_threads, recent_emails_from,
+        recent_emails_to, pending_items. Optional keys: company, job_title.
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    logger.info(
+        "get_contact_intelligence called: target_email=%s, days=%d", target_email, days
+    )
+    try:
+        account = os.getenv("MICROSOFT_MCP_ACCOUNT_ID") or "default"
+        now = datetime.now(ZoneInfo("UTC"))
+        return dict(
+            _intel_engine.generate_contact_report(
+                graph.request,
+                account=account,
+                target_email=target_email,
+                now=now,
+                lookback_days=days,
+            )
+        )
+    except Exception as e:
+        logger.error("get_contact_intelligence failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def get_end_of_day_recap(timezone: str = "UTC") -> dict:
+    """Generate an end-of-day recap summarising today's activity.
+
+    Summarises emails received and sent, meetings attended, unread count,
+    pending threads, and previews tomorrow's schedule.
+
+    Args:
+        timezone: IANA timezone name (e.g. "Europe/London"). Defaults to "UTC".
+
+    Returns:
+        RecapReport dict with keys: generated_at, account, emails_received_today,
+        emails_sent_today, emails_still_unread, meetings_attended,
+        threads_resolved, threads_still_pending, tomorrow_preview.
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    logger.info("get_end_of_day_recap called: timezone=%s", timezone)
+    try:
+        account = os.getenv("MICROSOFT_MCP_ACCOUNT_ID") or "default"
+        now = datetime.now(ZoneInfo(timezone))
+        return dict(
+            _intel_engine.generate_recap(
+                graph.request,
+                account=account,
+                timezone=timezone,
+                now=now,
+            )
+        )
+    except Exception as e:
+        logger.error("get_end_of_day_recap failed: %s", e, exc_info=True)
+        raise
+
+
+@mcp.tool
+def scan_bounces(
+    folder: str = "Inbox",
+    limit: int = 200,
+    save_csv: str | None = None,
+) -> dict[str, Any]:
+    """Scan a mail folder for bounce / NDR messages and return classified records.
+
+    Args:
+        folder: Folder alias (Inbox, Sent, …), display name, or Graph folder ID.
+            Well-known aliases: Inbox, Sent, Drafts, Deleted, Junk, Archive.
+        limit: Maximum number of messages to scan (caps ``iter_folder_messages``).
+            Default 200.
+        save_csv: Optional file path. When provided, the bounce rows are written
+            to a UTF-8 CSV file at this path.
+
+    Returns:
+        dict with keys:
+            - ``count``: number of bounce messages found
+            - ``reasons``: mapping of reason string to count
+            - ``rows``: list of classified bounce dicts
+    """
+    import collections
+
+    logger.info(
+        "scan_bounces called: folder=%s, limit=%s, save_csv=%s",
+        folder,
+        limit,
+        save_csv,
+    )
+    try:
+        folder_id = _resolve_mail_folder(folder)
+        rows = _bounces.scan_folder(graph.request, folder_id, limit=limit)
+        reasons: dict[str, int] = dict(
+            collections.Counter(row["reason"] for row in rows)
+        )
+        if save_csv:
+            _bounces.write_csv(rows, save_csv)
+        return {"count": len(rows), "reasons": reasons, "rows": rows}
+    except Exception as e:
+        logger.error("scan_bounces failed: %s", e, exc_info=True)
+        raise
 
 
 _configure_public_tool_mode()

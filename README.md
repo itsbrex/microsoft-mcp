@@ -6,7 +6,7 @@ Powerful MCP server for Microsoft Graph API with dual Azure browser auth and MSA
 
 - **Dual Authentication**: Azure SDK browser flow or MSAL device code flow
 - **Account-Aware MSAL**: Per-account token files, cached-account selection, and optional tenant-specific authority reuse from `outlook-creds`
-- **Email Access**: List, inspect, search, fetch attachments, create reply/new-message drafts, discover/manage mail folders, manage Outlook master categories, manage Outlook inbox state, and clean up Outlook invite messages
+- **Email Access**: List, inspect, search, list/download attachments, create reply/reply-all/forward drafts, send drafts, discover/manage mail folders, manage Outlook master categories, manage Outlook inbox state, clean up Outlook invite messages, manage server-side inbox rules, manage Focused Inbox overrides, and get MailTips
 - **Calendar Access**: List events, inspect event details, search calendars, check availability, and RSVP quietly by default from events or invite messages
 - **OneDrive Access**: Browse, inspect, and search files
 - **Contacts**: List, inspect, and search contacts from your address book
@@ -15,6 +15,11 @@ Powerful MCP server for Microsoft Graph API with dual Azure browser auth and MSA
 - **Code Mode Surface**: Integrated discovery, interface introspection, and one-shot orchestration over the live Microsoft tool registry
 - **Tool Surface Modes**: `codemode_only` by default, with optional `hybrid` mode for direct Graph tool exposure
 - **Flexible Storage**: Configurable Azure credential storage and MSAL token directories
+- **Inbox Rules**: List, create, update, delete, toggle, reorder, and YAML import/export server-side Outlook message rules
+- **Microsoft To-Do**: Manage task lists, tasks (with due dates), checklists, and create tasks from emails
+- **Email Templates**: YAML-based email and calendar templates with placeholder substitution (HTML-escaped, XSS-safe)
+- **Intelligence Reports**: Morning briefing, priority signals, contact intelligence, and end-of-day recap from Graph data
+- **Bounce Scanning**: NDR/bounce classifier with DSN parsing and CSV export for folder scans
 
 ## Quick Start
 
@@ -343,6 +348,50 @@ create_email_draft(draft_type="reply", email_id="...", body="Thanks", signature=
 | `MICROSOFT_MCP_SIGNATURE_RFC3676`     | `1` to use the RFC 3676 `-- ` delimiter; default is a blank line.      |
 
 Missing signature files do not fail the draft — the tool result simply includes a `signature_warning` field and the draft is created without a signature. The assistant can inspect (but never modify) signatures via the read-only `list_signatures` / `get_signature` MCP tools.
+
+## Inbox Rules CLI
+
+Manage server-side Outlook message rules:
+
+```bash
+microsoft-mcp rules list
+microsoft-mcp rules get <rule-id>
+microsoft-mcp rules create --name "Archive newsletters" --subject-contains Newsletter --move-to Archive
+microsoft-mcp rules toggle <rule-id>
+microsoft-mcp rules export --output rules.yaml
+microsoft-mcp rules import rules.yaml --mode sync --dry-run
+microsoft-mcp rules delete <rule-id> --confirm
+
+# equivalent standalone entry point:
+microsoft-mcp-rules list
+```
+
+## Intel CLI
+
+Generate intelligence reports from Microsoft 365 data:
+
+```bash
+microsoft-mcp intel briefing --timezone America/Chicago --json
+microsoft-mcp intel signals --level critical
+microsoft-mcp intel contact user@example.com --days 30 --json
+microsoft-mcp intel recap --timezone UTC
+
+# equivalent standalone entry point:
+microsoft-mcp-intel briefing --json
+```
+
+## Bounces CLI
+
+Scan Outlook folders for NDR/bounce messages:
+
+```bash
+microsoft-mcp bounces scan --folder inbox --limit 200 --output bounces.csv
+microsoft-mcp bounces scan --json
+microsoft-mcp bounces patterns --json
+
+# equivalent standalone entry point:
+microsoft-mcp-bounces scan --folder inbox --limit 200 --output bounces.csv
+```
 
 ## UTCP Bridge Config Generator
 

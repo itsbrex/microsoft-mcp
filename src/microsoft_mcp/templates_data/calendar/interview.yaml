@@ -1,0 +1,129 @@
+name: interview
+description: Structured interview template with candidate info and panel details
+version: "1.0"
+category: calendar
+
+placeholders:
+  - name: subject
+    description: Interview title (usually includes candidate name)
+    required: true
+
+  - name: candidate
+    description: Candidate name
+    required: false
+
+  - name: position
+    description: Position being interviewed for
+    required: false
+
+  - name: interviewers
+    description: Comma-separated list of interviewers
+    required: false
+
+  - name: focus_areas
+    description: Comma-separated focus areas for the interview
+    required: false
+
+  - name: resume_link
+    description: Link to candidate's resume
+    required: false
+
+  - name: notes
+    description: Additional notes for interviewers
+    required: false
+
+  - name: round
+    description: Interview round (e.g., "Phone Screen", "Technical", "Final")
+    required: false
+
+html_template: |
+  <table width="560" align="center" cellpadding="0" cellspacing="0" border="0" style="font-family:Calibri,Arial,sans-serif;font-size:14px;color:#1e293b;">
+    <tr>
+      <td style="background-color:#15803d;color:#ffffff;padding:16px 20px;">
+        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+          <tr>
+            <td style="font-size:18px;font-weight:bold;">{subject}</td>
+            <td align="right">
+              <span style="background-color:#22c55e;color:#ffffff;padding:4px 10px;font-size:12px;">INTERVIEW</span>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+    {candidate_section}
+    {interviewers_section}
+    {focus_areas_section}
+    {notes_section}
+  </table>
+
+conditional_sections:
+  candidate_section:
+    condition: candidate|position|round
+    template: |
+      <tr>
+        <td style="background-color:#f0fdf4;padding:12px 20px;border-bottom:1px solid #bbf7d0;">
+          <table width="100%" cellpadding="0" cellspacing="0" border="0">
+            <tr>
+              <td style="font-size:13px;color:#15803d;">
+                {candidate} &mdash; {position} {round}
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+
+  interviewers_section:
+    condition: interviewers
+    template: |
+      <tr>
+        <td style="padding:16px 20px;border:1px solid #e2e8f0;border-top:none;">
+          <table width="100%" cellpadding="0" cellspacing="0" border="0">
+            <tr>
+              <td style="font-size:12px;color:#64748b;letter-spacing:1px;padding-bottom:8px;">INTERVIEW PANEL</td>
+            </tr>
+            <tr>
+              <td style="padding-left:8px;">
+                <table width="100%" cellpadding="4" cellspacing="0" border="0">
+                  {interviewer_items}
+                </table>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+
+  focus_areas_section:
+    condition: focus_areas
+    template: |
+      <tr>
+        <td style="padding:16px 20px;border:1px solid #e2e8f0;border-top:none;">
+          <table width="100%" cellpadding="0" cellspacing="0" border="0">
+            <tr>
+              <td style="font-size:12px;color:#64748b;letter-spacing:1px;padding-bottom:8px;">FOCUS AREAS</td>
+            </tr>
+            <tr>
+              <td style="padding-left:8px;">
+                <table width="100%" cellpadding="4" cellspacing="0" border="0">
+                  {focus_area_items}
+                </table>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+
+  notes_section:
+    condition: notes|resume_link
+    template: |
+      <tr>
+        <td style="padding:16px 20px;background-color:#fffbeb;border:1px solid #fcd34d;border-top:none;">
+          <table width="100%" cellpadding="0" cellspacing="0" border="0">
+            <tr>
+              <td style="font-size:12px;color:#92400e;letter-spacing:1px;padding-bottom:6px;">INTERVIEWER NOTES</td>
+            </tr>
+            <tr>
+              <td style="color:#78350f;">{notes} {resume_link}</td>
+            </tr>
+          </table>
+        </td>
+      </tr>

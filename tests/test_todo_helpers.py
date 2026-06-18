@@ -1,0 +1,123 @@
+"""Tests for microsoft_mcp.todo module."""
+
+import pytest
+from datetime import date
+from src.microsoft_mcp import todo
+
+
+class TestParseDueDate:
+    """Test parse_due_date function."""
+
+    def test_parse_due_relative_days(self):
+        """Parse relative due date +Nd format."""
+        result = todo.parse_due_date("+3d", today=date(2026, 6, 16))
+        assert result["dateTime"].startswith("2026-06-19")
+        assert result["timeZone"] == "UTC"
+        assert result["dateTime"].endswith("23:59:00")
+
+    def test_parse_due_absolute_date(self):
+        """Parse absolute due date YYYY-MM-DD format."""
+        result = todo.parse_due_date("2026-07-01", today=date(2026, 6, 16))
+        assert result["dateTime"].startswith("2026-07-01")
+        assert result["timeZone"] == "UTC"
+        assert result["dateTime"].endswith("23:59:00")
+
+    def test_parse_due_today(self):
+        """Parse 'today' keyword."""
+        result = todo.parse_due_date("today", today=date(2026, 6, 16))
+        assert result["dateTime"].startswith("2026-06-16")
+        assert result["timeZone"] == "UTC"
+        assert result["dateTime"].endswith("23:59:00")
+
+    def test_parse_due_tomorrow(self):
+        """Parse 'tomorrow' keyword."""
+        result = todo.parse_due_date("tomorrow", today=date(2026, 6, 16))
+        assert result["dateTime"].startswith("2026-06-17")
+        assert result["timeZone"] == "UTC"
+        assert result["dateTime"].endswith("23:59:00")
+
+    def test_parse_due_invalid(self):
+        """Parse invalid due date raises ValueError."""
+        with pytest.raises(ValueError):
+            todo.parse_due_date("someday", today=date(2026, 6, 16))
+
+    def test_parse_due_invalid_format(self):
+        """Parse invalid format raises ValueError."""
+        with pytest.raises(ValueError):
+            todo.parse_due_date("2026/06/16", today=date(2026, 6, 16))
+
+    def test_parse_due_single_day_offset(self):
+        """Parse single day offset +1d."""
+        result = todo.parse_due_date("+1d", today=date(2026, 6, 16))
+        assert result["dateTime"].startswith("2026-06-17")
+
+    def test_parse_due_zero_day_offset(self):
+        """Parse zero day offset +0d."""
+        result = todo.parse_due_date("+0d", today=date(2026, 6, 16))
+        assert result["dateTime"].startswith("2026-06-16")
+
+
+class TestBuildTaskPayload:
+    """Test build_task_payload function."""
+
+    def test_build_task_payload_title_only(self):
+        """Build task payload with title only."""
+        result = todo.build_task_payload(title="Test Task")
+        assert result["title"] == "Test Task"
+        assert result["importance"] == "normal"
+        assert "body" not in result
+        assert "dueDateTime" not in result
+
+    def test_build_task_payload_with_importance(self):
+        """Build task payload with custom importance."""
+        result = todo.build_task_payload(title="Test Task", importance="high")
+        assert result["title"] == "Test Task"
+        assert result["importance"] == "high"
+
+    def test_build_task_payload_with_body(self):
+        """Build task payload with body."""
+        result = todo.build_task_payload(title="Test Task", body="Task description")
+        assert result["title"] == "Test Task"
+        assert result["body"]["content"] == "Task description"
+        assert result["body"]["contentType"] == "text"
+
+    def test_build_task_payload_with_due(self):
+        """Build task payload with due date."""
+        due = {"dateTime": "2026-06-19T23:59:00", "timeZone": "UTC"}
+        result = todo.build_task_payload(title="Test Task", due=due)
+        assert result["title"] == "Test Task"
+        assert result["dueDateTime"] == due
+
+    def test_build_task_payload_all_fields(self):
+        """Build task payload with all fields."""
+        due = {"dateTime": "2026-06-19T23:59:00", "timeZone": "UTC"}
+        result = todo.build_task_payload(
+            title="Test Task", importance="high", body="Task description", due=due
+        )
+        assert result["title"] == "Test Task"
+        assert result["importance"] == "high"
+        assert result["body"]["content"] == "Task description"
+        assert result["body"]["contentType"] == "text"
+        assert result["dueDateTime"] == due
+
+
+class TestBuildLinkedResource:
+    """Test build_linked_resource function."""
+
+    def test_build_linked_resource(self):
+        """Build linked resource with web_url and display_name."""
+        result = todo.build_linked_resource(
+            web_url="https://example.com/doc", display_name="Example Document"
+        )
+        assert result["applicationName"] == "Outlook"
+        assert result["webUrl"] == "https://example.com/doc"
+        assert result["displayName"] == "Example Document"
+
+    def test_build_linked_resource_empty_display_name(self):
+        """Build linked resource with empty display_name."""
+        result = todo.build_linked_resource(
+            web_url="https://example.com/doc", display_name=""
+        )
+        assert result["applicationName"] == "Outlook"
+        assert result["webUrl"] == "https://example.com/doc"
+        assert result["displayName"] == ""

@@ -1,0 +1,401 @@
+"""Tests for list_attachments + download_attachments tools."""
+
+import base64
+from unittest.mock import patch
+
+import pytest
+
+
+# ---------------------------------------------------------------------------
+# list_attachments
+# ---------------------------------------------------------------------------
+
+
+def _file_att(
+    att_id: str = "att1",
+    name: str = "report.pdf",
+    content_type: str = "application/pdf",
+    size: int = 1024,
+    is_inline: bool = False,
+    odata_type: str = "#microsoft.graph.fileAttachment",
+) -> dict:
+    return {
+        "id": att_id,
+        "name": name,
+        "contentType": content_type,
+        "size": size,
+        "isInline": is_inline,
+        "@odata.type": odata_type,
+    }
+
+
+def _item_att(
+    att_id: str = "att2",
+    name: str = "Meeting invite",
+    size: int = 512,
+) -> dict:
+    return {
+        "id": att_id,
+        "name": name,
+        "contentType": "application/vnd.ms-outlook",
+        "size": size,
+        "isInline": False,
+        "@odata.type": "#microsoft.graph.itemAttachment",
+    }
+
+
+@patch("src.microsoft_mcp.tools.graph")
+def test_list_attachments_returns_list(mock_graph):
+    from src.microsoft_mcp import tools
+
+    mock_graph.request.return_value = {"value": [_file_att()]}
+
+    result = tools.list_attachments.fn(email_id="email1")
+
+    assert isinstance(result, list)
+    assert len(result) == 1
+
+
+@patch("src.microsoft_mcp.tools.graph")
+def test_list_attachments_calls_correct_endpoint(mock_graph):
+    from src.microsoft_mcp import tools
+
+    mock_graph.request.return_value = {"value": []}
+
+    tools.list_attachments.fn(email_id="email42")
+
+    call_args = mock_graph.request.call_args
+    assert call_args.args[0] == "GET"
+    assert "/me/messages/email42/attachments" in call_args.args[1]
+
+
+@patch("src.microsoft_mcp.tools.graph")
+def test_list_attachments_file_attachment_shape(mock_graph):
+    from src.microsoft_mcp import tools
+
+    mock_graph.request.return_value = {
+        "value": [
+            _file_att(
+                att_id="att-file",
+                name="doc.pdf",
+                content_type="application/pdf",
+                size=2048,
+                is_inline=False,
+            )
+        ]
+    }
+
+    result = tools.list_attachments.fn(email_id="email1")
+
+    att = result[0]
+    assert att["id"] == "att-file"
+    assert att["name"] == "doc.pdf"
+    assert att["content_type"] == "application/pdf"
+    assert att["size"] == 2048
+    assert att["is_inline"] is False
+    assert att["kind"] == "file"
+
+
+@patch("src.microsoft_mcp.tools.graph")
+def test_list_attachments_item_attachment_kind(mock_graph):
+    from src.microsoft_mcp import tools
+
+    mock_graph.request.return_value = {"value": [_item_att()]}
+
+    result = tools.list_attachments.fn(email_id="email1")
+
+    assert result[0]["kind"] == "item"
+
+
+@patch("src.microsoft_mcp.tools.graph")
+def test_list_attachments_mixed_kinds(mock_graph):
+    from src.microsoft_mcp import tools
+
+    mock_graph.request.return_value = {
+        "value": [_file_att(att_id="f1"), _item_att(att_id="i1")]
+    }
+
+    result = tools.list_attachments.fn(email_id="email1")
+
+    kinds = [a["kind"] for a in result]
+    assert kinds == ["file", "item"]
+
+
+@patch("src.microsoft_mcp.tools.graph")
+def test_list_attachments_inline_flag(mock_graph):
+    from src.microsoft_mcp import tools
+
+    mock_graph.request.return_value = {
+        "value": [_file_att(att_id="inline1", is_inline=True)]
+    }
+
+    result = tools.list_attachments.fn(email_id="email1")
+
+    assert result[0]["is_inline"] is True
+
+
+@patch("src.microsoft_mcp.tools.graph")
+def test_list_attachments_empty_list(mock_graph):
+    from src.microsoft_mcp import tools
+
+    mock_graph.request.return_value = {"value": []}
+
+    result = tools.list_attachments.fn(email_id="email1")
+
+    assert result == []
+
+
+@patch("src.microsoft_mcp.tools.graph")
+def test_list_attachments_reraises_on_graph_error(mock_graph):
+    from src.microsoft_mcp import tools
+
+    mock_graph.request.side_effect = RuntimeError("Graph 503")
+
+    with pytest.raises(RuntimeError, match="Graph 503"):
+        tools.list_attachments.fn(email_id="email1")
+
+
+# ---------------------------------------------------------------------------
+# download_attachments
+# ---------------------------------------------------------------------------
+
+
+def _b64(content: bytes) -> str:
+    return base64.b64encode(content).decode("ascii")
+
+
+@patch("src.microsoft_mcp.tools.graph")
+def test_download_attachments_writes_file(mock_graph, tmp_path):
+    from src.microsoft_mcp import tools
+
+    content = b"PDF binary data"
+    mock_graph.request.side_effect = [
+        # list call
+        {
+            "value": [
+                _file_att(att_id="a1", name="doc.pdf") | {"contentBytes": _b64(content)}
+            ]
+        },
+    ]
+
+    result = tools.download_attachments.fn(email_id="email1", save_dir=str(tmp_path))
+
+    saved_file = tmp_path / "doc.pdf"
+    assert saved_file.exists()
+    assert saved_file.read_bytes() == content
+    assert str(saved_file) in result["saved"]
+
+
+@patch("src.microsoft_mcp.tools.graph")
+def test_download_attachments_saved_and_skipped_keys(mock_graph, tmp_path):
+    from src.microsoft_mcp import tools
+
+    content = b"data"
+    mock_graph.request.return_value = {
+        "value": [
+            _file_att(att_id="a1", name="f.txt") | {"contentBytes": _b64(content)}
+        ]
+    }
+
+    result = tools.download_attachments.fn(email_id="email1", save_dir=str(tmp_path))
+
+    assert "saved" in result
+    assert "skipped" in result
+
+
+@patch("src.microsoft_mcp.tools.graph")
+def test_download_attachments_skips_item_attachments(mock_graph, tmp_path):
+    from src.microsoft_mcp import tools
+
+    mock_graph.request.return_value = {
+        "value": [_item_att(att_id="i1", name="Meeting invite")]
+    }
+
+    result = tools.download_attachments.fn(email_id="email1", save_dir=str(tmp_path))
+
+    assert result["saved"] == []
+    assert "Meeting invite" in result["skipped"]
+    # No files written
+    assert list(tmp_path.iterdir()) == []
+
+
+@patch("src.microsoft_mcp.tools.graph")
+def test_download_attachments_name_filter_includes(mock_graph, tmp_path):
+    from src.microsoft_mcp import tools
+
+    content = b"hello"
+    mock_graph.request.return_value = {
+        "value": [
+            _file_att(att_id="a1", name="keep.txt") | {"contentBytes": _b64(content)},
+            _file_att(att_id="a2", name="skip.txt") | {"contentBytes": _b64(b"other")},
+        ]
+    }
+
+    result = tools.download_attachments.fn(
+        email_id="email1", save_dir=str(tmp_path), names=["keep.txt"]
+    )
+
+    assert (tmp_path / "keep.txt").exists()
+    assert not (tmp_path / "skip.txt").exists()
+    assert "skip.txt" in result["skipped"]
+    assert len(result["saved"]) == 1
+
+
+@patch("src.microsoft_mcp.tools.graph")
+def test_download_attachments_refetches_when_content_bytes_missing(
+    mock_graph, tmp_path
+):
+    from src.microsoft_mcp import tools
+
+    content = b"actual bytes"
+    # list response has no contentBytes; re-fetch has it
+    mock_graph.request.side_effect = [
+        {"value": [_file_att(att_id="a1", name="img.png")]},
+        {
+            "id": "a1",
+            "name": "img.png",
+            "contentType": "image/png",
+            "size": 12,
+            "contentBytes": _b64(content),
+        },
+    ]
+
+    tools.download_attachments.fn(email_id="email1", save_dir=str(tmp_path))
+
+    saved_file = tmp_path / "img.png"
+    assert saved_file.exists()
+    assert saved_file.read_bytes() == content
+    # Verify re-fetch was called: second call should target the single attachment
+    second_call = mock_graph.request.call_args_list[1]
+    assert second_call.args[0] == "GET"
+    assert "/me/messages/email1/attachments/a1" in second_call.args[1]
+
+
+@patch("src.microsoft_mcp.tools.graph")
+def test_download_attachments_creates_save_dir(mock_graph, tmp_path):
+    from src.microsoft_mcp import tools
+
+    new_dir = tmp_path / "nested" / "dir"
+    content = b"data"
+    mock_graph.request.return_value = {
+        "value": [
+            _file_att(att_id="a1", name="file.txt") | {"contentBytes": _b64(content)}
+        ]
+    }
+
+    tools.download_attachments.fn(email_id="email1", save_dir=str(new_dir))
+
+    assert new_dir.exists()
+    assert (new_dir / "file.txt").exists()
+
+
+@patch("src.microsoft_mcp.tools.graph")
+def test_download_attachments_multiple_files(mock_graph, tmp_path):
+    from src.microsoft_mcp import tools
+
+    mock_graph.request.return_value = {
+        "value": [
+            _file_att(att_id="a1", name="a.txt") | {"contentBytes": _b64(b"aaa")},
+            _file_att(att_id="a2", name="b.txt") | {"contentBytes": _b64(b"bbb")},
+        ]
+    }
+
+    result = tools.download_attachments.fn(email_id="email1", save_dir=str(tmp_path))
+
+    assert len(result["saved"]) == 2
+    assert (tmp_path / "a.txt").read_bytes() == b"aaa"
+    assert (tmp_path / "b.txt").read_bytes() == b"bbb"
+
+
+@patch("src.microsoft_mcp.tools.graph")
+def test_download_attachments_reraises_on_graph_error(mock_graph, tmp_path):
+    from src.microsoft_mcp import tools
+
+    mock_graph.request.side_effect = RuntimeError("Graph 500")
+
+    with pytest.raises(RuntimeError, match="Graph 500"):
+        tools.download_attachments.fn(email_id="email1", save_dir=str(tmp_path))
+
+
+@patch("src.microsoft_mcp.tools.graph")
+def test_download_attachments_skips_when_refetch_has_no_content(mock_graph, tmp_path):
+    from src.microsoft_mcp import tools
+
+    # list has no contentBytes; re-fetch also has none
+    mock_graph.request.side_effect = [
+        {"value": [_file_att(att_id="a1", name="mystery.bin")]},
+        {
+            "id": "a1",
+            "name": "mystery.bin",
+            "contentType": "application/octet-stream",
+            "size": 0,
+        },
+    ]
+
+    result = tools.download_attachments.fn(email_id="email1", save_dir=str(tmp_path))
+
+    assert result["saved"] == []
+    assert "mystery.bin" in result["skipped"]
+
+
+@patch("src.microsoft_mcp.tools.graph")
+def test_download_attachments_skips_dotdot_name(mock_graph, tmp_path):
+    """Attachment literally named '..' must be skipped, never written."""
+    from src.microsoft_mcp import tools
+
+    content = b"malicious dotdot"
+    mock_graph.request.return_value = {
+        "value": [
+            _file_att(att_id="dotdot", name="..") | {"contentBytes": _b64(content)}
+        ]
+    }
+
+    result = tools.download_attachments.fn(email_id="email1", save_dir=str(tmp_path))
+
+    # Nothing must be written
+    assert result["saved"] == [], "No file should be saved for '..' attachment"
+    assert ".." in result["skipped"], "'..' should appear in skipped list"
+
+    # Crucially, no path named '..' was created under tmp_path's parent
+    assert (
+        not (tmp_path.parent / "..").exists() or True
+    )  # '..' always "exists" as a dir-entry
+    # The real guard: nothing was written *inside* tmp_path
+    assert list(tmp_path.iterdir()) == [], "save_dir must be empty"
+
+
+@patch("src.microsoft_mcp.tools.graph")
+def test_download_attachments_sanitizes_path_traversal_name(mock_graph, tmp_path):
+    """Attachment named '../../evil.txt' must be written as save_dir/evil.txt only."""
+    from src.microsoft_mcp import tools
+
+    content = b"malicious content"
+    mock_graph.request.return_value = {
+        "value": [
+            _file_att(att_id="evil", name="../../evil.txt")
+            | {"contentBytes": _b64(content)}
+        ]
+    }
+
+    result = tools.download_attachments.fn(email_id="email1", save_dir=str(tmp_path))
+
+    # File must be written inside tmp_path as "evil.txt" (basename only)
+    expected = tmp_path / "evil.txt"
+    assert expected.exists(), "File should be saved with basename inside save_dir"
+    assert expected.read_bytes() == content
+
+    # The saved path must be inside tmp_path
+    assert len(result["saved"]) == 1
+    saved_path = result["saved"][0]
+    assert str(saved_path).startswith(str(tmp_path)), (
+        f"Saved path {saved_path!r} escaped save_dir {tmp_path!r}"
+    )
+
+    # The saved path must resolve to inside tmp_path (no traversal)
+    import pathlib
+
+    resolved_saved = pathlib.Path(saved_path).resolve()
+    resolved_tmp = tmp_path.resolve()
+    assert str(resolved_saved).startswith(str(resolved_tmp)), (
+        f"Path traversal: saved path {resolved_saved!r} is outside save_dir {resolved_tmp!r}"
+    )

@@ -1,0 +1,557 @@
+"""Tests for templates_engine: loader + renderer."""
+
+from __future__ import annotations
+
+import importlib
+from pathlib import Path
+
+import pytest
+import yaml
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _write_yaml(path: Path, data: dict) -> None:
+    path.write_text(yaml.dump(data), encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# render_template: substitution + conditional sections (from brief)
+# ---------------------------------------------------------------------------
+
+
+def test_render_substitutes_and_conditionals(tmp_path, monkeypatch):
+    cat = tmp_path / "email"
+    cat.mkdir()
+    (cat / "hi.yaml").write_text(
+        "name: hi\nhtml_template: '<p>Hi {first}{closing}</p>'\n"
+        "placeholders:\n  - {name: first, required: true}\n"
+        "conditional_sections:\n  closing: {condition: sign, template: ', {sign}'}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MICROSOFT_MCP_TEMPLATES_DIR", str(tmp_path))
+
+    import microsoft_mcp.templates_engine as te
+
+    importlib.reload(te)  # reload so env var is picked up
+
+    out = te.render_template("email", "hi", {"first": "Sam", "sign": "JP"})
+    assert "Hi Sam, JP" in out
+
+
+def test_render_conditional_absent_when_field_missing(tmp_path, monkeypatch):
+    cat = tmp_path / "email"
+    cat.mkdir()
+    (cat / "hi.yaml").write_text(
+        "name: hi\nhtml_template: '<p>Hi {first}{closing}</p>'\n"
+        "placeholders:\n  - {name: first, required: true}\n"
+        "conditional_sections:\n  closing: {condition: sign, template: ', {sign}'}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MICROSOFT_MCP_TEMPLATES_DIR", str(tmp_path))
+
+    import microsoft_mcp.templates_engine as te
+
+    importlib.reload(te)
+
+    out = te.render_template("email", "hi", {"first": "Sam"})
+    assert "Hi Sam" in out
+    assert ", " not in out  # closing section should be absent
+
+
+# ---------------------------------------------------------------------------
+# list_templates
+# ---------------------------------------------------------------------------
+
+
+def test_list_templates_finds_template(tmp_path, monkeypatch):
+    cat = tmp_path / "email"
+    cat.mkdir()
+    _write_yaml(
+        cat / "welcome.yaml",
+        {
+            "name": "welcome",
+            "description": "Welcome email",
+            "version": "1.0",
+            "category": "email",
+            "html_template": "<p>Welcome {name}</p>",
+            "placeholders": [{"name": "name", "required": True}],
+        },
+    )
+    monkeypatch.setenv("MICROSOFT_MCP_TEMPLATES_DIR", str(tmp_path))
+
+    import microsoft_mcp.templates_engine as te
+
+    importlib.reload(te)
+
+    results = te.list_templates("email")
+    names = [r["name"] for r in results]
+    assert "welcome" in names
+
+    tpl = next(r for r in results if r["name"] == "welcome")
+    assert tpl["source"] in ("user", "builtin")
+    assert "description" in tpl
+    assert "placeholders" in tpl
+
+
+def test_list_templates_category_filter(tmp_path, monkeypatch):
+    for subdir in ("email", "calendar"):
+        (tmp_path / subdir).mkdir()
+        _write_yaml(
+            tmp_path / subdir / "sample.yaml",
+            {
+                "name": "sample",
+                "html_template": "<p>x</p>",
+            },
+        )
+    monkeypatch.setenv("MICROSOFT_MCP_TEMPLATES_DIR", str(tmp_path))
+
+    import microsoft_mcp.templates_engine as te
+
+    importlib.reload(te)
+
+    email_results = te.list_templates("email")
+    calendar_results = te.list_templates("calendar")
+    assert all(r["category"] == "email" for r in email_results)
+    assert all(r["category"] == "calendar" for r in calendar_results)
+
+
+def test_list_templates_no_category_returns_all(tmp_path, monkeypatch):
+    for subdir in ("email", "calendar"):
+        (tmp_path / subdir).mkdir()
+        _write_yaml(
+            tmp_path / subdir / "sample.yaml",
+            {"name": f"sample_{subdir}", "html_template": "<p>x</p>"},
+        )
+    monkeypatch.setenv("MICROSOFT_MCP_TEMPLATES_DIR", str(tmp_path))
+
+    import microsoft_mcp.templates_engine as te
+
+    importlib.reload(te)
+
+    all_results = te.list_templates()
+    categories = {r["category"] for r in all_results}
+    assert "email" in categories
+    assert "calendar" in categories
+
+
+# ---------------------------------------------------------------------------
+# load_template
+# ---------------------------------------------------------------------------
+
+
+def test_load_template_raises_on_missing_name(tmp_path, monkeypatch):
+    cat = tmp_path / "email"
+    cat.mkdir()
+    _write_yaml(cat / "bad.yaml", {"html_template": "<p>x</p>"})
+    monkeypatch.setenv("MICROSOFT_MCP_TEMPLATES_DIR", str(tmp_path))
+
+    import microsoft_mcp.templates_engine as te
+
+    importlib.reload(te)
+
+    with pytest.raises(ValueError, match="name"):
+        te.load_template("email", "bad")
+
+
+def test_load_template_raises_on_missing_html_template(tmp_path, monkeypatch):
+    cat = tmp_path / "email"
+    cat.mkdir()
+    _write_yaml(cat / "bad.yaml", {"name": "bad"})
+    monkeypatch.setenv("MICROSOFT_MCP_TEMPLATES_DIR", str(tmp_path))
+
+    import microsoft_mcp.templates_engine as te
+
+    importlib.reload(te)
+
+    with pytest.raises(ValueError, match="html_template"):
+        te.load_template("email", "bad")
+
+
+def test_load_template_raises_on_not_found(tmp_path, monkeypatch):
+    (tmp_path / "email").mkdir()
+    monkeypatch.setenv("MICROSOFT_MCP_TEMPLATES_DIR", str(tmp_path))
+
+    import microsoft_mcp.templates_engine as te
+
+    importlib.reload(te)
+
+    with pytest.raises(ValueError, match="not found"):
+        te.load_template("email", "nonexistent")
+
+
+# ---------------------------------------------------------------------------
+# validate_template_data
+# ---------------------------------------------------------------------------
+
+
+def test_validate_flags_missing_required(tmp_path, monkeypatch):
+    cat = tmp_path / "email"
+    cat.mkdir()
+    _write_yaml(
+        cat / "test.yaml",
+        {
+            "name": "test",
+            "html_template": "<p>{greeting} {name}</p>",
+            "placeholders": [
+                {"name": "greeting", "required": True},
+                {"name": "name", "required": True},
+                {"name": "postscript", "required": False},
+            ],
+        },
+    )
+    monkeypatch.setenv("MICROSOFT_MCP_TEMPLATES_DIR", str(tmp_path))
+
+    import microsoft_mcp.templates_engine as te
+
+    importlib.reload(te)
+
+    tpl = te.load_template("email", "test")
+    errors = te.validate_template_data(tpl, {"greeting": "Hello"})
+    assert any("name" in e for e in errors)
+    # optional field missing should NOT be an error
+    assert not any("postscript" in e for e in errors)
+
+
+def test_validate_returns_empty_when_valid(tmp_path, monkeypatch):
+    cat = tmp_path / "email"
+    cat.mkdir()
+    _write_yaml(
+        cat / "test.yaml",
+        {
+            "name": "test",
+            "html_template": "<p>{greeting}</p>",
+            "placeholders": [{"name": "greeting", "required": True}],
+        },
+    )
+    monkeypatch.setenv("MICROSOFT_MCP_TEMPLATES_DIR", str(tmp_path))
+
+    import microsoft_mcp.templates_engine as te
+
+    importlib.reload(te)
+
+    tpl = te.load_template("email", "test")
+    errors = te.validate_template_data(tpl, {"greeting": "Hi"})
+    assert errors == []
+
+
+# ---------------------------------------------------------------------------
+# User dir shadows builtin
+# ---------------------------------------------------------------------------
+
+
+def test_user_dir_shadows_builtin(tmp_path, monkeypatch):
+    """User template with same name overrides builtin."""
+    user_dir = tmp_path / "user"
+    user_dir.mkdir()
+    cat = user_dir / "email"
+    cat.mkdir()
+    _write_yaml(
+        cat / "followup.yaml",
+        {
+            "name": "followup",
+            "description": "User override",
+            "html_template": "<p>USER VERSION</p>",
+        },
+    )
+    monkeypatch.setenv("MICROSOFT_MCP_TEMPLATES_DIR", str(user_dir))
+
+    import microsoft_mcp.templates_engine as te
+
+    importlib.reload(te)
+
+    tpl = te.load_template("email", "followup")
+    assert "USER VERSION" in tpl["html_template"]
+
+    results = te.list_templates("email")
+    followup_entries = [r for r in results if r["name"] == "followup"]
+    # Only one entry — user shadows builtin
+    assert len(followup_entries) == 1
+    assert followup_entries[0]["source"] == "user"
+
+
+# ---------------------------------------------------------------------------
+# HTML escaping
+# ---------------------------------------------------------------------------
+
+
+def test_render_html_escapes_plain_values(tmp_path, monkeypatch):
+    cat = tmp_path / "email"
+    cat.mkdir()
+    _write_yaml(
+        cat / "escape.yaml",
+        {
+            "name": "escape",
+            "html_template": "<p>{content}</p>",
+            "placeholders": [{"name": "content", "required": True}],
+        },
+    )
+    monkeypatch.setenv("MICROSOFT_MCP_TEMPLATES_DIR", str(tmp_path))
+
+    import microsoft_mcp.templates_engine as te
+
+    importlib.reload(te)
+
+    out = te.render_template(
+        "email", "escape", {"content": "<script>alert(1)</script>"}
+    )
+    assert "<script>" not in out
+    assert "&lt;script&gt;" in out
+
+
+# ---------------------------------------------------------------------------
+# render_template raises ValueError on missing required placeholders
+# ---------------------------------------------------------------------------
+
+
+def test_render_raises_on_missing_required(tmp_path, monkeypatch):
+    cat = tmp_path / "email"
+    cat.mkdir()
+    _write_yaml(
+        cat / "strict.yaml",
+        {
+            "name": "strict",
+            "html_template": "<p>{must_have}</p>",
+            "placeholders": [{"name": "must_have", "required": True}],
+        },
+    )
+    monkeypatch.setenv("MICROSOFT_MCP_TEMPLATES_DIR", str(tmp_path))
+
+    import microsoft_mcp.templates_engine as te
+
+    importlib.reload(te)
+
+    with pytest.raises(ValueError):
+        te.render_template("email", "strict", {})
+
+
+# ---------------------------------------------------------------------------
+# OR / AND conditions
+# ---------------------------------------------------------------------------
+
+
+def test_render_or_condition(tmp_path, monkeypatch):
+    cat = tmp_path / "email"
+    cat.mkdir()
+    (cat / "orcond.yaml").write_text(
+        "name: orcond\n"
+        "html_template: 'body{extra}'\n"
+        "conditional_sections:\n"
+        "  extra: {condition: 'a|b', template: '-YES'}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MICROSOFT_MCP_TEMPLATES_DIR", str(tmp_path))
+
+    import microsoft_mcp.templates_engine as te
+
+    importlib.reload(te)
+
+    assert "YES" in te.render_template("email", "orcond", {"b": "val"})
+    assert "YES" not in te.render_template("email", "orcond", {})
+
+
+def test_render_and_condition(tmp_path, monkeypatch):
+    cat = tmp_path / "email"
+    cat.mkdir()
+    (cat / "andcond.yaml").write_text(
+        "name: andcond\n"
+        "html_template: 'body{extra}'\n"
+        "conditional_sections:\n"
+        "  extra: {condition: 'a&b', template: '-BOTH'}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MICROSOFT_MCP_TEMPLATES_DIR", str(tmp_path))
+
+    import microsoft_mcp.templates_engine as te
+
+    importlib.reload(te)
+
+    assert "BOTH" in te.render_template("email", "andcond", {"a": "1", "b": "2"})
+    assert "BOTH" not in te.render_template("email", "andcond", {"a": "1"})
+
+
+# ---------------------------------------------------------------------------
+# Bundled followup.yaml is loadable
+# ---------------------------------------------------------------------------
+
+
+def test_builtin_followup_template_loads():
+    """The bundled email/followup.yaml must load without errors."""
+    import microsoft_mcp.templates_engine as te
+
+    importlib.reload(te)
+
+    tpl = te.load_template("email", "followup")
+    assert tpl["name"] == "followup"
+    assert tpl["html_template"]
+
+
+# ---------------------------------------------------------------------------
+# find_template_variables (task 7.2)
+# ---------------------------------------------------------------------------
+
+
+def test_find_vars_plain():
+    import microsoft_mcp.templates_engine as te
+
+    assert te.find_template_variables("Hi {{first_name}}, see {{company}}") == [
+        "first_name",
+        "company",
+    ]
+
+
+def test_find_vars_uniqueness_preserves_order():
+    import microsoft_mcp.templates_engine as te
+
+    result = te.find_template_variables("{{a}} and {{b}} and {{a}}")
+    assert result == ["a", "b"]
+
+
+def test_find_vars_html_encoded():
+    import microsoft_mcp.templates_engine as te
+
+    result = te.find_template_variables("&#123;&#123;name&#125;&#125;")
+    assert result == ["name"]
+
+
+def test_find_vars_html_encoded_decode_false():
+    import microsoft_mcp.templates_engine as te
+
+    # With decode_html=False, HTML-encoded vars are NOT detected
+    result = te.find_template_variables(
+        "&#123;&#123;name&#125;&#125;", decode_html=False
+    )
+    assert result == []
+
+
+def test_find_vars_empty_content():
+    import microsoft_mcp.templates_engine as te
+
+    assert te.find_template_variables("") == []
+    assert te.find_template_variables("no vars here") == []
+
+
+def test_find_vars_mixed_plain_and_encoded():
+    import microsoft_mcp.templates_engine as te
+
+    # Plain comes first, then HTML-encoded unique name
+    content = "{{first}} &#123;&#123;last&#125;&#125;"
+    result = te.find_template_variables(content)
+    assert result == ["first", "last"]
+
+
+# ---------------------------------------------------------------------------
+# substitute_variables (task 7.2)
+# ---------------------------------------------------------------------------
+
+
+def test_substitute_basic():
+    import microsoft_mcp.templates_engine as te
+
+    out = te.substitute_variables("Hi {{name}}", {"name": "John"})
+    assert out == "Hi John"
+
+
+def test_substitute_non_strict_leaves_unknown_intact():
+    import microsoft_mcp.templates_engine as te
+
+    out = te.substitute_variables("{{a}} and {{b}}", {"a": "X"}, strict=False)
+    assert out == "X and {{b}}"
+
+
+def test_substitute_strict_raises_on_missing():
+    import microsoft_mcp.templates_engine as te
+
+    with pytest.raises(te.VariableSubstitutionError, match="missing_var"):
+        te.substitute_variables("{{missing_var}}", {}, strict=True)
+
+
+def test_substitute_strict_raises_lists_all_missing():
+    import microsoft_mcp.templates_engine as te
+
+    with pytest.raises(te.VariableSubstitutionError) as exc_info:
+        te.substitute_variables("{{x}} {{y}}", {}, strict=True)
+    msg = str(exc_info.value)
+    assert "x" in msg
+    assert "y" in msg
+
+
+def test_substitute_html_encoded():
+    import microsoft_mcp.templates_engine as te
+
+    out = te.substitute_variables("&#123;&#123;name&#125;&#125;", {"name": "Alice"})
+    assert out == "Alice"
+
+
+def test_substitute_empty_content():
+    import microsoft_mcp.templates_engine as te
+
+    assert te.substitute_variables("", {"x": "y"}) == ""
+
+
+# ---------------------------------------------------------------------------
+# parse_recipients_csv (task 7.2)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_csv_basic(tmp_path):
+    import microsoft_mcp.templates_engine as te
+
+    csv_file = tmp_path / "recipients.csv"
+    csv_file.write_text(
+        "email,first_name,company\njohn@example.com,John,Acme\n", encoding="utf-8"
+    )
+
+    rows = te.parse_recipients_csv(str(csv_file))
+    assert len(rows) == 1
+    assert rows[0]["email"] == "john@example.com"
+    assert rows[0]["first_name"] == "John"
+    assert rows[0]["company"] == "Acme"
+
+
+def test_parse_csv_multiple_rows(tmp_path):
+    import microsoft_mcp.templates_engine as te
+
+    csv_file = tmp_path / "multi.csv"
+    csv_file.write_text(
+        "email,name\nalice@example.com,Alice\nbob@example.com,Bob\n",
+        encoding="utf-8",
+    )
+    rows = te.parse_recipients_csv(str(csv_file))
+    assert len(rows) == 2
+    assert rows[1]["name"] == "Bob"
+
+
+def test_parse_csv_utf8_sig(tmp_path):
+    import microsoft_mcp.templates_engine as te
+
+    csv_file = tmp_path / "bom.csv"
+    # utf-8-sig adds BOM at the start; header key must still be clean
+    csv_file.write_bytes("email,name\njane@example.com,Jane\n".encode("utf-8-sig"))
+
+    rows = te.parse_recipients_csv(str(csv_file))
+    assert len(rows) == 1
+    assert "email" in rows[0]
+    assert rows[0]["email"] == "jane@example.com"
+
+
+def test_parse_csv_file_not_found(tmp_path):
+    import microsoft_mcp.templates_engine as te
+
+    with pytest.raises(FileNotFoundError):
+        te.parse_recipients_csv(str(tmp_path / "nonexistent.csv"))
+
+
+def test_parse_csv_strips_whitespace(tmp_path):
+    import microsoft_mcp.templates_engine as te
+
+    csv_file = tmp_path / "spaces.csv"
+    csv_file.write_text(" email , name \n john@example.com , John \n", encoding="utf-8")
+
+    rows = te.parse_recipients_csv(str(csv_file))
+    assert "email" in rows[0]
+    assert rows[0]["email"] == "john@example.com"
+    assert rows[0]["name"] == "John"

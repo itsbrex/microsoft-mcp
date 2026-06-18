@@ -17,6 +17,7 @@ dependencies = [
     "black>=23.3.0",
     "markitdown>=0.1.3",
     "RestrictedPython>=6.0",
+    "pyyaml>=6.0,<7",
 ]
 
 [project.scripts]
@@ -24,6 +25,9 @@ microsoft-mcp = "microsoft_mcp.server:main"
 microsoft-mcp-utcp-config = "microsoft_mcp.utcp_bridge_config:main"
 microsoft-mcp-signatures = "microsoft_mcp.signatures_cli:cli_main"
 microsoft-mcp-auth = "microsoft_mcp.auth_cli:cli_main"
+microsoft-mcp-rules = "microsoft_mcp.rules_cli:cli_main"
+microsoft-mcp-intel = "microsoft_mcp.intel_cli:cli_main"
+microsoft-mcp-bounces = "microsoft_mcp.bounces_cli:cli_main"
 
 [build-system]
 requires = ["hatchling"]
@@ -38,3 +42,9 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/microsoft_mcp"]
+include = [
+    "/src/microsoft_mcp/templates_data/**/*.yaml",
+]

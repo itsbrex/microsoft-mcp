@@ -1,0 +1,129 @@
+name: meeting
+description: Full-featured meeting with header, agenda, and optional sections
+version: "1.0"
+category: calendar
+
+placeholders:
+  - name: subject
+    description: Meeting subject/title
+    required: true
+
+  - name: agenda
+    description: Comma-separated agenda items
+    required: false
+
+  - name: duration
+    description: Meeting duration (e.g., "30 min")
+    required: false
+
+  - name: dial_in
+    description: Dial-in number for the meeting
+    required: false
+
+  - name: pre_read
+    description: Pre-read material or instructions
+    required: false
+
+  - name: notes
+    description: Additional meeting notes
+    required: false
+
+  - name: badge_text
+    description: Badge text (e.g., "RECURRING", "URGENT")
+    required: false
+
+  - name: header_color
+    description: Header background color override
+    required: false
+    default: "#1e3a5f"
+
+html_template: |
+  <table width="560" align="center" cellpadding="0" cellspacing="0" border="0" style="font-family:Calibri,Arial,sans-serif;font-size:14px;color:#1e293b;">
+    <tr>
+      <td style="background-color:{header_color};color:#ffffff;padding:16px 20px;">
+        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+          <tr>
+            <td style="font-size:18px;font-weight:bold;">{subject}</td>
+            {badge_section}
+          </tr>
+        </table>
+      </td>
+    </tr>
+    {meta_bar_section}
+    {agenda_section}
+    {pre_read_section}
+    {notes_section}
+  </table>
+
+conditional_sections:
+  badge_section:
+    condition: badge_text
+    template: |
+      <td align="right">
+        <span style="background-color:#3b82f6;color:#ffffff;padding:4px 10px;font-size:12px;">{badge_text}</span>
+      </td>
+
+  meta_bar_section:
+    condition: duration|dial_in
+    template: |
+      <tr>
+        <td style="background-color:#f1f5f9;padding:12px 20px;border-bottom:1px solid #e2e8f0;">
+          <table width="100%" cellpadding="0" cellspacing="0" border="0">
+            <tr>
+              <td style="font-size:13px;color:#64748b;">{meta_items}</td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+
+  agenda_section:
+    condition: agenda
+    template: |
+      <tr>
+        <td style="padding:20px;border:1px solid #e2e8f0;border-top:none;">
+          <table width="100%" cellpadding="0" cellspacing="0" border="0">
+            <tr>
+              <td style="font-size:12px;color:#64748b;letter-spacing:1px;padding-bottom:8px;">AGENDA</td>
+            </tr>
+            <tr>
+              <td style="padding-left:8px;">
+                <table width="100%" cellpadding="4" cellspacing="0" border="0">
+                  {agenda_items}
+                </table>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+
+  pre_read_section:
+    condition: pre_read
+    template: |
+      <tr>
+        <td style="padding:16px 20px;background-color:#fffbeb;border:1px solid #fcd34d;border-top:none;">
+          <table width="100%" cellpadding="0" cellspacing="0" border="0">
+            <tr>
+              <td style="font-size:12px;color:#92400e;letter-spacing:1px;padding-bottom:6px;">PRE-READ REQUIRED</td>
+            </tr>
+            <tr>
+              <td style="color:#78350f;">{pre_read}</td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+
+  notes_section:
+    condition: notes
+    template: |
+      <tr>
+        <td style="padding:16px 20px;border:1px solid #e2e8f0;border-top:none;">
+          <table width="100%" cellpadding="0" cellspacing="0" border="0">
+            <tr>
+              <td style="font-size:12px;color:#64748b;letter-spacing:1px;padding-bottom:6px;">NOTES</td>
+            </tr>
+            <tr>
+              <td>{notes}</td>
+            </tr>
+          </table>
+        </td>
+      </tr>

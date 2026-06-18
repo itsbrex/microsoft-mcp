@@ -1,0 +1,136 @@
+"""Tests for the rules CLI sub-app (microsoft-mcp rules ...)."""
+
+from __future__ import annotations
+
+import json
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from microsoft_mcp import rules_cli
+
+
+def test_rules_cli_list_json(capsys):
+    mock_fn = MagicMock(return_value=[{"id": "r1", "display_name": "N"}])
+    mock_tool = MagicMock()
+    mock_tool.fn = mock_fn
+    with patch("microsoft_mcp.tools.list_inbox_rules", mock_tool):
+        rc = rules_cli.main(["list", "--json"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "r1" in out
+    data = json.loads(out)
+    assert data[0]["id"] == "r1"
+
+
+def test_rules_cli_toggle_json(capsys):
+    mock_fn = MagicMock(return_value={"rule_id": "r2", "is_enabled": True})
+    mock_tool = MagicMock()
+    mock_tool.fn = mock_fn
+    with patch("microsoft_mcp.tools.toggle_inbox_rule", mock_tool):
+        rc = rules_cli.main(["toggle", "r2", "--json"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "r2" in out
+    data = json.loads(out)
+    assert data["rule_id"] == "r2"
+    mock_fn.assert_called_once_with("r2")
+
+
+def test_rules_cli_get_json(capsys):
+    mock_fn = MagicMock(
+        return_value={"id": "r3", "display_name": "Test", "is_enabled": True}
+    )
+    mock_tool = MagicMock()
+    mock_tool.fn = mock_fn
+    with patch("microsoft_mcp.tools.get_inbox_rule", mock_tool):
+        rc = rules_cli.main(["get", "r3", "--json"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "r3" in out
+    mock_fn.assert_called_once_with("r3")
+
+
+def test_rules_cli_delete_confirmed_json(capsys):
+    mock_fn = MagicMock(return_value={"status": "deleted", "rule_id": "r4"})
+    mock_tool = MagicMock()
+    mock_tool.fn = mock_fn
+    with patch("microsoft_mcp.tools.delete_inbox_rule", mock_tool):
+        rc = rules_cli.main(["delete", "r4", "--confirm", "--json"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "r4" in out
+    mock_fn.assert_called_once_with("r4")
+
+
+def test_rules_cli_list_table(capsys):
+    mock_fn = MagicMock(
+        return_value=[
+            {"id": "r1", "display_name": "My Rule", "sequence": 1, "is_enabled": True}
+        ]
+    )
+    mock_tool = MagicMock()
+    mock_tool.fn = mock_fn
+    with patch("microsoft_mcp.tools.list_inbox_rules", mock_tool):
+        rc = rules_cli.main(["list"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "My Rule" in out
+
+
+def test_rules_cli_export_json(capsys):
+    mock_fn = MagicMock(return_value={"yaml": "rules:\n- id: r1\n", "count": 1})
+    mock_tool = MagicMock()
+    mock_tool.fn = mock_fn
+    with patch("microsoft_mcp.tools.export_inbox_rules", mock_tool):
+        rc = rules_cli.main(["export", "--json"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "count" in out or "yaml" in out
+
+
+def test_rules_cli_create_json(capsys):
+    mock_fn = MagicMock(
+        return_value={"id": "r5", "display_name": "New Rule", "is_enabled": True}
+    )
+    mock_tool = MagicMock()
+    mock_tool.fn = mock_fn
+    with patch("microsoft_mcp.tools.create_inbox_rule", mock_tool):
+        rc = rules_cli.main(
+            ["create", "--name", "New Rule", "--subject-contains", "invoice", "--json"]
+        )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "r5" in out
+
+
+def test_rules_cli_import_json(tmp_path, capsys):
+    yaml_file = tmp_path / "rules.yaml"
+    yaml_file.write_text("rules:\n- display_name: TestRule\n")
+    mock_fn = MagicMock(
+        return_value={"imported": 1, "skipped": 0, "errors": [], "dry_run": False}
+    )
+    mock_tool = MagicMock()
+    mock_tool.fn = mock_fn
+    with patch("microsoft_mcp.tools.import_inbox_rules", mock_tool):
+        rc = rules_cli.main(["import", str(yaml_file), "--json"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "imported" in out
+
+
+def test_rules_cli_help():
+    with pytest.raises(SystemExit) as exc:
+        rules_cli.main(["--help"])
+    assert exc.value.code == 0
+
+
+def test_rules_cli_delete_no_confirm(capsys):
+    """delete without --confirm should fail (rc=1) without calling the tool."""
+    mock_fn = MagicMock(return_value={"status": "deleted", "rule_id": "r99"})
+    mock_tool = MagicMock()
+    mock_tool.fn = mock_fn
+    with patch("microsoft_mcp.tools.delete_inbox_rule", mock_tool):
+        rc = rules_cli.main(["delete", "r99"])
+    assert rc == 1
+    mock_fn.assert_not_called()

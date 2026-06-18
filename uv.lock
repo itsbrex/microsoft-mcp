@@ -1176,6 +1176,7 @@ dependencies = [
     { name = "msal" },
     { name = "msgraph-sdk" },
     { name = "python-dotenv" },
+    { name = "pyyaml" },
     { name = "restrictedpython" },
 ]
 
@@ -1196,6 +1197,7 @@ requires-dist = [
     { name = "msal", specifier = ">=1.32.3" },
     { name = "msgraph-sdk" },
     { name = "python-dotenv", specifier = ">=1.1.0" },
+    { name = "pyyaml", specifier = ">=6.0,<7" },
     { name = "restrictedpython", specifier = ">=6.0" },
 ]
 

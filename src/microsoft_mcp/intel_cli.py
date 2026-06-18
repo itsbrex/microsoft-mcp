@@ -61,19 +61,20 @@ def _bootstrap_graph() -> Any:
 
     Mirrors the bootstrap that tools.py performs at import time.
     """
+    import pathlib as pl
+
     from microsoft_mcp import graph
     from microsoft_mcp.auth_base import AuthProvider
+
+    def _env_path(name: str) -> pl.Path | None:
+        value = os.getenv(name)
+        return pl.Path(value) if value else None
 
     auth_method = os.getenv("MICROSOFT_MCP_AUTH_METHOD", "azure").lower()
 
     auth: AuthProvider
     if auth_method == "msal":
         from microsoft_mcp.auth_msal import MSALRefreshTokenAuth
-        import pathlib as pl
-
-        def _env_path(name: str) -> pl.Path | None:
-            value = os.getenv(name)
-            return pl.Path(value) if value else None
 
         auth = MSALRefreshTokenAuth(
             tokens_dir=_env_path("MICROSOFT_MCP_TOKENS_DIR"),
@@ -83,11 +84,6 @@ def _bootstrap_graph() -> Any:
         )
     else:
         from microsoft_mcp.auth import AzureAuthentication
-        import pathlib as pl
-
-        def _env_path(name: str) -> pl.Path | None:  # type: ignore[no-redef]
-            value = os.getenv(name)
-            return pl.Path(value) if value else None
 
         auth = AzureAuthentication(
             auth_record_file=_env_path("AZURE_CRED_CACHE_FILE"),

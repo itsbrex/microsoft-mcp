@@ -4,9 +4,7 @@ Import convention follows the repo pattern used in other test files:
     from src.microsoft_mcp import <module>
 """
 
-import pytest
 
-from src.microsoft_mcp import signature_parser
 from src.microsoft_mcp.signature_parser import (
     normalize_phone_e164,
     parse_email_body,
@@ -153,9 +151,18 @@ class TestParseSignatureBlock:
     def test_returns_all_required_keys(self):
         result = parse_signature_block(SAMPLE_SIG)
         required = {
-            "first_name", "last_name", "full_name", "job_title", "company",
-            "work_email", "mobile_phone", "business_phone",
-            "website", "linkedin", "twitter", "confidence_score",
+            "first_name",
+            "last_name",
+            "full_name",
+            "job_title",
+            "company",
+            "work_email",
+            "mobile_phone",
+            "business_phone",
+            "website",
+            "linkedin",
+            "twitter",
+            "confidence_score",
         }
         assert required.issubset(result.keys())
 

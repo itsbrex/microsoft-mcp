@@ -235,7 +235,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p_get.set_defaults(func=_cmd_get)
 
     p_export = sub.add_parser("export", help="export inbox rules to YAML")
-    p_export.add_argument("--output", metavar="FILE", default=None, help="write YAML to FILE")
+    p_export.add_argument(
+        "--output", metavar="FILE", default=None, help="write YAML to FILE"
+    )
     p_export.add_argument("--json", action="store_true")
     p_export.set_defaults(func=_cmd_export)
 
@@ -247,7 +249,9 @@ def _build_parser() -> argparse.ArgumentParser:
         default="create",
         help="import mode (default: create)",
     )
-    p_import.add_argument("--dry-run", action="store_true", help="validate without making changes")
+    p_import.add_argument(
+        "--dry-run", action="store_true", help="validate without making changes"
+    )
     p_import.add_argument("--json", action="store_true")
     p_import.set_defaults(func=_cmd_import)
 
@@ -269,21 +273,30 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_create.add_argument("--move-to", dest="move_to", metavar="FOLDER")
     p_create.add_argument(
-        "--mark-read", dest="mark_read", action="store_true", help="mark matching mail as read"
+        "--mark-read",
+        dest="mark_read",
+        action="store_true",
+        help="mark matching mail as read",
     )
-    p_create.add_argument("--stop", action="store_true", help="stop processing further rules")
+    p_create.add_argument(
+        "--stop", action="store_true", help="stop processing further rules"
+    )
     p_create.add_argument("--json", action="store_true")
     p_create.set_defaults(func=_cmd_create)
 
     p_delete = sub.add_parser("delete", help="delete an inbox rule")
     p_delete.add_argument("id", help="rule ID")
     p_delete.add_argument(
-        "--confirm", action="store_true", help="required: confirm the destructive delete"
+        "--confirm",
+        action="store_true",
+        help="required: confirm the destructive delete",
     )
     p_delete.add_argument("--json", action="store_true")
     p_delete.set_defaults(func=_cmd_delete)
 
-    p_toggle = sub.add_parser("toggle", help="toggle a rule between enabled and disabled")
+    p_toggle = sub.add_parser(
+        "toggle", help="toggle a rule between enabled and disabled"
+    )
     p_toggle.add_argument("id", help="rule ID")
     p_toggle.add_argument("--json", action="store_true")
     p_toggle.set_defaults(func=_cmd_toggle)

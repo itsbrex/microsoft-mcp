@@ -152,3 +152,106 @@ class ThreadSignals(TypedDict):
     awaiting_my_reply: list[ThreadInfo]  # They sent last, I haven't replied
     awaiting_their_reply: list[ThreadInfo]  # I sent last, no response
     stale_threads: list[ThreadInfo]  # Old threads with no activity
+
+
+# ============================================================================
+# Analyzer Output Types
+# ============================================================================
+
+
+class PriorityItem(TypedDict):
+    """A scored, prioritized item for the briefing."""
+
+    score: float  # 0.0 to 100.0
+    source: str  # "email", "calendar", "thread"
+    category: str  # "needs_response", "conflict", "vip_email", "stale_thread", etc.
+    title: str
+    description: str
+    age_hours: NotRequired[float]
+    sender: NotRequired[str]
+    action_hint: NotRequired[str]  # Suggested action
+
+
+class ScheduleAnalysis(TypedDict):
+    """Analyzed schedule insights."""
+
+    meeting_density_pct: float  # % of work day in meetings
+    back_to_back_count: int  # Number of back-to-back meeting pairs
+    external_meeting_count: int
+    longest_free_block_minutes: int
+    focus_time_available: bool  # Has a 2+ hour free block
+    busiest_hour: NotRequired[str]  # e.g., "10:00-11:00"
+    summary: str  # Human-readable schedule summary
+
+
+class RelationshipInsight(TypedDict):
+    """Analyzed relationship status for a contact."""
+
+    email: str
+    name: str
+    company: NotRequired[str]
+    engagement_score: float  # 0.0 to 100.0
+    trend: str  # "rising", "stable", "cooling"
+    last_interaction: str  # ISO datetime
+    days_since_contact: int
+    sent_to: int
+    received_from: int
+    response_ratio: float  # ratio of received/sent, >1 means they contact you more
+
+
+# ============================================================================
+# Report Types (Engine Output)
+# ============================================================================
+
+
+class BriefingReport(TypedDict):
+    """Complete morning briefing output."""
+
+    generated_at: str  # ISO datetime
+    account: str
+    priority_items: list[PriorityItem]  # Top items sorted by score
+    email_summary: EmailSignals
+    calendar_summary: CalendarSignals
+    schedule_analysis: ScheduleAnalysis
+    thread_summary: ThreadSignals
+
+
+class SignalsReport(TypedDict):
+    """Actionable signals and alerts."""
+
+    generated_at: str
+    account: str
+    critical: list[PriorityItem]  # Score >= 80
+    important: list[PriorityItem]  # Score >= 50
+    informational: list[PriorityItem]  # Score < 50
+    total_signals: int
+
+
+class ContactReport(TypedDict):
+    """Person-level intelligence report."""
+
+    generated_at: str
+    account: str
+    target_email: str
+    target_name: str
+    company: NotRequired[str]
+    job_title: NotRequired[str]
+    relationship: RelationshipInsight
+    recent_threads: list[ThreadInfo]
+    recent_emails_from: int
+    recent_emails_to: int
+    pending_items: list[EmailNeedingResponse]
+
+
+class RecapReport(TypedDict):
+    """End-of-day summary."""
+
+    generated_at: str
+    account: str
+    emails_received_today: int
+    emails_sent_today: int
+    emails_still_unread: int
+    meetings_attended: int
+    threads_resolved: int  # Threads that got replies today
+    threads_still_pending: list[ThreadInfo]
+    tomorrow_preview: list[CalendarEvent]

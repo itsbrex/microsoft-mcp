@@ -33,14 +33,21 @@ def _email_request(
     inbox_msgs: list | None = None,
     sent_count: int = 0,
 ) -> MagicMock:
+    """Build a fake request callable for email collector tests.
+
+    ``sent_count`` is satisfied by returning that many stub message dicts in
+    ``value`` (no @odata.count) so the paginating _fetch_sent_count counts them
+    correctly.
+    """
     folder_data = folders or []
     inbox_data = inbox_msgs or []
+    sent_data = [{"id": f"s{i}"} for i in range(sent_count)]
 
     def fake(method: str, path: str, *, params: dict | None = None, **_: Any) -> dict:
         if "/mailFolders" in path and "messages" not in path:
             return {"value": folder_data}
         if "sentItems" in path or "sentitems" in path:
-            return {"value": [], "@odata.count": sent_count}
+            return {"value": sent_data}
         return {"value": inbox_data}
 
     return MagicMock(side_effect=fake)
@@ -224,6 +231,44 @@ def test_email_no_messages_returns_zero_totals() -> None:
     assert signals["unread_total"] == 0
     assert signals["needs_response"] == []
     assert signals["vip_unread"] == []
+
+
+def test_fetch_sent_count_paginates_across_nextlink() -> None:
+    """_fetch_sent_count must follow @odata.nextLink and sum across pages.
+
+    This is the I2 regression test: the old $count approach silently returned
+    len(value) capped at _SENT_PAGE_SIZE.  The new paginating approach must
+    count items from ALL pages.
+    """
+    page1 = [{"id": f"s1_{i}"} for i in range(3)]
+    page2 = [{"id": f"s2_{i}"} for i in range(2)]
+    calls: list[str] = []
+
+    def fake(method: str, path: str, *, params: dict | None = None, **_: Any) -> dict:
+        if "/mailFolders" in path and "messages" not in path:
+            return {"value": []}
+        if "sentItems" in path or "sentitems" in path:
+            calls.append(path)
+            if len(calls) == 1:
+                # First page — include nextLink
+                return {
+                    "value": page1,
+                    "@odata.nextLink": (
+                        "https://graph.microsoft.com/v1.0"
+                        "/me/mailFolders/sentItems/messages?$skip=3"
+                    ),
+                }
+            # Second page — no nextLink
+            return {"value": page2}
+        return {"value": []}
+
+    req = MagicMock(side_effect=fake)
+    signals = collect_email_signals(req, now=NOW)
+
+    # Must be sum of both pages (3 + 2 = 5), not capped at first page (3)
+    assert signals["sent_last_24h"] == 5
+    # Pagination was actually triggered — at least two sent-path calls
+    assert len(calls) >= 2
 
 
 # ---------------------------------------------------------------------------

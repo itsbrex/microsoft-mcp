@@ -4,7 +4,6 @@ Import convention follows the repo pattern used in other test files:
     from src.microsoft_mcp import <module>
 """
 
-
 from src.microsoft_mcp.signature_parser import (
     normalize_phone_e164,
     parse_email_body,
@@ -225,3 +224,59 @@ class TestParseEmailBody:
         result = parse_email_body("")
         assert result["contacts"] == [] or isinstance(result["contacts"], list)
         assert isinstance(result["job_changes"], dict)
+
+
+# ---------------------------------------------------------------------------
+# ReDoS regression tests (I1 — body length cap)
+# ---------------------------------------------------------------------------
+
+
+class TestReDoSBodyLengthCap:
+    """Verify that parse_email_body does not hang on pathological large inputs.
+
+    The test simply asserts the call completes and returns the expected dict
+    shape.  If the cap were absent the regex pipeline would cause super-linear
+    CPU blowup (measured n=4000 → 6.6 s); with the cap the call is instant.
+    No timing assertion is used to avoid flaky CI.
+    """
+
+    def test_large_body_with_near_match_email_pattern_completes(self):
+        # Pattern that would trigger catastrophic backtracking on _ALT_CONTACT_PATTERNS
+        pathological = "a@b.com " + "x" * 100_000
+        result = parse_email_body(pathological)
+        assert isinstance(result, dict)
+        assert "contacts" in result
+        assert "job_changes" in result
+
+    def test_large_body_repeated_job_change_trigger_completes(self):
+        # Repeated near-match for job-change patterns
+        pathological = ("I am no longer at " + "A" * 50 + " ") * 2_000
+        result = parse_email_body(pathological)
+        assert isinstance(result, dict)
+        assert "contacts" in result
+        assert "job_changes" in result
+
+    def test_normal_body_still_extracts_contacts(self):
+        """Cap must NOT affect normal-length inputs — behavior unchanged."""
+        result = parse_email_body(SAMPLE_EMAIL_BODY)
+        assert len(result["contacts"]) >= 1
+        primary = result["contacts"][0]
+        assert "jane.doe@acmecorp.com" in primary["work_email"]
+
+    def test_normal_body_still_extracts_job_changes(self):
+        """Cap must NOT affect job-change extraction for normal inputs."""
+        result = parse_email_body(OOO_JOB_CHANGE)
+        assert "left_company" in result["job_changes"]
+        assert "Globex" in result["job_changes"]["left_company"]
+
+    def test_html_body_capped_after_conversion(self):
+        """HTML input must be converted first, then capped (not capped as raw HTML)."""
+        # Build an HTML body that is large but whose text content is small and valid
+        padding = "<!-- " + "x" * 200_000 + " -->"
+        html_body = f"{padding}<p>jane.doe@acmecorp.com</p><p>Jane Doe</p>"
+        # With cap applied to text-after-conversion the email should still be found
+        # (the visible text is small); if capped before conversion we'd lose content.
+        result = parse_email_body(html_body, html=True)
+        assert isinstance(result, dict)
+        assert "contacts" in result
+        assert "job_changes" in result

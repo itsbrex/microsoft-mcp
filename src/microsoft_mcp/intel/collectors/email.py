@@ -110,21 +110,24 @@ def _fetch_sent_count(
     request: Callable[..., Any],
     since: datetime,
 ) -> int:
-    """Count messages sent in the given time window."""
+    """Count messages sent in the given time window.
+
+    Paginates across @odata.nextLink so the count is accurate even for busy
+    mailboxes that exceed a single page.  Using $count=true requires the
+    ``ConsistencyLevel: eventual`` header which graph.request does not send,
+    so that approach silently falls back to len(value) capped at $top.
+    """
     since_iso = since.strftime("%Y-%m-%dT%H:%M:%SZ")
-    data = request(
-        "GET",
+    msgs = paginate(
+        request,
         "/me/mailFolders/sentItems/messages",
         params={
             "$filter": f"sentDateTime ge {since_iso}",
-            "$orderby": "sentDateTime desc",
-            "$top": _SENT_PAGE_SIZE,
             "$select": "id",
-            "$count": "true",
+            "$top": _SENT_PAGE_SIZE,
         },
     )
-    # Prefer @odata.count if available, otherwise count returned items.
-    return data.get("@odata.count", len(data.get("value", [])))
+    return len(msgs)
 
 
 def _build_needs_response(

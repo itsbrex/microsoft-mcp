@@ -124,6 +124,11 @@ _PERSONAL_EMAIL_DOMAINS = {
     "msn.com",
 }
 
+# Maximum number of characters the regex pipeline operates on.  Attacker-
+# controlled bodies can be arbitrarily large; several patterns (alt-contact,
+# job-change, company) show super-linear CPU growth beyond this size.
+_MAX_BODY_LEN = 20_000
+
 
 # ---------------------------------------------------------------------------
 # Phone Normalization
@@ -464,6 +469,10 @@ def parse_email_body(
         from .response_shaping import _html_to_text  # lazy import; keeps module pure
 
         body = _html_to_text(body)
+
+    # Cap body length AFTER any HTML-to-text conversion so the regex pipeline
+    # never operates on arbitrarily large attacker-controlled input.
+    body = body[:_MAX_BODY_LEN]
 
     contacts: list[dict] = []
 

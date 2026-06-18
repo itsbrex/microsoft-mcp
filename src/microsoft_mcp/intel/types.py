@@ -222,7 +222,7 @@ class SignalsReport(TypedDict):
     generated_at: str
     account: str
     critical: list[PriorityItem]  # Score >= 80
-    important: list[PriorityItem]  # Score >= 50
+    important: list[PriorityItem]  # Score 50-79 (>= 50 and < 80)
     informational: list[PriorityItem]  # Score < 50
     total_signals: int
 

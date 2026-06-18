@@ -40,8 +40,6 @@ NOW = datetime(2026, 6, 17, 9, 0, 0, tzinfo=UTC)
 _YESTERDAY = "2026-06-16T09:00:00Z"
 _4_DAYS_AGO = "2026-06-13T09:00:00Z"
 _6_DAYS_AGO = "2026-06-11T09:00:00Z"
-_80H_AGO = "2026-06-13T17:00:00Z"  # 80 hours before NOW
-
 
 # ---------------------------------------------------------------------------
 # Factories for canned signal objects
@@ -663,11 +661,6 @@ class TestSignalBucketing:
 # ---------------------------------------------------------------------------
 
 
-def _null_request(*args: Any, **kwargs: Any) -> dict:
-    """Minimal fake request returning empty collections."""
-    return {"value": [], "@odata.count": 0}
-
-
 def _make_engine_request(
     folders: list | None = None,
     inbox_msgs: list | None = None,
@@ -797,7 +790,7 @@ class TestGenerateRecap:
         }
         request = _make_engine_request(cal_events=[cal_event_raw])
         report = generate_recap(request, account="user@example.com", now=NOW)
-        assert report["meetings_attended"] >= 0  # at least doesn't crash
+        assert report["meetings_attended"] == 1  # one accepted event on 2026-06-17
 
 
 class TestGenerateContactReport:

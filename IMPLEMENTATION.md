@@ -125,6 +125,56 @@ The server-side shaping layer remains the first line of defense against token bl
 - Documentation should distinguish shaping from orchestration.
 - Tests should cover both the Graph tools and the code-mode surface.
 
+## Mail-Port Feature Modules
+
+### Inbox Rules (`rules.py`)
+
+The inbox rules module is deliberately Graph-free. All network I/O lives in `tools.py`; `rules.py` only builds payloads and converts between representations.
+
+**Data model convention:** All public functions in `rules.py` accept snake_case keyword arguments (`sender_contains`, `move_to_folder`, `mark_as_read`, etc.) and emit camelCase Graph payloads (`senderContains`, `moveToFolder`, `markAsRead`). The inverse path — Graph rule dicts to snake_case template dicts — goes through `rule_to_template()`. This keeps the camelCase↔snake_case mapping in one place (`build_rule_payload`) so callers never touch Graph field names directly.
+
+YAML import/export uses the same snake_case template format. `template_to_rule_payload(tpl, folder_resolver)` accepts an optional callable that maps folder display names to Graph folder IDs before building the payload, allowing `import_inbox_rules` to resolve human-readable names at import time.
+
+### Email Templates (`templates_engine.py` + `templates_data/`)
+
+**Search path (user first, then bundled):**
+1. `$MICROSOFT_MCP_TEMPLATES_DIR` if set, otherwise `~/.config/microsoft-mcp/templates/`
+2. `src/microsoft_mcp/templates_data/` (bundled; organized into `email/` and `calendar/` subdirectories)
+
+User-directory templates shadow built-in templates with the same `(category, name)` key. Files named with a leading underscore (`_foo.yaml`) are skipped during listing.
+
+**Substitution model:** Templates use single-brace `{placeholder}` tokens inside `html_template`. All substituted values are HTML-escaped via `html.escape()` unless the key is in the pre-rendered set (e.g., `agenda_items`, `interviewer_items`) or is a named `conditional_section`. Conditional sections are evaluated with `|` (OR) or `&` (AND) field expressions. The `find_template_variables` / `substitute_variables` API uses double-brace `{{var}}` tokens for plain-text variable substitution in email bodies that don't use the YAML template format.
+
+### Microsoft To-Do (`todo.py`)
+
+Pure module. `parse_due_date(text, *, today)` accepts `"today"`, `"tomorrow"`, `"+Nd"`, or `"YYYY-MM-DD"` and returns a Graph `dueDateTime` dict. The `today` parameter is always injected by callers; the module never calls `date.today()`.
+
+### Signature Parser (`signature_parser.py`)
+
+Extracts contact information from plain-text email signatures and OOO auto-replies. `parse_email_body()` identifies the signature block (via delimiter patterns), extracts the primary contact, and optionally scans prose for alternative contacts (e.g., "while I'm away, contact Jane at jane@co.com"). Job-change signals (`left_company`, `new_company`, `new_email`) are detected from the message body and returned separately. Phone normalization uses `normalize_phone_e164()` which handles US 10-digit, 11-digit (1+10), and international (`+`) formats; returns `""` for unparseable input.
+
+### Intelligence Package (`intel/`)
+
+**Pipeline:** collectors → analyzers → engine.
+
+**Collectors** (`intel/collectors/`): `email.py`, `calendar.py`, `contacts.py`, `threads.py`. Each collector function takes an injected `request: Callable` and an injected `now: datetime`. They never import `graph` at module level. Pagination follows `@odata.nextLink` via `intel/_utils.py:paginate()`.
+
+**Analyzers** (`intel/analyzers/`): `priority.py` (`score_priorities`), `relationships.py` (`analyze_relationships`), `schedule.py` (`analyze_schedule`). Analyzers take collector output dicts and return scored/ranked structures; no network calls.
+
+**Engine** (`intel/engine.py`): `generate_briefing()`, `generate_signals()`, `generate_contact_report()`, `generate_recap()`. Each function takes an injected `request` callable and an injected `now: datetime`. The engine runs the relevant collectors, passes results to analyzers, and assembles the final typed report dict. Return types are declared in `intel/types.py` as `TypedDict` subclasses (`BriefingReport`, `SignalsReport`, `ContactReport`, `RecapReport`).
+
+**Injected clock rationale:** Passing `now` as a parameter rather than calling `datetime.now()` inside collectors/engine ensures that tests can assert on exact output without mocking the module's `datetime`. The CLI layer (`intel_cli.py`) is the only site that calls `datetime.now(ZoneInfo(tz))`.
+
+### Bounce Scanner (`bounces.py`)
+
+**Pattern catalogs:** `SUBJECT_KEYWORDS`, `SENDER_PATTERNS`, `BODY_PATTERNS`, `BOUNCE_REASONS` (regex priority list), `STRONG_SUBJECT_INDICATORS`, `EXCLUDED_SUBJECT_PREFIXES`. These are module-level constants so the CLI's `patterns` subcommand can print them without any network calls.
+
+**Classification flow:** `is_bounce_message(subject, sender_email, body)` applies exclusion prefixes first, then postmaster/mailer-daemon sender matching, then strong subject indicators, then optional body pattern scan. `determine_bounce_reason(subject, body)` runs `BOUNCE_REASONS` regex patterns in priority order (first match wins). `classify_bounce_message(msg)` wraps both and extracts the bounced recipient email from DSN body or subject via `parse_dsn_content()`.
+
+**DSN parsing:** `parse_dsn_content(text)` scans for `X-Failed-Recipients`, `Final-Recipient`, `Original-Recipient`, and `To:` headers (in priority order) plus `Action`, `Status`, `Diagnostic-Code`, and `X-Display-Name` fields.
+
+**Folder scan:** `iter_folder_messages(request, folder_id, *, limit)` yields messages page by page following `@odata.nextLink`. Absolute Graph URLs are stripped to paths before being passed back to `request()`. `scan_folder()` wraps the iterator and filters via `classify_bounce_message()`. CSV output via `write_csv(rows, path)` uses column order defined by `_CSV_FIELDNAMES`.
+
 ## Tool Categories
 
 ### Account and Authentication Tools
@@ -193,6 +243,64 @@ The server-side shaping layer remains the first line of defense against token bl
 - `get_inbox_item_detail`
 
 `list_inbox_items` and `get_inbox_item_detail` support the `invite_message` kind in addition to standard email and calendar event entries so code-mode inbox triage can act on Outlook meeting notifications that live in the mailbox.
+
+### Inbox Rules Tools
+- `list_inbox_rules`
+- `get_inbox_rule`
+- `create_inbox_rule`
+- `update_inbox_rule`
+- `delete_inbox_rule`
+- `toggle_inbox_rule`
+- `reorder_inbox_rules`
+- `export_inbox_rules`
+- `import_inbox_rules`
+
+### Focused Inbox Override Tools
+- `list_focused_overrides`
+- `create_focused_override`
+- `update_focused_override`
+- `delete_focused_override`
+
+### Reply/Forward Draft Tools
+- `reply_email_draft`
+- `reply_all_email_draft`
+- `forward_email_draft`
+- `send_email_draft` — the only tool that sends to the wire
+
+### MailTips and Attachment Tools
+- `get_mailtips`
+- `list_attachments`
+- `download_attachments`
+
+### Microsoft To-Do Tools
+- `list_todo_lists`
+- `create_todo_list`
+- `list_tasks`
+- `create_task`
+- `update_task`
+- `complete_task`
+- `delete_task`
+- `create_task_from_email`
+
+### Email Template Tools
+- `list_email_templates`
+- `render_email_template`
+- `find_template_variables`
+- `get_template_placeholders`
+- `substitute_template_variables`
+
+### Signature Parser and Phone Tools
+- `parse_email_signature`
+- `normalize_phone_number`
+
+### Intelligence Report Tools
+- `generate_morning_briefing`
+- `get_priority_signals`
+- `get_contact_intelligence`
+- `get_end_of_day_recap`
+
+### Bounce Scanning Tools
+- `scan_bounces`
 
 ### Code Mode Tools
 - `search_tools`

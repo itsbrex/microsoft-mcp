@@ -57,7 +57,7 @@ uvx ruff check --fix --unsafe-fixes .
   - Supports large file uploads via chunked sessions
   - Global auth instance via `set_auth_instance()`/`get_auth_instance()`
 
-- **`tools.py`** - FastMCP tool implementations (30+ tools)
+- **`tools.py`** - FastMCP tool implementations (109 registered tools)
   - Account Management (8 tools): `list_accounts`, `set_active_account`, `get_active_account`, `authenticate_new_account`, `refresh_all_accounts`, `refresh_account`, `force_reauthenticate_account`, `verify_account_tokens`
   - Email (9 tools): list, get, send, reply, move, delete, attachments
   - Calendar (7 tools): events, availability, responses
@@ -65,6 +65,15 @@ uvx ruff check --fix --unsafe-fixes .
   - Files (6 tools): OneDrive operations
   - Teams (6 tools): chat and channel messages
   - Signatures (2 read-only tools): `list_signatures`, `get_signature` — the assistant can inspect local plain-text signatures but cannot mutate them.
+  - Inbox Rules (9 tools): `list_inbox_rules`, `get_inbox_rule`, `create_inbox_rule`, `update_inbox_rule`, `delete_inbox_rule`, `toggle_inbox_rule`, `reorder_inbox_rules`, `export_inbox_rules`, `import_inbox_rules`
+  - Focused Inbox Overrides (4 tools): `list_focused_overrides`, `create_focused_override`, `update_focused_override`, `delete_focused_override`
+  - Reply/Forward Drafts (4 tools): `reply_email_draft`, `reply_all_email_draft`, `forward_email_draft`, `send_email_draft` — `send_email_draft` is the only tool that sends to the wire; all others create drafts
+  - MailTips + Attachments (3 tools): `get_mailtips`, `list_attachments`, `download_attachments`
+  - Microsoft To-Do (8 tools): `list_todo_lists`, `create_todo_list`, `list_tasks`, `create_task`, `update_task`, `complete_task`, `delete_task`, `create_task_from_email`
+  - Email Templates (5 tools): `list_email_templates`, `render_email_template`, `find_template_variables`, `get_template_placeholders`, `substitute_template_variables`
+  - Signature Parser + Phone (2 tools): `parse_email_signature`, `normalize_phone_number`
+  - Intel Reports (4 tools): `generate_morning_briefing`, `get_priority_signals`, `get_contact_intelligence`, `get_end_of_day_recap`
+  - Bounce Scanning (1 tool): `scan_bounces`
   - Search: unified search across all services with KQL support
   - Initializes global auth instance based on `MICROSOFT_MCP_AUTH_METHOD`
 
@@ -84,9 +93,37 @@ uvx ruff check --fix --unsafe-fixes .
   - Subcommands: `auth refresh [email] [--api graph|outlook|both] [--force] [--json]`, `auth verify [--live] [--json]`, `auth status [--json]` (read-only, no network), `auth list [--json]`, `auth test [--json]` (live Graph `/me`), `auth doctor [--json]` (diagnose perms/dups/expiry).
   - Zero-dependency ANSI color, auto-disabled when stdout is not a TTY or `NO_COLOR` is set (`MICROSOFT_MCP_FORCE_COLOR=1` to force).
 
+- **`rules.py`** + **`rules_cli.py`** - Outlook inbox message rules
+  - `rules.py`: pure, Graph-free helpers — `build_rule_payload()` (snake_case kwargs → camelCase Graph payload), `template_to_rule_payload()` (YAML snake_case → Graph payload with optional folder resolver), `rule_to_template()` (inverse), `validate_template()`, `summarize_conditions()`, `summarize_actions()`.
+  - `rules_cli.py`: CLI exposed two ways — standalone `microsoft-mcp-rules <cmd>` and `microsoft-mcp rules <cmd>`. Subcommands: `list`, `get`, `create`, `delete`, `toggle`, `export`, `import`. All support `--json`. `import` supports `--mode create|sync` and `--dry-run`. `delete` requires `--confirm`.
+
+- **`todo.py`** - Microsoft To-Do payload builders
+  - Pure module (no Graph imports). `parse_due_date(text, *, today)` accepts `"today"`, `"tomorrow"`, `"+Nd"`, `"YYYY-MM-DD"` and returns Graph `dueDateTime` format. `build_task_payload()` and `build_linked_resource()` build Graph `todoTask` and `linkedResource` payloads. The `today` parameter is always injected for deterministic testing.
+
+- **`templates_engine.py`** + **`templates_data/`** - YAML email/calendar template system
+  - Search path: `$MICROSOFT_MCP_TEMPLATES_DIR` (or `~/.config/microsoft-mcp/templates/`) user dir first, then bundled `templates_data/` directory. User templates shadow built-in ones by `(category, name)` key.
+  - Templates are YAML files with `name`, `html_template`, `placeholders` (with `required`, `default`), and optional `conditional_sections` (with `condition` using `|`/`&` field expressions). All non-pre-rendered placeholder values are HTML-escaped before substitution (XSS-safe).
+  - `list_templates()`, `load_template()`, `render_template()`, `validate_template_data()`. Variable substitution: `find_template_variables()` and `substitute_variables()` handle `{{var}}` tokens in plain-text content (also decodes HTML-encoded variants). `parse_recipients_csv()` reads a CSV file for bulk recipient expansion.
+
+- **`signature_parser.py`** - Email signature and OOO contact/job-change extraction
+  - `parse_signature_block(text)` → contact dict with `first_name`, `last_name`, `full_name`, `job_title`, `company`, `work_email`, `mobile_phone`, `business_phone`, `website`, `linkedin`, `twitter`, `confidence_score`.
+  - `parse_email_body(body, *, html, extract_alternatives)` → `{contacts, job_changes}` — detects signature block, extracts primary contact plus alternative contacts from OOO prose, classifies job-change signals (`left_company`, `new_company`, `new_email`).
+  - `normalize_phone_e164(phone, default_region="US")` → E.164 string or `""`.
+
+- **`intel/`** - Intelligence report package: collectors → analyzers → engine
+  - `intel/_utils.py`: `paginate(request, path, params, *, limit)` follows `@odata.nextLink` using injected request; `parse_graph_datetime()` handles both `Z` and `+00:00` formats.
+  - `intel/collectors/`: `email.py`, `calendar.py`, `contacts.py`, `threads.py` — each accepts an injected `request` callable and an injected `now` datetime; no global Graph imports.
+  - `intel/analyzers/`: `priority.py` (`score_priorities`), `relationships.py` (`analyze_relationships`), `schedule.py` (`analyze_schedule`).
+  - `intel/engine.py`: `generate_briefing()`, `generate_signals()`, `generate_contact_report()`, `generate_recap()` — orchestrate collectors + analyzers and return typed dicts (`BriefingReport`, `SignalsReport`, `ContactReport`, `RecapReport` from `intel/types.py`). All take an injected `request` callable and injected `now` datetime.
+  - `intel_cli.py`: CLI exposed two ways — standalone `microsoft-mcp-intel <cmd>` and `microsoft-mcp intel <cmd>`. Subcommands: `briefing [--timezone TZ] [--limit N] [--json]`, `signals [--timezone TZ] [--level all|critical|important|informational] [--json]`, `contact <email> [--days N] [--json]`, `recap [--timezone TZ] [--json]`.
+
+- **`bounces.py`** + **`bounces_cli.py`** - NDR/bounce classifier and folder scanner
+  - `bounces.py`: pure module with injected request — pattern catalogs (`SUBJECT_KEYWORDS`, `SENDER_PATTERNS`, `BODY_PATTERNS`, `BOUNCE_REASONS`, `STRONG_SUBJECT_INDICATORS`, `EXCLUDED_SUBJECT_PREFIXES`); `is_bounce_message()`, `determine_bounce_reason()`, `classify_bounce_message()`, `parse_dsn_content()`, `iter_folder_messages(request, folder_id, *, limit)` (follows `@odata.nextLink`), `scan_folder(request, folder_id, *, limit)`, `write_csv(rows, path)`.
+  - `bounces_cli.py`: CLI exposed two ways — standalone `microsoft-mcp-bounces <cmd>` and `microsoft-mcp bounces <cmd>`. Subcommands: `scan [--folder FOLDER] [--limit N] [--output CSV_PATH] [--json]`, `patterns [--json]` (read-only, no Graph calls).
+
 - **Dual Graph/Outlook tokens.** `MSALRefreshTokenAuth(api_type="outlook")` writes `{id}_outlook_access_token.json` using `outlook.office365.com/.default` and the SHARED `{id}_refresh_only.txt` (Graph tokens stay in `{id}_access_token.json`). `auth refresh --api=both` mints both off the one refresh token.
 
-- **`server.py`** - MCP server entry point, validates `MICROSOFT_MCP_CLIENT_ID`
+- **`server.py`** - MCP server entry point, validates `MICROSOFT_MCP_CLIENT_ID`. Dispatches `argv[0] in {"signatures", "auth", "rules", "intel", "bounces"}` to the respective CLI before importing the Graph stack.
 
 ### Key Patterns
 
@@ -98,7 +135,11 @@ uvx ruff check --fix --unsafe-fixes .
 
 **401 auto-recovery (MSAL):** when Microsoft Graph returns 401 (e.g., after a long-idle session or upstream token revocation), `graph.request` calls `auth.force_refresh()` and replays the request once. If the second attempt also fails, the original 401 surfaces. Azure auth path is unchanged (its SDK manages refresh internally).
 
-**Dependency Injection**: Graph module uses global `_global_auth` instance; tests mock via `set_auth_instance()`
+**Dependency Injection**: Graph module uses global `_global_auth` instance; tests mock via `set_auth_instance()`. The `intel/` package and `bounces.py` take the request callable as a parameter (never importing `graph` globally) and accept an injected `now`/`today` datetime — this keeps them pure and unit-testable.
+
+**Graph-only, no EWS**: All mail operations go through Microsoft Graph REST (`/me/messages`, `/me/mailFolders`, `/me/messageRules`, etc.). No Exchange Web Services (EWS/SOAP) and no lxml dependency.
+
+**Draft-first reply/forward**: `reply_email_draft`, `reply_all_email_draft`, and `forward_email_draft` create drafts only. `send_email_draft` is the single tool that actually sends to the wire.
 
 **Error Handling**: All tools log errors with `exc_info=True` and re-raise; HTTP retries use exponential backoff
 
@@ -128,6 +169,9 @@ uvx ruff check --fix --unsafe-fixes .
 - `MICROSOFT_MCP_DEFAULT_SIGNATURE` (optional) - signature name appended to new drafts when `create_email_draft` is called without an explicit `signature`. Used as a fallback for replies when `MICROSOFT_MCP_REPLY_SIGNATURE` is unset.
 - `MICROSOFT_MCP_REPLY_SIGNATURE` (optional) - signature name for reply/reply_all drafts.
 - `MICROSOFT_MCP_SIGNATURE_RFC3676` (optional) - `1` to use the RFC 3676 `-- ` sig delimiter; default is a blank line.
+
+**Email Templates:**
+- `MICROSOFT_MCP_TEMPLATES_DIR` (optional) - user template directory (default `~/.config/microsoft-mcp/templates/`). Templates here shadow built-in templates of the same `(category, name)` key.
 
 ## MCP Configuration Format
 
@@ -244,3 +288,6 @@ nit: don't construct `httpx.AsyncClient` directly, use graph.request
 
 - **MSAL disables Teams tools.** See commit `7dae88f` — MSAL uses the Microsoft Office public client ID (`d3590ed6-…`) which lacks Teams delegated permissions, so Teams tools are unregistered under `MICROSOFT_MCP_AUTH_METHOD=msal`. If you need Teams, register your own Azure AD app with the required Teams delegated permissions and switch to `MICROSOFT_MCP_AUTH_METHOD=azure` with your app's client ID.
 - **`server.py` invocation forms (all three work).** `microsoft-mcp` (console script, preferred), `python -m microsoft_mcp.server`, and `python src/microsoft_mcp/server.py` are all valid entry points. See `tests/test_server_entry.py` for regression coverage.
+- **Draft-first design.** `reply_email_draft`, `reply_all_email_draft`, and `forward_email_draft` always create drafts. Only `send_email_draft` sends. Callers that want to send immediately must call `send_email_draft` after the draft is created.
+- **Intel + bounces inject their clock.** `todo.parse_due_date()`, all `intel/` collectors, `intel/engine.py` functions, and `bounces.iter_folder_messages()` receive `today`/`now` as a parameter — never calling `datetime.now()` or `date.today()` internally. Tests must always pass an explicit datetime.
+- **`pyyaml` is now a required dependency** (added for inbox rules YAML import/export and the template engine). It is listed in `pyproject.toml` as `pyyaml>=6.0,<7`.

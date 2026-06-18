@@ -250,6 +250,8 @@ For multiple Microsoft accounts, create separate server entries:
 
 Tests use `unittest.mock` for mocking Azure auth and HTTP responses. The `conftest.py` provides shared fixtures. Focus is on unit testing logic and integration between modules since FastMCP decorators make direct function testing complex.
 
+**Test conventions.** Import modules under test with the `src.` prefix — `from src.microsoft_mcp import tools` (source files themselves use `from microsoft_mcp...` with no `src.`). Call a `@mcp.tool`-decorated function via its `.fn` accessor: `tools.scan_bounces.fn(...)`. Pure modules (`intel/`, `bounces.py`, `todo.py`) take a dependency-injected `request` callable and an injected `now`/`today`, so tests pass a fake `request` and a fixed datetime — never the real clock. `tests/test_tool_surface.py` guards that every mail-port tool stays registered; update it when adding/removing tools.
+
 **Single-account test fixture policy.** Tests that write MSAL token files (`{email}_access_token.json`, `{email}_refresh_only.txt`) or exercise `refresh_all_accounts` MUST use only one account identifier per test, canonicalized to `broach@cresa.com` (declared as `TEST_EMAIL` at the top of each affected test module). Multi-account fixtures on disk caused real-world auth issues during `refresh_all_accounts`, so the supported pattern — and the only pattern exercised in tests — is single-account. Mismatch/drift tests still write only one token file; they vary the JWT `upn` claim inside that file to simulate misconfiguration, not the filename.
 
 ## Development Guidelines
@@ -265,7 +267,7 @@ This repo ships a shared `.claude/` so every collaborator gets the same tooling:
 
 - `.claude/settings.json` — permissions allowlist, PostToolUse ruff hook, status line, PostCompact reminder. Committed.
 - `.claude/settings.local.json` — per-user overrides. Gitignored.
-- `.claude/commands/` — `/test`, `/lint`, `/format`, `/run`, `/auth`, `/auth-refresh`, `/auth-verify`, `/auth-status`, `/commit-push-pr`, `/techdebt`, `/bridge-regen`.
+- `.claude/commands/` — `/test`, `/lint`, `/format`, `/run`, `/auth`, `/auth-refresh`, `/auth-verify`, `/auth-status`, `/rules`, `/intel`, `/bounces`, `/commit-push-pr`, `/techdebt`, `/bridge-regen`.
 - `.claude/agents/` — `test-writer` (haiku), `code-simplifier` (haiku), `doc-sync` (haiku), `graph-reviewer` (sonnet).
 - `.claude/scripts/` — hook and statusline helpers (bash + jq).
 
@@ -291,3 +293,5 @@ nit: don't construct `httpx.AsyncClient` directly, use graph.request
 - **Draft-first design.** `reply_email_draft`, `reply_all_email_draft`, and `forward_email_draft` always create drafts. Only `send_email_draft` sends. Callers that want to send immediately must call `send_email_draft` after the draft is created.
 - **Intel + bounces inject their clock.** `todo.parse_due_date()`, all `intel/` collectors, `intel/engine.py` functions, and `bounces.iter_folder_messages()` receive `today`/`now` as a parameter — never calling `datetime.now()` or `date.today()` internally. Tests must always pass an explicit datetime.
 - **`pyyaml` is now a required dependency** (added for inbox rules YAML import/export and the template engine). It is listed in `pyproject.toml` as `pyyaml>=6.0,<7`.
+- **The ruff PostToolUse hook strips unused `_`-aliased imports mid-edit.** When you add `from . import bounces as _bounces` (or `from .intel import engine as _intel_engine`) to `tools.py` in one edit and the *first use* lands in a later edit, the `ruff check --fix` hook deletes the import as unused (F401) before the use exists — producing a runtime `NameError`. Add the import and at least one use in the **same** edit, or append ` # noqa: F401` if the use is genuinely elsewhere. This bit `_intel_engine` and `_bounces` during the mail port.
+- **`graph.request` takes no `headers` kwarg.** Its signature is `request(method, path, *, params=None, json=None, data=None, max_retries=3, auth=None)`. Anything that needs a per-call header (e.g. `Prefer: outlook.timezone`, or `$count=true` which requires `ConsistencyLevel: eventual`) cannot send it — convert/derive client-side instead (the intel calendar collector converts Graph UTC datetimes locally; sent-count paginates instead of using `$count`).

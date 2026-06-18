@@ -56,6 +56,7 @@ mcp-tool-responses/
 .claude/HANDOFF.md.consumed
 .claude/orchestration/
 .claude/agents/session-state.json
+.claude/telemetry/
 
 # Claude Code session transcripts (autosaved, dated)
 20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]-*.txt
@@ -64,4 +65,5 @@ mcp-tool-responses/
 .instance/
 outputs/
 codedb.snapshot
+TODO.md
 

@@ -99,12 +99,14 @@ class TestModuleIntegration:
         """Test that unified_search tool is properly defined."""
         from src.microsoft_mcp.tools import unified_search
 
-        # The @mcp.tool decorator wraps the function in a FunctionTool
-        # Test that the tool has expected attributes
-        assert hasattr(unified_search, "name")
-        assert unified_search.name == "unified_search"
-        assert hasattr(unified_search, "description")
-        assert "Microsoft Search API" in unified_search.description
+        # FastMCP 3.x: the @mcp.tool decorator returns the original function
+        # (no FunctionTool wrapper); name/description are derived from the
+        # function's __name__/__doc__, and the repo's compat shim re-exposes
+        # `.fn` for the documented calling convention.
+        assert unified_search.__name__ == "unified_search"
+        assert (
+            unified_search.__doc__ and "Microsoft Search API" in unified_search.__doc__
+        )
 
         # Test that the underlying function is accessible and has proper signature
         assert hasattr(unified_search, "fn")

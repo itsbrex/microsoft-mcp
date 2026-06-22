@@ -715,12 +715,13 @@ Python code with direct access to the live tool registry.
                 if getattr(tool, "name", None) not in self._excluded_tools
             ]
 
-        tools = await self._mcp._list_tools_middleware()
+        # FastMCP 3.x: _list_tools_middleware() was removed; list_tools() is
+        # the public accessor and already excludes disabled tools.
+        tools = await self._mcp.list_tools()
         return [
             tool
             for tool in tools
-            if getattr(tool, "enabled", True)
-            and getattr(tool, "name", None) not in self._excluded_tools
+            if getattr(tool, "name", None) not in self._excluded_tools
         ]
 
     def _make_tool_wrapper(self, tool_name: str) -> Callable[..., Any]:

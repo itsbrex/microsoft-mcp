@@ -151,9 +151,7 @@ def load_tools_module(monkeypatch):
 def test_teams_tools_are_hidden_from_msal_tool_list(load_tools_module):
     module = load_tools_module("msal")
 
-    tool_names = {
-        tool.name for tool in asyncio.run(module.mcp._list_tools_middleware())
-    }
+    tool_names = {tool.name for tool in asyncio.run(module.mcp.list_tools())}
 
     assert not (set(module.TEAMS_TOOL_NAMES) & tool_names)
 
@@ -161,9 +159,7 @@ def test_teams_tools_are_hidden_from_msal_tool_list(load_tools_module):
 def test_teams_tools_remain_available_for_azure_tool_list(load_tools_module):
     module = load_tools_module("azure")
 
-    tool_names = {
-        tool.name for tool in asyncio.run(module.mcp._list_tools_middleware())
-    }
+    tool_names = {tool.name for tool in asyncio.run(module.mcp.list_tools())}
 
     assert set(module.TEAMS_TOOL_NAMES) <= tool_names
 
@@ -171,5 +167,5 @@ def test_teams_tools_remain_available_for_azure_tool_list(load_tools_module):
 def test_teams_tools_cannot_be_called_under_msal(load_tools_module):
     module = load_tools_module("msal")
 
-    with pytest.raises(NotFoundError, match="Unknown tool: list_chat_messages"):
+    with pytest.raises(NotFoundError, match="Unknown tool: '?list_chat_messages'?"):
         asyncio.run(module.mcp._call_tool_mcp("list_chat_messages", {}))

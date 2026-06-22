@@ -11,6 +11,8 @@ Import convention follows the repo pattern:
     from src.microsoft_mcp import <module>
 """
 
+import asyncio
+
 from src.microsoft_mcp import tools
 
 # Mail-port tools, grouped by wave/family. Each name MUST stay registered.
@@ -66,7 +68,10 @@ EXPECTED_MAIL_PORT_TOOLS = {
 
 
 def _registered_tool_names() -> set[str]:
-    return set(tools.mcp._tool_manager._tools)
+    # FastMCP 3.x removed mcp._tool_manager. The local provider's list_tools()
+    # returns every registered tool (including those disabled for direct MCP
+    # exposure), matching the registration-coverage intent of this guard.
+    return {tool.name for tool in asyncio.run(tools.mcp._local_provider.list_tools())}
 
 
 def test_all_mail_port_tools_registered() -> None:

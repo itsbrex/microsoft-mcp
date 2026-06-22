@@ -69,6 +69,27 @@ if not logging.getLogger().hasHandlers():
 mcp = FastMCP("microsoft-graph-mcp")
 
 
+# FastMCP 3.x compatibility shim.
+# In FastMCP 3.0 the @_tool / @_prompt decorators return the original
+# undecorated function instead of a FunctionTool wrapper, which removed the
+# `.fn` accessor that the CLIs (rules/intel/bounces/signatures), internal
+# helpers in this module, and the entire test suite rely on to call a tool's
+# underlying function directly. These wrappers register the component via
+# mcp.tool/mcp.prompt and re-expose `.fn` as the function itself, preserving
+# the documented `tool.fn(...)` calling convention (which now simply calls the
+# raw function, exactly as the old `.fn` did).
+def _tool(func: Any) -> Any:
+    mcp.tool(func)
+    func.fn = func
+    return func
+
+
+def _prompt(func: Any) -> Any:
+    mcp.prompt(func)
+    func.fn = func
+    return func
+
+
 def _env_path(name: str) -> pl.Path | None:
     """Return os.getenv(name) wrapped in Path, or None if unset/empty."""
     value = os.getenv(name)
@@ -381,7 +402,7 @@ def _find_mail_folder(folder: str, include_hidden: bool = False) -> dict[str, An
 # ============================================================================
 
 
-@mcp.tool
+@_tool
 def list_accounts() -> list[dict[str, Any]]:
     """List all authenticated Microsoft accounts.
 
@@ -440,7 +461,7 @@ def list_accounts() -> list[dict[str, Any]]:
     return accounts
 
 
-@mcp.tool
+@_tool
 def set_active_account(account: str) -> dict[str, str]:
     """Switch the active Microsoft account.
 
@@ -507,7 +528,7 @@ def set_active_account(account: str) -> dict[str, str]:
     return {"status": "switched", "active_account": account}
 
 
-@mcp.tool
+@_tool
 def authenticate_new_account(email: str) -> dict[str, Any]:
     """Authenticate a new Microsoft account and store its tokens.
 
@@ -576,7 +597,7 @@ def authenticate_new_account(email: str) -> dict[str, Any]:
     }
 
 
-@mcp.tool
+@_tool
 def refresh_all_accounts() -> list[dict[str, Any]]:
     """Refresh access tokens for all saved Microsoft accounts.
 
@@ -626,7 +647,7 @@ def refresh_all_accounts() -> list[dict[str, Any]]:
     return results
 
 
-@mcp.tool
+@_tool
 def refresh_account(email: str) -> dict[str, Any]:
     """Refresh access token for a single Microsoft account.
 
@@ -669,7 +690,7 @@ def refresh_account(email: str) -> dict[str, Any]:
     return result
 
 
-@mcp.tool
+@_tool
 def force_reauthenticate_account(email: str) -> dict[str, Any]:
     """Clear saved tokens for an account and re-run MSAL device-code auth.
 
@@ -716,7 +737,7 @@ def force_reauthenticate_account(email: str) -> dict[str, Any]:
     return result
 
 
-@mcp.tool
+@_tool
 def verify_account_tokens(live: bool = False) -> list[dict[str, Any]]:
     """Verify that each saved token belongs to the account named in its filename.
 
@@ -767,7 +788,7 @@ def verify_account_tokens(live: bool = False) -> list[dict[str, Any]]:
     return results
 
 
-@mcp.tool
+@_tool
 def get_active_account() -> dict[str, Any]:
     """Get the currently active Microsoft account.
 
@@ -826,7 +847,7 @@ def _convert_to_markdown(html: str, mimetype: str = "text/html") -> str:
     ).text_content
 
 
-@mcp.tool
+@_tool
 def get_user_details(email: str | None = None) -> dict[str, Any]:
     """Get details about a user - either the logged-in user or another user by email address.
 
@@ -882,7 +903,7 @@ def get_user_details(email: str | None = None) -> dict[str, Any]:
         raise
 
 
-@mcp.prompt
+@_prompt
 def prepare_work_day():
     return """
     You are a helpful assistant that helps the user to prepare for their work day.
@@ -891,14 +912,14 @@ def prepare_work_day():
     """
 
 
-@mcp.prompt
+@_prompt
 def utcp_codemode_usage():
     """Guide assistants toward discovery-first code-mode workflows."""
 
     return CodeModeRuntime.AGENT_PROMPT_TEMPLATE
 
 
-@mcp.prompt
+@_prompt
 def inbox_triage():
     """Triage the inbox: rank, summarise, and surface action items in one pass."""
 
@@ -950,7 +971,7 @@ Return only the processed summary — not raw message payloads.
 """.strip()
 
 
-@mcp.prompt
+@_prompt
 def daily_briefing():
     """Morning briefing: upcoming events + unread email digest in one code-mode pass."""
 
@@ -992,7 +1013,7 @@ Keep the output compact. Do not return full message bodies.
 """.strip()
 
 
-@mcp.prompt
+@_prompt
 def meeting_prep(meeting_subject: str = ""):
     """Pre-meeting context: find related emails and attendee details before a meeting."""
 
@@ -1035,7 +1056,7 @@ Surface the most relevant context — avoid dumping full email bodies.
 """.strip()
 
 
-@mcp.prompt
+@_prompt
 def search_and_summarise(query: str = ""):
     """Search emails and calendar for a topic, then summarise findings."""
 
@@ -1072,7 +1093,7 @@ Return the digest, not raw payloads.
 """.strip()
 
 
-@mcp.tool
+@_tool
 def list_tools() -> dict[str, Any]:
     """List the active Microsoft MCP tool registry for integrated code-mode workflows.
 
@@ -1085,7 +1106,7 @@ def list_tools() -> dict[str, Any]:
     return {"namespace": runtime.namespace, "count": len(tools), "tools": tools}
 
 
-@mcp.tool
+@_tool
 def search_tools(task_description: str, limit: int = 10) -> dict[str, Any]:
     """Search the active Microsoft tool registry using a natural-language query."""
 
@@ -1099,7 +1120,7 @@ def search_tools(task_description: str, limit: int = 10) -> dict[str, Any]:
     }
 
 
-@mcp.tool
+@_tool
 def tools_info(tool_names: list[str]) -> dict[str, Any]:
     """Return detailed metadata and generated Python interfaces for selected tools."""
 
@@ -1108,7 +1129,7 @@ def tools_info(tool_names: list[str]) -> dict[str, Any]:
     return {"namespace": runtime.namespace, "count": len(tools), "tools": tools}
 
 
-@mcp.tool
+@_tool
 def get_required_keys_for_tool(tool_name: str) -> dict[str, Any]:
     """Return the required configuration keys for a code-mode-visible tool."""
 
@@ -1116,7 +1137,7 @@ def get_required_keys_for_tool(tool_name: str) -> dict[str, Any]:
     return _run_async(runtime.get_required_keys_for_tool(tool_name))
 
 
-@mcp.tool
+@_tool
 def call_tool_chain(
     code: str,
     timeout: float = 30.0,
@@ -1140,12 +1161,12 @@ def call_tool_chain(
     )
 
 
-@mcp.tool
+@_tool
 def is_logged_in() -> bool:
     return auth.exists_valid_token()
 
 
-@mcp.tool
+@_tool
 def login() -> str:
     """Ensure the user is authenticated and return user info.
     Raises an error if authentication fails.
@@ -1165,7 +1186,7 @@ def login() -> str:
         return "already logged in"
 
 
-@mcp.tool
+@_tool
 def list_mail_folders(
     parent_folder: str | None = None,
     recursive: bool = False,
@@ -1227,7 +1248,7 @@ def list_mail_folders(
         raise
 
 
-@mcp.tool
+@_tool
 def get_mail_folder(folder: str, include_hidden: bool = False) -> dict[str, Any]:
     """Get a mail folder by alias, ID, display name, or slash-delimited path."""
 
@@ -1259,7 +1280,7 @@ def get_mail_folder(folder: str, include_hidden: bool = False) -> dict[str, Any]
         raise
 
 
-@mcp.tool
+@_tool
 def create_mail_folder(
     display_name: str,
     parent_folder: str | None = None,
@@ -1295,7 +1316,7 @@ def create_mail_folder(
         raise
 
 
-@mcp.tool
+@_tool
 def rename_mail_folder(folder: str, new_display_name: str) -> dict[str, Any]:
     """Rename an Outlook mail folder."""
 
@@ -1332,7 +1353,7 @@ def rename_mail_folder(folder: str, new_display_name: str) -> dict[str, Any]:
         raise
 
 
-@mcp.tool
+@_tool
 def delete_mail_folder(folder: str) -> dict[str, Any]:
     """Delete an Outlook mail folder."""
 
@@ -1349,7 +1370,7 @@ def delete_mail_folder(folder: str) -> dict[str, Any]:
         raise
 
 
-@mcp.tool
+@_tool
 def list_master_categories(
     limit: int = 100,
     response_profile: str = "auto",
@@ -1387,7 +1408,7 @@ def list_master_categories(
         raise
 
 
-@mcp.tool
+@_tool
 def get_master_category(category: str) -> dict[str, Any]:
     """Get a master category by ID or display name."""
 
@@ -1405,7 +1426,7 @@ def get_master_category(category: str) -> dict[str, Any]:
         raise
 
 
-@mcp.tool
+@_tool
 def create_master_category(display_name: str, color: str) -> dict[str, Any]:
     """Create an Outlook master category with a display name and color."""
 
@@ -1441,7 +1462,7 @@ def create_master_category(display_name: str, color: str) -> dict[str, Any]:
         raise
 
 
-@mcp.tool
+@_tool
 def update_master_category(category: str, color: str) -> dict[str, Any]:
     """Update the color of an existing Outlook master category."""
 
@@ -1478,7 +1499,7 @@ def update_master_category(category: str, color: str) -> dict[str, Any]:
         raise
 
 
-@mcp.tool
+@_tool
 def delete_master_category(category: str) -> dict[str, Any]:
     """Delete an Outlook master category by ID or display name."""
 
@@ -1508,7 +1529,7 @@ def delete_master_category(category: str) -> dict[str, Any]:
         raise
 
 
-@mcp.tool
+@_tool
 def ensure_master_categories(
     categories: list[dict[str, str]],
     update_colors: bool = False,
@@ -1588,7 +1609,7 @@ def ensure_master_categories(
     }
 
 
-@mcp.tool
+@_tool
 def list_inbox_rules(response_profile: str = "auto") -> list[dict[str, Any]]:
     """List Outlook inbox rules (server-side message rules).
 
@@ -1620,7 +1641,7 @@ def list_inbox_rules(response_profile: str = "auto") -> list[dict[str, Any]]:
         raise
 
 
-@mcp.tool
+@_tool
 def get_inbox_rule(rule_id: str, response_profile: str = "auto") -> dict[str, Any]:
     """Get a single Outlook inbox rule by ID.
 
@@ -1656,7 +1677,7 @@ def get_inbox_rule(rule_id: str, response_profile: str = "auto") -> dict[str, An
         raise
 
 
-@mcp.tool
+@_tool
 def create_inbox_rule(
     display_name: str,
     sequence: int = 1,
@@ -1746,7 +1767,7 @@ def create_inbox_rule(
         raise
 
 
-@mcp.tool
+@_tool
 def update_inbox_rule(
     rule_id: str,
     display_name: str | None = None,
@@ -1866,7 +1887,7 @@ def update_inbox_rule(
         raise
 
 
-@mcp.tool
+@_tool
 def delete_inbox_rule(rule_id: str) -> dict[str, Any]:
     """Delete an Outlook inbox rule.
 
@@ -1885,7 +1906,7 @@ def delete_inbox_rule(rule_id: str) -> dict[str, Any]:
         raise
 
 
-@mcp.tool
+@_tool
 def toggle_inbox_rule(rule_id: str) -> dict[str, Any]:
     """Toggle an Outlook inbox rule between enabled and disabled.
 
@@ -1920,7 +1941,7 @@ def toggle_inbox_rule(rule_id: str) -> dict[str, Any]:
         raise
 
 
-@mcp.tool
+@_tool
 def reorder_inbox_rules(rule_ids_in_order: list[str]) -> list[dict]:
     """Reorder Outlook inbox rules by assigning each a new sequence number.
 
@@ -1949,7 +1970,7 @@ def reorder_inbox_rules(rule_ids_in_order: list[str]) -> list[dict]:
         raise
 
 
-@mcp.tool
+@_tool
 def export_inbox_rules(path: str | None = None) -> dict[str, Any]:
     """Export all Outlook inbox rules to a YAML string or file.
 
@@ -2004,7 +2025,7 @@ def export_inbox_rules(path: str | None = None) -> dict[str, Any]:
         raise
 
 
-@mcp.tool
+@_tool
 def import_inbox_rules(
     yaml_text: str | None = None,
     path: str | None = None,
@@ -2161,7 +2182,7 @@ def _validate_classify_as(classify_as: str) -> None:
         )
 
 
-@mcp.tool
+@_tool
 def list_focused_overrides(response_profile: str = "auto") -> list[dict[str, Any]]:
     """List Focused Inbox sender overrides.
 
@@ -2201,7 +2222,7 @@ def list_focused_overrides(response_profile: str = "auto") -> list[dict[str, Any
         raise
 
 
-@mcp.tool
+@_tool
 def create_focused_override(
     sender_email: str,
     classify_as: str = "focused",
@@ -2240,7 +2261,7 @@ def create_focused_override(
         raise
 
 
-@mcp.tool
+@_tool
 def update_focused_override(override_id: str, classify_as: str) -> dict[str, Any]:
     """Update the classification of a Focused Inbox sender override.
 
@@ -2269,7 +2290,7 @@ def update_focused_override(override_id: str, classify_as: str) -> dict[str, Any
         raise
 
 
-@mcp.tool
+@_tool
 def delete_focused_override(override_id: str) -> dict[str, Any]:
     """Delete a Focused Inbox sender override.
 
@@ -2288,7 +2309,7 @@ def delete_focused_override(override_id: str) -> dict[str, Any]:
         raise
 
 
-@mcp.tool
+@_tool
 def list_emails(
     folder: str = "inbox",
     limit: int = 10,
@@ -2405,7 +2426,7 @@ def list_emails(
         raise
 
 
-@mcp.tool
+@_tool
 def get_email(
     email_id: str,
     include_body: bool = True,
@@ -2642,7 +2663,7 @@ def _shape_email_draft(raw: dict[str, Any]) -> dict[str, Any]:
     return draft
 
 
-@mcp.tool
+@_tool
 def create_email_draft(
     draft_type: str = "new",
     email_id: str | None = None,
@@ -2797,7 +2818,7 @@ def create_email_draft(
         raise
 
 
-@mcp.tool
+@_tool
 def update_email_draft(
     email_id: str,
     to_recipients: list[str] | None = None,
@@ -2973,7 +2994,7 @@ def _create_reply_draft_impl(
         raise
 
 
-@mcp.tool
+@_tool
 def reply_email_draft(
     email_id: str,
     body: str = "",
@@ -3011,7 +3032,7 @@ def reply_email_draft(
     )
 
 
-@mcp.tool
+@_tool
 def reply_all_email_draft(
     email_id: str,
     body: str = "",
@@ -3050,7 +3071,7 @@ def reply_all_email_draft(
     )
 
 
-@mcp.tool
+@_tool
 def forward_email_draft(
     email_id: str,
     to: list[str],
@@ -3156,7 +3177,7 @@ def forward_email_draft(
         raise
 
 
-@mcp.tool
+@_tool
 def send_email_draft(draft_id: str) -> dict[str, Any]:
     """Send an existing draft message — the ONLY tool that puts mail on the wire.
 
@@ -3190,7 +3211,7 @@ def send_email_draft(draft_id: str) -> dict[str, Any]:
         raise
 
 
-@mcp.tool
+@_tool
 def list_signatures(account: str | None = None) -> list[dict[str, Any]]:
     """List local plain-text signatures available for use with draft tools.
 
@@ -3221,7 +3242,7 @@ def list_signatures(account: str | None = None) -> list[dict[str, Any]]:
     ]
 
 
-@mcp.tool
+@_tool
 def get_signature(
     name: str,
     account: str | None = None,
@@ -3534,7 +3555,7 @@ def _run_email_management_action(
     raise ValueError(f"Unsupported action '{action}'")
 
 
-@mcp.tool
+@_tool
 def mark_email_read(email_id: str, is_read: bool = True) -> dict[str, Any]:
     """Mark an email as read or unread.
 
@@ -3562,7 +3583,7 @@ def mark_email_read(email_id: str, is_read: bool = True) -> dict[str, Any]:
         raise
 
 
-@mcp.tool
+@_tool
 def set_email_categories(email_id: str, categories: list[str]) -> dict[str, Any]:
     """Replace the category labels on an email.
 
@@ -3593,7 +3614,7 @@ def set_email_categories(email_id: str, categories: list[str]) -> dict[str, Any]
         raise
 
 
-@mcp.tool
+@_tool
 def move_email(email_id: str, destination_folder: str) -> dict[str, Any]:
     """Move an email into another mailbox folder.
 
@@ -3625,7 +3646,7 @@ def move_email(email_id: str, destination_folder: str) -> dict[str, Any]:
         raise
 
 
-@mcp.tool
+@_tool
 def archive_email(email_id: str) -> dict[str, Any]:
     """Move an email into the archive folder."""
 
@@ -3646,7 +3667,7 @@ def archive_email(email_id: str) -> dict[str, Any]:
         raise
 
 
-@mcp.tool
+@_tool
 def delete_email(email_id: str) -> dict[str, Any]:
     """Delete an email from the mailbox."""
 
@@ -3671,7 +3692,7 @@ _MAILTIPS_DEFAULT_OPTIONS = [
 ]
 
 
-@mcp.tool
+@_tool
 def get_mailtips(
     emails: list[str],
     options: list[str] | None = None,
@@ -3739,7 +3760,7 @@ def get_mailtips(
         raise
 
 
-@mcp.tool
+@_tool
 def bulk_manage_emails(
     email_ids: list[str],
     action: str,
@@ -3825,7 +3846,7 @@ def bulk_manage_emails(
     }
 
 
-@mcp.tool
+@_tool
 def list_invite_messages(
     limit: int = 20,
     folder: str = "inbox",
@@ -3892,7 +3913,7 @@ def list_invite_messages(
         raise
 
 
-@mcp.tool
+@_tool
 def delete_invite_message(invite_message_id: str) -> dict[str, Any]:
     """Delete a meeting invite-style message from the mailbox."""
 
@@ -3910,7 +3931,7 @@ def delete_invite_message(invite_message_id: str) -> dict[str, Any]:
         raise
 
 
-@mcp.tool
+@_tool
 def list_events(
     days_ahead: int = 7,
     days_back: int = 0,
@@ -4000,7 +4021,7 @@ def list_events(
         raise
 
 
-@mcp.tool
+@_tool
 def get_event(event_id: str) -> dict[str, Any]:
     """Get complete details for a specific calendar event by its ID.
 
@@ -4040,7 +4061,7 @@ def get_event(event_id: str) -> dict[str, Any]:
         raise
 
 
-@mcp.tool
+@_tool
 def rsvp_to_event(
     event_id: str,
     response: str,
@@ -4093,7 +4114,7 @@ def rsvp_to_event(
         raise
 
 
-@mcp.tool
+@_tool
 def rsvp_to_invite_message(
     invite_message_id: str,
     response: str,
@@ -4155,7 +4176,7 @@ def rsvp_to_invite_message(
         raise
 
 
-@mcp.tool
+@_tool
 def check_availability(
     start: str,
     end: str,
@@ -4250,7 +4271,7 @@ def check_availability(
         raise
 
 
-@mcp.tool
+@_tool
 def list_contacts(
     limit: int = 50, response_profile: str = "auto"
 ) -> list[dict[str, Any]]:
@@ -4296,7 +4317,7 @@ def list_contacts(
         raise
 
 
-@mcp.tool
+@_tool
 def get_contact(contact_id: str) -> dict[str, Any]:
     """Get detailed information for a specific contact by ID.
 
@@ -4337,7 +4358,7 @@ def get_contact(contact_id: str) -> dict[str, Any]:
         raise
 
 
-@mcp.tool
+@_tool
 def list_files(
     path: str = "/",
     limit: int = 50,
@@ -4415,7 +4436,7 @@ def list_files(
         raise
 
 
-@mcp.tool
+@_tool
 def get_file(file_id: str, download_path: str) -> dict[str, Any]:
     """Download a file from OneDrive to a local file path.
 
@@ -4483,7 +4504,7 @@ def get_file(file_id: str, download_path: str) -> dict[str, Any]:
         raise
 
 
-@mcp.tool
+@_tool
 def get_attachment(email_id: str, attachment_id: str, save_path: str) -> dict[str, Any]:
     """Download an email attachment to a local file path.
 
@@ -4553,7 +4574,7 @@ def get_attachment(email_id: str, attachment_id: str, save_path: str) -> dict[st
         raise
 
 
-@mcp.tool
+@_tool
 def add_email_attachment(
     email_id: str,
     file_path: str,
@@ -4622,7 +4643,7 @@ def add_email_attachment(
         raise
 
 
-@mcp.tool
+@_tool
 def list_attachments(email_id: str) -> list[dict]:
     """List all attachments on an email message.
 
@@ -4674,7 +4695,7 @@ def list_attachments(email_id: str) -> list[dict]:
         raise
 
 
-@mcp.tool
+@_tool
 def download_attachments(
     email_id: str,
     save_dir: str,
@@ -4840,7 +4861,7 @@ def _analyze_search_error(error: Exception, request_payload: dict) -> str:
         return f"Unexpected error: {error_msg}"
 
 
-@mcp.tool
+@_tool
 def unified_search(
     query: str,
     entity_types: list[str] | None = None,
@@ -5251,7 +5272,7 @@ def _process_search_hit(
         return None
 
 
-@mcp.tool
+@_tool
 def search_files(
     query: str,
     limit: int = 50,
@@ -5320,7 +5341,7 @@ def search_files(
         raise
 
 
-@mcp.tool
+@_tool
 def search_emails(
     query: str,
     limit: int = 50,
@@ -5392,7 +5413,7 @@ def search_emails(
         raise
 
 
-@mcp.tool
+@_tool
 def search_events(
     query: str,
     limit: int = 50,
@@ -5443,7 +5464,7 @@ def search_events(
         raise
 
 
-@mcp.tool
+@_tool
 def search_contacts(
     query: str,
     limit: int = 50,
@@ -5501,7 +5522,7 @@ def search_contacts(
         raise
 
 
-@mcp.tool
+@_tool
 def list_chat_messages(
     chat_id: str | None = None,
     limit: int = 10,
@@ -5658,7 +5679,7 @@ def list_chat_messages(
         raise
 
 
-@mcp.tool
+@_tool
 def list_channel_messages(
     team_id: str | None = None,
     channel_id: str | None = None,
@@ -5836,7 +5857,7 @@ def list_channel_messages(
         raise
 
 
-@mcp.tool
+@_tool
 def get_chat_message(chat_id: str, message_id: str) -> dict[str, Any]:
     """Get detailed information about a specific chat message by its ID.
 
@@ -5915,7 +5936,7 @@ def get_chat_message(chat_id: str, message_id: str) -> dict[str, Any]:
         raise
 
 
-@mcp.tool
+@_tool
 def get_channel_message(
     team_id: str, channel_id: str, message_id: str
 ) -> dict[str, Any]:
@@ -6004,7 +6025,7 @@ def get_channel_message(
         raise
 
 
-@mcp.tool
+@_tool
 def search_chat_messages(
     query: str,
     limit: int = 50,
@@ -6080,7 +6101,7 @@ def search_chat_messages(
         raise
 
 
-@mcp.tool
+@_tool
 def search_channel_messages(
     query: str,
     team_id: str | None = None,
@@ -6188,11 +6209,15 @@ TEAMS_TOOL_NAMES = (
 
 
 def _list_internal_business_tools() -> list[Any]:
+    # FastMCP 3.x removed mcp._tool_manager. Code-mode needs *every* registered
+    # business tool, including those disabled for direct MCP exposure
+    # (codemode_only mode and MSAL Teams gating). server.list_tools() omits
+    # disabled tools, so enumerate the local provider, which includes them.
     tools: list[Any] = []
-    for tool_name, tool in mcp._tool_manager._tools.items():
-        if tool_name in CODE_MODE_TOOL_NAMES:
+    for tool in _run_async(mcp._local_provider.list_tools()):
+        if tool.name in CODE_MODE_TOOL_NAMES:
             continue
-        if auth_method == "msal" and tool_name in TEAMS_TOOL_NAMES:
+        if auth_method == "msal" and tool.name in TEAMS_TOOL_NAMES:
             continue
         tools.append(tool)
     return tools
@@ -6202,15 +6227,16 @@ def _configure_teams_tools_for_auth_method() -> None:
     if auth_method != "msal":
         return
 
+    registered = {tool.name for tool in _run_async(mcp.list_tools())}
     for tool_name in TEAMS_TOOL_NAMES:
-        tool = mcp._tool_manager._tools.get(tool_name)
-        if tool is None:
+        if tool_name not in registered:
             logger.warning(
                 "Expected Teams tool '%s' was not registered before MSAL gating",
                 tool_name,
             )
             continue
-        tool.disable()
+        # FastMCP 3.x removed Component.disable(); disable via the server.
+        mcp.disable(names={tool_name}, components={"tool"})
 
     logger.info("Disabled Teams tools for MSAL authentication method")
 
@@ -6223,10 +6249,13 @@ def _configure_public_tool_mode() -> None:
         logger.info("Using hybrid public tool mode")
         return
 
-    for tool_name, tool in mcp._tool_manager._tools.items():
-        if tool_name in CODE_MODE_TOOL_NAMES:
-            continue
-        tool.disable()
+    to_disable = {
+        tool.name
+        for tool in _run_async(mcp.list_tools())
+        if tool.name not in CODE_MODE_TOOL_NAMES
+    }
+    if to_disable:
+        mcp.disable(names=to_disable, components={"tool"})
 
     logger.info("Enabled code-mode-only public tool mode")
 
@@ -6587,7 +6616,7 @@ def _events_to_inbox_items(raw_events: list[dict[str, Any]]) -> list[InboxItem]:
     return items
 
 
-@mcp.tool
+@_tool
 def list_inbox_items(
     limit: int = 20,
     include_kinds: list[str] | None = None,
@@ -6707,7 +6736,7 @@ def list_inbox_items(
     return {"items": items, "meta": meta}
 
 
-@mcp.tool
+@_tool
 def get_inbox_item_detail(item_id: str, kind: str) -> dict[str, Any]:
     """Hydrate full details for a single inbox item.
 
@@ -6777,7 +6806,7 @@ def _resolve_todo_list(name_or_id: str, *, create_if_missing: bool = False) -> s
     raise ValueError(f"To-Do list '{name_or_id}' not found")
 
 
-@mcp.tool
+@_tool
 def list_todo_lists(response_profile: str = "auto") -> list[dict[str, Any]]:
     """List all Microsoft To-Do task lists for the current user.
 
@@ -6807,7 +6836,7 @@ def list_todo_lists(response_profile: str = "auto") -> list[dict[str, Any]]:
         raise
 
 
-@mcp.tool
+@_tool
 def create_todo_list(name: str) -> dict[str, Any]:
     """Create a new Microsoft To-Do task list.
 
@@ -6828,7 +6857,7 @@ def create_todo_list(name: str) -> dict[str, Any]:
         raise
 
 
-@mcp.tool
+@_tool
 def list_tasks(
     list_name: str,
     status: str | None = None,
@@ -6878,7 +6907,7 @@ def list_tasks(
         raise
 
 
-@mcp.tool
+@_tool
 def create_task(
     list_name: str,
     title: str,
@@ -6917,7 +6946,7 @@ def create_task(
         raise
 
 
-@mcp.tool
+@_tool
 def update_task(
     list_name: str,
     task_id: str,
@@ -6964,7 +6993,7 @@ def update_task(
         raise
 
 
-@mcp.tool
+@_tool
 def complete_task(list_name: str, task_id: str) -> dict[str, Any]:
     """Mark a task as completed in a To-Do list.
 
@@ -6991,7 +7020,7 @@ def complete_task(list_name: str, task_id: str) -> dict[str, Any]:
         raise
 
 
-@mcp.tool
+@_tool
 def delete_task(list_name: str, task_id: str) -> dict[str, Any]:
     """Delete a task from a To-Do list.
 
@@ -7012,7 +7041,7 @@ def delete_task(list_name: str, task_id: str) -> dict[str, Any]:
         raise
 
 
-@mcp.tool
+@_tool
 def list_checklist_items(list_name: str, task_id: str) -> list[dict[str, Any]]:
     """List all checklist items for a task in a To-Do list.
 
@@ -7040,7 +7069,7 @@ def list_checklist_items(list_name: str, task_id: str) -> list[dict[str, Any]]:
         raise
 
 
-@mcp.tool
+@_tool
 def add_checklist_item(
     list_name: str,
     task_id: str,
@@ -7079,7 +7108,7 @@ def add_checklist_item(
         raise
 
 
-@mcp.tool
+@_tool
 def update_checklist_item(
     list_name: str,
     task_id: str,
@@ -7125,7 +7154,7 @@ def update_checklist_item(
         raise
 
 
-@mcp.tool
+@_tool
 def delete_checklist_item(list_name: str, task_id: str, item_id: str) -> dict[str, Any]:
     """Delete a checklist item from a task in a To-Do list.
 
@@ -7155,7 +7184,7 @@ def delete_checklist_item(list_name: str, task_id: str, item_id: str) -> dict[st
         raise
 
 
-@mcp.tool
+@_tool
 def create_task_from_email(
     email_id: str,
     list_name: str,
@@ -7213,7 +7242,7 @@ def create_task_from_email(
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool
+@_tool
 def list_email_templates(category: str = "") -> list[dict]:
     """List available email/calendar templates bundled with microsoft-mcp.
 
@@ -7228,7 +7257,7 @@ def list_email_templates(category: str = "") -> list[dict]:
     return _templates.list_templates(category or None)
 
 
-@mcp.tool
+@_tool
 def get_template_placeholders(category: str, name: str) -> list[dict]:
     """Return the placeholder definitions for a specific template.
 
@@ -7247,7 +7276,7 @@ def get_template_placeholders(category: str, name: str) -> list[dict]:
     return [p for p in tpl.get("placeholders", []) if isinstance(p, dict)]
 
 
-@mcp.tool
+@_tool
 def render_email_template(category: str, name: str, data: dict) -> str:
     """Render a template with the supplied data and return the HTML body.
 
@@ -7266,7 +7295,7 @@ def render_email_template(category: str, name: str, data: dict) -> str:
     return _templates.render_template(category, name, data)
 
 
-@mcp.tool
+@_tool
 def find_template_variables(content: str) -> list[str]:
     """Scan content for ``{{var}}`` variable tokens and return their names.
 
@@ -7279,7 +7308,7 @@ def find_template_variables(content: str) -> list[str]:
     return _templates.find_template_variables(content)
 
 
-@mcp.tool
+@_tool
 def substitute_template_variables(
     content: str, values: dict, strict: bool = False
 ) -> str:
@@ -7303,7 +7332,7 @@ def substitute_template_variables(
         raise ValueError(str(exc)) from exc
 
 
-@mcp.tool
+@_tool
 def parse_email_signature(
     email_body: str,
     is_html: bool = False,
@@ -7343,7 +7372,7 @@ def parse_email_signature(
         raise
 
 
-@mcp.tool
+@_tool
 def normalize_phone_number(phone: str, region: str = "US") -> str:
     """Normalize a phone number string to E.164 format.
 
@@ -7375,7 +7404,7 @@ def normalize_phone_number(phone: str, region: str = "US") -> str:
 _INTEL_VALID_LEVELS = {"all", "critical", "important", "informational"}
 
 
-@mcp.tool
+@_tool
 def generate_morning_briefing(timezone: str = "UTC", limit: int = 10) -> dict:
     """Generate a comprehensive morning briefing for the current account.
 
@@ -7415,7 +7444,7 @@ def generate_morning_briefing(timezone: str = "UTC", limit: int = 10) -> dict:
         raise
 
 
-@mcp.tool
+@_tool
 def get_priority_signals(timezone: str = "UTC", level: str = "all") -> dict:
     """Get actionable priority signals bucketed by urgency level.
 
@@ -7465,7 +7494,7 @@ def get_priority_signals(timezone: str = "UTC", level: str = "all") -> dict:
         raise
 
 
-@mcp.tool
+@_tool
 def get_contact_intelligence(target_email: str, days: int = 30) -> dict:
     """Generate an intelligence report for a specific contact.
 
@@ -7504,7 +7533,7 @@ def get_contact_intelligence(target_email: str, days: int = 30) -> dict:
         raise
 
 
-@mcp.tool
+@_tool
 def get_end_of_day_recap(timezone: str = "UTC") -> dict:
     """Generate an end-of-day recap summarising today's activity.
 
@@ -7539,7 +7568,7 @@ def get_end_of_day_recap(timezone: str = "UTC") -> dict:
         raise
 
 
-@mcp.tool
+@_tool
 def scan_bounces(
     folder: str = "Inbox",
     limit: int = 200,

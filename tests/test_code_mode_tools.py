@@ -204,9 +204,7 @@ return {"done": True}
 def test_public_tool_registry_defaults_to_code_mode_only(load_tools_module):
     module = load_tools_module("msal")
 
-    tool_names = {
-        tool.name for tool in asyncio.run(module.mcp._list_tools_middleware())
-    }
+    tool_names = {tool.name for tool in asyncio.run(module.mcp.list_tools())}
 
     assert tool_names == set(module.CODE_MODE_TOOL_NAMES)
 
@@ -214,9 +212,7 @@ def test_public_tool_registry_defaults_to_code_mode_only(load_tools_module):
 def test_public_tool_registry_can_be_switched_back_to_hybrid(load_tools_module):
     module = load_tools_module("msal", tool_mode="hybrid")
 
-    tool_names = {
-        tool.name for tool in asyncio.run(module.mcp._list_tools_middleware())
-    }
+    tool_names = {tool.name for tool in asyncio.run(module.mcp.list_tools())}
 
     assert "list_emails" in tool_names
     assert "search_tools" in tool_names

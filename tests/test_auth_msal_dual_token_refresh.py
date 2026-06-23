@@ -84,6 +84,56 @@ def test_refresh_all_accounts_skips_outlook_sibling_files(tmp_path):
     assert idents == [TEST_EMAIL]  # not TEST_EMAIL_outlook
 
 
+def test_outlook_refresh_does_not_clobber_shared_refresh_token(tmp_path, monkeypatch):
+    # The shared {id}_refresh_only.txt must stay Graph-consented. An Outlook
+    # refresh response carries a rotated refresh token scoped to the Outlook
+    # grant; persisting it would make the next Graph `.default` refresh fail
+    # with AADSTS65002. The outlook leg must leave the shared token untouched.
+    _seed_graph_account(tmp_path, TEST_EMAIL, valid=False)
+    refresh_path = tmp_path / f"{TEST_EMAIL}_refresh_only.txt"
+    assert refresh_path.read_text() == "shared-refresh"
+
+    monkeypatch.setattr(
+        auth_msal.MSALRefreshTokenAuth,
+        "_refresh_access_token",
+        lambda self, rt: {
+            "access_token": "n",
+            "refresh_token": "outlook-rotated-token",  # MUST NOT be persisted
+            "expires_in": 3600,
+            "scope": auth_msal.OUTLOOK_SCOPE,
+        },
+    )
+    result = auth_msal.refresh_account(
+        TEST_EMAIL, tokens_dir=tmp_path, api_type="outlook"
+    )
+    assert result["status"] == "refreshed"
+    # Shared refresh token unchanged — still the Graph-consented one.
+    assert refresh_path.read_text() == "shared-refresh"
+
+
+def test_graph_refresh_does_persist_rotated_refresh_token(tmp_path, monkeypatch):
+    # The Graph leg is the canonical writer: a rotated Graph refresh token
+    # SHOULD overwrite the shared {id}_refresh_only.txt.
+    _seed_graph_account(tmp_path, TEST_EMAIL, valid=False)
+    refresh_path = tmp_path / f"{TEST_EMAIL}_refresh_only.txt"
+
+    monkeypatch.setattr(
+        auth_msal.MSALRefreshTokenAuth,
+        "_refresh_access_token",
+        lambda self, rt: {
+            "access_token": "n",
+            "refresh_token": "graph-rotated-token",
+            "expires_in": 3600,
+            "scope": auth_msal.GRAPH_SCOPE,
+        },
+    )
+    result = auth_msal.refresh_account(
+        TEST_EMAIL, tokens_dir=tmp_path, api_type="graph"
+    )
+    assert result["status"] == "refreshed"
+    assert refresh_path.read_text() == "graph-rotated-token"
+
+
 def test_outlook_refresh_persists_outlook_scope_when_response_omits_scope(
     tmp_path, monkeypatch
 ):

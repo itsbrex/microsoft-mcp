@@ -332,10 +332,23 @@ class MSALRefreshTokenAuth:
 
         logger.info(f"Access token saved, expires at: {expires_at}")
 
-        # 2. Save refresh token if provided
-        if refresh_token:
+        # 2. Save refresh token if provided — but ONLY from the Graph leg.
+        # The refresh token is shared across api_types ({id}_refresh_only.txt),
+        # and Azure rotates it on every refresh. An Outlook refresh response
+        # carries a refresh token scoped to the Outlook grant; persisting it
+        # would clobber the Graph-consented token and make the next Graph
+        # `.default` refresh fail with AADSTS65002 (first-party preauthorization).
+        # outlook-creds enforces the same rule (get_oauth_tokens.py: only the
+        # graph response updates the shared refresh token).
+        if refresh_token and self.api_type == "graph":
             self._secure_write_file(self._refresh_token_path(), refresh_token)
             logger.info("Refresh token saved")
+        elif refresh_token:
+            logger.info(
+                "Skipping refresh-token persist for api_type=%s (shared refresh "
+                "token stays Graph-consented)",
+                self.api_type,
+            )
 
         # 3. Save raw access token for easy extraction
         self._secure_write_file(self._access_token_raw_path(), access_token)

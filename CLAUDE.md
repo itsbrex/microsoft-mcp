@@ -58,23 +58,28 @@ uvx ruff check --fix --unsafe-fixes .
   - Global auth instance via `set_auth_instance()`/`get_auth_instance()`
 
 - **`tools.py`** - FastMCP tool implementations (109 registered tools)
-  - Account Management (8 tools): `list_accounts`, `set_active_account`, `get_active_account`, `authenticate_new_account`, `refresh_all_accounts`, `refresh_account`, `force_reauthenticate_account`, `verify_account_tokens`
-  - Email (9 tools): list, get, send, reply, move, delete, attachments
-  - Calendar (7 tools): events, availability, responses
-  - Contacts (6 tools): CRUD + search
-  - Files (6 tools): OneDrive operations
-  - Teams (6 tools): chat and channel messages
+  - Account Management (9 tools): `list_accounts`, `set_active_account`, `get_active_account`, `get_user_details`, `authenticate_new_account`, `refresh_all_accounts`, `refresh_account`, `force_reauthenticate_account`, `verify_account_tokens`
+  - Auth (2 tools): `is_logged_in`, `login`
+  - Code-Mode / Tool Registry (5 tools): `list_tools`, `search_tools`, `tools_info`, `get_required_keys_for_tool`, `call_tool_chain`
+  - Mail Folders (5 tools): `list_mail_folders`, `get_mail_folder`, `create_mail_folder`, `rename_mail_folder`, `delete_mail_folder`
+  - Master Categories (6 tools): `list_master_categories`, `get_master_category`, `create_master_category`, `update_master_category`, `delete_master_category`, `ensure_master_categories`
+  - Email (13 tools): `list_emails`, `get_email`, `create_email_draft`, `update_email_draft`, `mark_email_read`, `set_email_categories`, `move_email`, `archive_email`, `delete_email`, `bulk_manage_emails`, `list_invite_messages`, `delete_invite_message`, `get_mailtips`
+  - Reply/Forward Drafts (4 tools): `reply_email_draft`, `reply_all_email_draft`, `forward_email_draft`, `send_email_draft` — `send_email_draft` is the only tool that sends to the wire; all others create drafts
   - Signatures (2 read-only tools): `list_signatures`, `get_signature` — the assistant can inspect local plain-text signatures but cannot mutate them.
+  - Attachments (4 tools): `get_attachment`, `add_email_attachment`, `list_attachments`, `download_attachments`
   - Inbox Rules (9 tools): `list_inbox_rules`, `get_inbox_rule`, `create_inbox_rule`, `update_inbox_rule`, `delete_inbox_rule`, `toggle_inbox_rule`, `reorder_inbox_rules`, `export_inbox_rules`, `import_inbox_rules`
   - Focused Inbox Overrides (4 tools): `list_focused_overrides`, `create_focused_override`, `update_focused_override`, `delete_focused_override`
-  - Reply/Forward Drafts (4 tools): `reply_email_draft`, `reply_all_email_draft`, `forward_email_draft`, `send_email_draft` — `send_email_draft` is the only tool that sends to the wire; all others create drafts
-  - MailTips + Attachments (3 tools): `get_mailtips`, `list_attachments`, `download_attachments`
-  - Microsoft To-Do (8 tools): `list_todo_lists`, `create_todo_list`, `list_tasks`, `create_task`, `update_task`, `complete_task`, `delete_task`, `create_task_from_email`
+  - Calendar (5 tools): `list_events`, `get_event`, `rsvp_to_event`, `rsvp_to_invite_message`, `check_availability`
+  - Contacts (2 tools): `list_contacts`, `get_contact`
+  - Files (2 tools): `list_files`, `get_file`
+  - Search (5 tools): `unified_search`, `search_files`, `search_emails`, `search_events`, `search_contacts`
+  - Teams (6 tools): chat and channel messages (disabled under MSAL)
+  - Assistant-Native Inbox (2 tools): `list_inbox_items`, `get_inbox_item_detail`
+  - Microsoft To-Do (12 tools): `list_todo_lists`, `create_todo_list`, `list_tasks`, `create_task`, `update_task`, `complete_task`, `delete_task`, `list_checklist_items`, `add_checklist_item`, `update_checklist_item`, `delete_checklist_item`, `create_task_from_email`
   - Email Templates (5 tools): `list_email_templates`, `render_email_template`, `find_template_variables`, `get_template_placeholders`, `substitute_template_variables`
   - Signature Parser + Phone (2 tools): `parse_email_signature`, `normalize_phone_number`
   - Intel Reports (4 tools): `generate_morning_briefing`, `get_priority_signals`, `get_contact_intelligence`, `get_end_of_day_recap`
   - Bounce Scanning (1 tool): `scan_bounces`
-  - Search: unified search across all services with KQL support
   - Initializes global auth instance based on `MICROSOFT_MCP_AUTH_METHOD`
 
 - **`signatures.py`** - Local plain-text signature store
@@ -116,6 +121,25 @@ uvx ruff check --fix --unsafe-fixes .
   - `intel/analyzers/`: `priority.py` (`score_priorities`), `relationships.py` (`analyze_relationships`), `schedule.py` (`analyze_schedule`).
   - `intel/engine.py`: `generate_briefing()`, `generate_signals()`, `generate_contact_report()`, `generate_recap()` — orchestrate collectors + analyzers and return typed dicts (`BriefingReport`, `SignalsReport`, `ContactReport`, `RecapReport` from `intel/types.py`). All take an injected `request` callable and injected `now` datetime.
   - `intel_cli.py`: CLI exposed two ways — standalone `microsoft-mcp-intel <cmd>` and `microsoft-mcp intel <cmd>`. Subcommands: `briefing [--timezone TZ] [--limit N] [--json]`, `signals [--timezone TZ] [--level all|critical|important|informational] [--json]`, `contact <email> [--days N] [--json]`, `recap [--timezone TZ] [--json]`.
+
+- **`code_mode.py`** - Code-mode execution environment
+  - Enables `MICROSOFT_MCP_TOOL_MODE=codemode_only` which restricts the server to the 5 code-mode tools (`list_tools`, `search_tools`, `tools_info`, `get_required_keys_for_tool`, `call_tool_chain`) and disables all other tools.
+  - Loads a local UTCP bridge distribution from `MICROSOFT_MCP_CODE_MODE_DIR` or fetches it remotely.
+
+- **`utcp_bridge_config.py`** - UTCP bridge configuration
+  - Generates bridge configuration for code-mode. Exposed as `microsoft-mcp-utcp-config` console script.
+
+- **`inbox_models.py`** - Inbox data models for assistant-native inbox tools
+  - Pydantic-style models for inbox items, ranking metadata, and response shaping.
+
+- **`inbox_ranking.py`** - Inbox ranking and prioritization
+  - Scores and sorts inbox items by urgency, sender importance, and recency for the assistant-native inbox view.
+
+- **`response_shaping.py`** - Response profile shaping logic
+  - Transforms raw Graph API responses into shaped formats controlled by `MICROSOFT_MCP_RESPONSE_PROFILE` (`legacy` or `assistant`).
+
+- **`search_cache.py`** - Search result caching
+  - In-memory cache for search results to avoid redundant Graph API calls within a session.
 
 - **`bounces.py`** + **`bounces_cli.py`** - NDR/bounce classifier and folder scanner
   - `bounces.py`: pure module with injected request — pattern catalogs (`SUBJECT_KEYWORDS`, `SENDER_PATTERNS`, `BODY_PATTERNS`, `BOUNCE_REASONS`, `STRONG_SUBJECT_INDICATORS`, `EXCLUDED_SUBJECT_PREFIXES`); `is_bounce_message()`, `determine_bounce_reason()`, `classify_bounce_message()`, `parse_dsn_content()`, `iter_folder_messages(request, folder_id, *, limit)` (follows `@odata.nextLink`), `scan_folder(request, folder_id, *, limit)`, `write_csv(rows, path)`.
@@ -172,6 +196,15 @@ uvx ruff check --fix --unsafe-fixes .
 
 **Email Templates:**
 - `MICROSOFT_MCP_TEMPLATES_DIR` (optional) - user template directory (default `~/.config/microsoft-mcp/templates/`). Templates here shadow built-in templates of the same `(category, name)` key.
+
+**Code-Mode:**
+- `MICROSOFT_MCP_TOOL_MODE` (optional) - set to `codemode_only` to restrict the server to the 5 code-mode tools only.
+- `MICROSOFT_MCP_CODE_MODE_DIR` (optional) - local directory for code-mode UTCP bridge dist files.
+- `MICROSOFT_MCP_UTCP_BRIDGE_COMMAND` (optional) - override command for the UTCP code-mode bridge subprocess.
+
+**Compatibility:**
+- `OUTLOOK_CREDS_CONFIG_DIR` (optional) - config directory for `outlook-creds` token compatibility.
+- `MICROSOFT_MCP_FORCE_COLOR` (optional) - set to `1` to force ANSI color output in CLIs even when stdout is not a TTY.
 
 ## MCP Configuration Format
 
@@ -267,7 +300,7 @@ This repo ships a shared `.claude/` so every collaborator gets the same tooling:
 
 - `.claude/settings.json` — permissions allowlist, PostToolUse ruff hook, status line, PostCompact reminder. Committed.
 - `.claude/settings.local.json` — per-user overrides. Gitignored.
-- `.claude/commands/` — `/test`, `/lint`, `/format`, `/run`, `/auth`, `/auth-refresh`, `/auth-verify`, `/auth-status`, `/rules`, `/intel`, `/bounces`, `/commit-push-pr`, `/techdebt`, `/bridge-regen`.
+- `.claude/commands/` — `/test`, `/lint`, `/format`, `/run`, `/auth`, `/auth-refresh`, `/auth-verify`, `/auth-status`, `/rules`, `/intel`, `/bounces`, `/commit-push-pr`, `/techdebt`, `/bridge-regen`, `/weekly-audit`, `/triage-inbox`, `/declutter-inbox`.
 - `.claude/agents/` — `test-writer` (haiku), `code-simplifier` (haiku), `doc-sync` (haiku), `graph-reviewer` (sonnet).
 - `.claude/scripts/` — hook and statusline helpers (bash + jq).
 
@@ -294,4 +327,13 @@ nit: don't construct `httpx.AsyncClient` directly, use graph.request
 - **Intel + bounces inject their clock.** `todo.parse_due_date()`, all `intel/` collectors, `intel/engine.py` functions, and `bounces.iter_folder_messages()` receive `today`/`now` as a parameter — never calling `datetime.now()` or `date.today()` internally. Tests must always pass an explicit datetime.
 - **`pyyaml` is now a required dependency** (added for inbox rules YAML import/export and the template engine). It is listed in `pyproject.toml` as `pyyaml>=6.0,<7`.
 - **The ruff PostToolUse hook strips unused `_`-aliased imports mid-edit.** When you add `from . import bounces as _bounces` (or `from .intel import engine as _intel_engine`) to `tools.py` in one edit and the *first use* lands in a later edit, the `ruff check --fix` hook deletes the import as unused (F401) before the use exists — producing a runtime `NameError`. Add the import and at least one use in the **same** edit, or append ` # noqa: F401` if the use is genuinely elsewhere. This bit `_intel_engine` and `_bounces` during the mail port.
-- **`graph.request` takes no `headers` kwarg.** Its signature is `request(method, path, *, params=None, json=None, data=None, max_retries=3, auth=None)`. Anything that needs a per-call header (e.g. `Prefer: outlook.timezone`, or `$count=true` which requires `ConsistencyLevel: eventual`) cannot send it — convert/derive client-side instead (the intel calendar collector converts Graph UTC datetimes locally; sent-count paginates instead of using `$count`).
+- **No `auth force-reauthenticate` CLI subcommand.** The `auth` CLI exposes exactly `refresh`, `verify`, `status`, `list`, `doctor`, `test` (run `microsoft-mcp auth -h`). Force re-auth is **`auth refresh <email> --force`** — `--force` is a bare flag (clears that account's tokens + re-runs device-code flow), the email is the positional arg: `microsoft-mcp auth refresh broach@cresa.com --force --api both`. The MCP *tool* `force_reauthenticate_account` exists, but there is **no** matching `force-reauthenticate` CLI command — don't invent one.
+- **Refresh token is persisted only from the Graph leg.** `{id}_refresh_only.txt` is shared across api_types and Azure rotates it on every refresh. An Outlook refresh response carries a refresh token scoped to the *Outlook* grant; persisting it would clobber the Graph-consented token and make the next Graph `.default` refresh fail with **AADSTS65002** (first-party preauthorization). `auth_msal._save_tokens` guards this: `if refresh_token and self.api_type == "graph"`. This mirrors outlook-creds `get_oauth_tokens.py` (only the graph response updates the shared refresh token). Regression: `test_auth_msal_dual_token_refresh.py::test_outlook_refresh_does_not_clobber_shared_refresh_token`.
+- **`graph.request` takes no `headers` kwarg.** Its signature is `request(method, path, params=None, json=None, data=None, max_retries=3, auth=None)` (all parameters are positional-or-keyword, no `*` separator). Anything that needs a per-call header (e.g. `Prefer: outlook.timezone`, or `$count=true` which requires `ConsistencyLevel: eventual`) cannot send it — convert/derive client-side instead (the intel calendar collector converts Graph UTC datetimes locally; sent-count paginates instead of using `$count`).
+- **Code-mode `call_tool_chain` sandbox gotchas.** When driving tools via `mcp__microsoft-mcp__call_tool_chain` (the `microsoft.<tool>()` namespace):
+  - **Results truncate at ~1800 chars.** Do all filtering/classification *inside* the sandbox and `print()` compact output; never expect a full multi-email dump to come back.
+  - **`list_emails` / `list_*` return a list directly**, not `{"result": [...]}`. Guard with `x if isinstance(x, list) else x.get("result", [])`.
+  - **Dunder attribute access is banned** (`x.__name__`, `type(x).__name__` → `invalid attribute name` error). Use `isinstance()`.
+  - **Email `body` is a dict** `{"contentType": ..., "content": ...}` — unwrap `body.get("content")` before running regex/text logic.
+  - **No raw `conversationId` is exposed.** Derive a thread token from `conversation_url`: `url.split("readconv/")[1].split("?")[0]`. Same token across inbox/sent/drafts = same thread → use it for reply/draft de-duplication.
+  - **The harness renders `[REDACTED_EMAIL]` in tool output**, but matching runs server-side on the real values, so address comparisons inside the sandbox are accurate despite the redaction. Reusable triage/declutter pipelines built on these facts live in `.claude/commands/triage-inbox.md` and `declutter-inbox.md`.

@@ -8,8 +8,8 @@ Refresh saved MSAL access tokens. Arguments determine scope:
 
 - no arg → refresh all saved accounts (mirrors `refresh_all_accounts()`)
 - `<email>` → refresh only that account
-- `--api graph|outlook|both` → choose which token(s) to mint (`both` mints Graph + Outlook tokens off the shared refresh token)
-- `--force <email>` → clear the saved tokens for `<email>` and re-trigger the MSAL device-code flow
+- `--api graph|outlook|both` → choose which token(s) to mint (`both` mints Graph + Outlook tokens off the shared refresh token; default `graph`)
+- `<email> --force` → clear the saved tokens for `<email>` and re-trigger the MSAL device-code flow (`--force` is a bare flag, the email is the positional arg — e.g. `microsoft-mcp auth refresh broach@cresa.com --force --api both`)
 
 Required env: `MICROSOFT_MCP_AUTH_METHOD=msal`, `MICROSOFT_MCP_CLIENT_ID`. The device-code flow blocks until the user completes the browser flow.
 

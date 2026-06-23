@@ -183,6 +183,7 @@ uvx ruff check --fix --unsafe-fixes .
 - `MICROSOFT_MCP_TOKENS_DIR` (optional) - token storage directory (defaults to `~/.config/microsoft-mcp/tokens/`)
 - `MICROSOFT_MCP_ACCOUNT_ID` (optional) - account identifier for token file naming (defaults to "default", typically set to user's email)
 - `MICROSOFT_MCP_REFRESH_ON_STARTUP` (optional) - defaults to "1" (on for MSAL). Set to "0" to skip the refresh-all-accounts pass at server startup.
+- `MICROSOFT_MCP_NONINTERACTIVE` (optional) - set to `1`/`true`/`yes`/`on` to **disable** the interactive device-code fallback. When a silent token refresh fails (expired/revoked/65002), the code normally falls through to an interactive device-code flow on stderr; in a headless deployment (cron, CI, detached service) that would hang forever. With this set, those paths raise a clear actionable error instead. **Off by default** — interactive behavior is unchanged. Does not affect the explicit `authenticate`/`force_reauthenticate` entry points (those are interactive by contract).
 
 **Response Shaping:**
 - `MICROSOFT_MCP_RESPONSE_PROFILE` (optional) - `legacy` (default) or `assistant`. Controls response shaping for list/search tools. Individual tool calls can override via `response_profile` parameter.

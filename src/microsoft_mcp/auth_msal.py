@@ -64,6 +64,36 @@ CONFIG_DIR_MODE = stat.S_IRWXU  # 0o700
 TOKEN_EXPIRY_BUFFER_SECONDS = 60
 
 
+def _interactive_auth_allowed() -> bool:
+    """Whether a silent-refresh failure may fall through to interactive auth.
+
+    The device-code flow prints a code to stderr and blocks until the user
+    completes it in a browser. That is fine for an interactive server (the
+    documented ``authenticate_new_account`` flow), but in a fully headless
+    deployment (cron, CI, a detached service nobody is watching) the fallback
+    would hang forever on a refresh failure.
+
+    Opt out by setting ``MICROSOFT_MCP_NONINTERACTIVE`` to a truthy value
+    (``1``/``true``/``yes``/``on``); callers then get a clear, actionable
+    error instead of a hang. This is **off by default** so existing
+    interactive behavior is unchanged. Note: stdin is intentionally NOT used
+    as a signal — the MCP server runs over a stdio pipe (never a TTY), yet
+    its stderr device-code flow works, so a TTY check would break it.
+    """
+    val = os.getenv("MICROSOFT_MCP_NONINTERACTIVE", "").strip().lower()
+    return val not in ("1", "true", "yes", "on")
+
+
+def _require_interactive_or_raise(identifier: str) -> None:
+    """Raise a clear error when interactive auth is disabled (headless guard)."""
+    if not _interactive_auth_allowed():
+        raise RuntimeError(
+            "Token refresh failed and interactive authentication is disabled "
+            "(MICROSOFT_MCP_NONINTERACTIVE is set). Re-authenticate out of band, "
+            f"e.g.: microsoft-mcp auth refresh {identifier} --force"
+        )
+
+
 def _normalize_account_identifier(identifier: str) -> str:
     """Normalize account identifier to outlook-creds directory format."""
     return identifier.replace("@", "_").replace(".", "_")
@@ -664,7 +694,9 @@ class MSALRefreshTokenAuth:
                 "No refresh token found; initiating interactive authentication"
             )
 
-        # Silent refresh unavailable — prompt the user via device code flow.
+        # Silent refresh unavailable — prompt the user via device code flow,
+        # unless interactive auth is disabled (headless guard).
+        _require_interactive_or_raise(self.account_identifier)
         self.authenticate()
         token_data = self._load_access_token_data()
         if not token_data or not token_data.get("access_token"):
@@ -693,6 +725,7 @@ class MSALRefreshTokenAuth:
             logger.warning(
                 f"Force-refresh failed ({e}); falling back to interactive auth"
             )
+            _require_interactive_or_raise(self.account_identifier)
             self.clear_cache()
             self.authenticate()
             # Tokens are now saved on disk; graph.request will call get_token()
@@ -1190,6 +1223,7 @@ def force_reauthenticate(
     tokens_dir: Optional[Path] = None,
     client_id: Optional[str] = None,
     tenant_id: Optional[str] = None,
+    also_outlook: bool = False,
 ) -> dict[str, Any]:
     """Clear an account's saved tokens and re-run the MSAL device-code flow.
 
@@ -1206,6 +1240,12 @@ def force_reauthenticate(
         client_id: MSAL client ID. Defaults to env var or Microsoft Office
             public client ID.
         tenant_id: MSAL tenant ID. Defaults to env var or "common".
+        also_outlook: When True, after the Graph re-auth, mint an Outlook
+            access token off the freshly-minted shared refresh token (one
+            extra silent refresh, no second prompt). The Outlook leg never
+            overwrites the shared refresh token (see _save_tokens), so this
+            is safe. Mirrors ``auth refresh --api both`` but for the re-auth
+            path.
 
     Returns:
         Dict with keys:
@@ -1215,6 +1255,9 @@ def force_reauthenticate(
         - signed_in_as (str | None): identifier reported by the new token
           (from JWT claims), useful for detecting drift between
           ``identifier`` and the account the user actually signed into
+        - outlook (dict | None): present only when ``also_outlook`` is True —
+          the result dict from the Outlook refresh (identifier/status/
+          expires_at/error/api_type), or None if it could not be attempted.
 
     Raises:
         ValueError: if identifier is empty.
@@ -1247,9 +1290,20 @@ def force_reauthenticate(
         or claims.get("unique_name")
     )
 
-    return {
+    out: dict[str, Any] = {
         "identifier": identifier,
         "status": "reauthenticated",
         "expires_at": expires_at,
         "signed_in_as": signed_in_as,
     }
+
+    if also_outlook:
+        # Mint the Outlook token off the now-fresh shared refresh token. This
+        # is a silent refresh (no second device-code prompt).
+        logger.info(f"force_reauthenticate: minting Outlook token for '{identifier}'")
+        out["outlook"] = _refresh_one(
+            identifier, resolved_dir, client_id, tenant_id, api_type="outlook"
+        )
+        out["outlook"]["api_type"] = "outlook"
+
+    return out

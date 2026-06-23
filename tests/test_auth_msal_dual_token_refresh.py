@@ -84,6 +84,126 @@ def test_refresh_all_accounts_skips_outlook_sibling_files(tmp_path):
     assert idents == [TEST_EMAIL]  # not TEST_EMAIL_outlook
 
 
+def test_interactive_auth_allowed_default_and_opt_out(monkeypatch):
+    monkeypatch.delenv("MICROSOFT_MCP_NONINTERACTIVE", raising=False)
+    assert auth_msal._interactive_auth_allowed() is True
+    for val in ("1", "true", "YES", "on"):
+        monkeypatch.setenv("MICROSOFT_MCP_NONINTERACTIVE", val)
+        assert auth_msal._interactive_auth_allowed() is False
+    monkeypatch.setenv("MICROSOFT_MCP_NONINTERACTIVE", "0")
+    assert auth_msal._interactive_auth_allowed() is True
+
+
+def test_acquire_token_data_raises_when_noninteractive_and_no_refresh(
+    tmp_path, monkeypatch
+):
+    # No refresh token on disk + NONINTERACTIVE set → raise instead of hanging
+    # on an interactive device-code flow. authenticate() must NOT be called.
+    monkeypatch.setenv("MICROSOFT_MCP_NONINTERACTIVE", "1")
+    auth = auth_msal.MSALRefreshTokenAuth(
+        tokens_dir=tmp_path, account_identifier=TEST_EMAIL
+    )
+    called = {"auth": False}
+
+    def boom_authenticate(self):
+        called["auth"] = True
+        return {}
+
+    monkeypatch.setattr(
+        auth_msal.MSALRefreshTokenAuth, "authenticate", boom_authenticate
+    )
+    import pytest
+
+    with pytest.raises(RuntimeError, match="MICROSOFT_MCP_NONINTERACTIVE"):
+        auth.get_token()
+    assert called["auth"] is False
+
+
+def test_force_refresh_raises_when_noninteractive_and_refresh_fails(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("MICROSOFT_MCP_NONINTERACTIVE", "1")
+    _seed_graph_account(tmp_path, TEST_EMAIL, valid=False)
+    auth = auth_msal.MSALRefreshTokenAuth(
+        tokens_dir=tmp_path, account_identifier=TEST_EMAIL
+    )
+    monkeypatch.setattr(
+        auth_msal.MSALRefreshTokenAuth,
+        "_refresh_access_token",
+        lambda self, rt: (_ for _ in ()).throw(RuntimeError("AADSTS65002")),
+    )
+    called = {"auth": False}
+    monkeypatch.setattr(
+        auth_msal.MSALRefreshTokenAuth,
+        "authenticate",
+        lambda self: called.__setitem__("auth", True) or {},
+    )
+    import pytest
+
+    with pytest.raises(RuntimeError, match="MICROSOFT_MCP_NONINTERACTIVE"):
+        auth.force_refresh()
+    assert called["auth"] is False
+
+
+def test_force_reauthenticate_also_outlook_mints_outlook(tmp_path, monkeypatch):
+    # After the Graph device-flow re-auth, also_outlook=True must mint an
+    # Outlook token off the fresh shared refresh token (silent, no 2nd prompt).
+    def fake_authenticate(self):
+        self._save_tokens(
+            access_token="a.b.c",
+            refresh_token="fresh-shared-rt",
+            expires_in=3600,
+            scopes=auth_msal.GRAPH_SCOPE,
+            email=TEST_EMAIL,
+        )
+        return {"access_token": "a.b.c", "username": TEST_EMAIL}
+
+    monkeypatch.setattr(
+        auth_msal.MSALRefreshTokenAuth, "authenticate", fake_authenticate
+    )
+    # The outlook leg does a silent refresh off the shared token.
+    monkeypatch.setattr(
+        auth_msal.MSALRefreshTokenAuth,
+        "_refresh_access_token",
+        lambda self, rt: {
+            "access_token": "o.o.o",
+            "refresh_token": "outlook-rotated-DISCARDED",
+            "expires_in": 3600,
+            "scope": auth_msal.OUTLOOK_SCOPE,
+        },
+    )
+    result = auth_msal.force_reauthenticate(
+        TEST_EMAIL, tokens_dir=tmp_path, also_outlook=True
+    )
+    assert result["status"] == "reauthenticated"
+    assert "outlook" in result
+    assert result["outlook"]["api_type"] == "outlook"
+    assert result["outlook"]["status"] in ("refreshed", "valid")
+    # Outlook token file written; shared refresh token NOT clobbered.
+    assert (tmp_path / f"{TEST_EMAIL}_outlook_access_token.json").exists()
+    assert (
+        tmp_path / f"{TEST_EMAIL}_refresh_only.txt"
+    ).read_text() == "fresh-shared-rt"
+
+
+def test_force_reauthenticate_without_outlook_has_no_outlook_key(tmp_path, monkeypatch):
+    def fake_authenticate(self):
+        self._save_tokens(
+            access_token="a.b.c",
+            refresh_token="fresh-shared-rt",
+            expires_in=3600,
+            scopes=auth_msal.GRAPH_SCOPE,
+            email=TEST_EMAIL,
+        )
+        return {"access_token": "a.b.c"}
+
+    monkeypatch.setattr(
+        auth_msal.MSALRefreshTokenAuth, "authenticate", fake_authenticate
+    )
+    result = auth_msal.force_reauthenticate(TEST_EMAIL, tokens_dir=tmp_path)
+    assert "outlook" not in result
+
+
 def test_classify_refresh_error_recognizes_65002():
     hint = auth_msal.classify_refresh_error(
         "AADSTS65002: Consent between first party application ...",

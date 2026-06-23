@@ -738,7 +738,9 @@ def refresh_account(
 
 
 @_tool
-def force_reauthenticate_account(email: str) -> dict[str, Any]:
+def force_reauthenticate_account(
+    email: str, also_outlook: bool = False
+) -> dict[str, Any]:
     """Clear saved tokens for an account and re-run MSAL device-code auth.
 
     Use when an account's refresh token is revoked or saved credentials
@@ -748,18 +750,27 @@ def force_reauthenticate_account(email: str) -> dict[str, Any]:
 
     Args:
         email: Account identifier (filename stem, typically the email).
+        also_outlook: When True, additionally mint an Outlook access token
+            off the freshly-minted shared refresh token (one extra silent
+            refresh, no second prompt). The result then includes an
+            ``outlook`` key with that refresh result. The Outlook leg never
+            overwrites the shared (Graph-consented) refresh token.
 
     Returns:
         Dict with: identifier, status ("reauthenticated"), expires_at,
-        signed_in_as. ``signed_in_as`` is the JWT ``upn`` claim from the
-        newly-issued token; if it does not match ``email`` the user
-        signed into the wrong account and the saved file is mislabeled.
+        signed_in_as, and — when ``also_outlook`` is True — ``outlook``.
+        ``signed_in_as`` is the JWT ``upn`` claim from the newly-issued
+        token; if it does not match ``email`` the user signed into the
+        wrong account and the saved file is mislabeled.
 
     Raises:
         ValueError: if auth_method is not "msal" or email is empty.
         RuntimeError: if the device-code flow fails.
     """
-    logger.info(f"force_reauthenticate_account called: email={email}")
+    logger.info(
+        f"force_reauthenticate_account called: email={email}, "
+        f"also_outlook={also_outlook}"
+    )
 
     if auth_method != "msal":
         raise ValueError(
@@ -776,6 +787,7 @@ def force_reauthenticate_account(email: str) -> dict[str, Any]:
         tokens_dir=_env_path("MICROSOFT_MCP_TOKENS_DIR"),
         client_id=os.getenv("MICROSOFT_MCP_CLIENT_ID"),
         tenant_id=os.getenv("MICROSOFT_MCP_TENANT_ID"),
+        also_outlook=also_outlook,
     )
     logger.info(
         f"force_reauthenticate_account completed: {result['identifier']} "

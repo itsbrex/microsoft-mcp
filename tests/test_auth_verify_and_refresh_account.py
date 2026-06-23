@@ -394,6 +394,7 @@ class TestMcpToolWrappers:
             "status": "valid",
             "expires_at": None,
             "error": None,
+            "api_type": "graph",
         }
         original = tools_mod.auth_method
         try:
@@ -404,5 +405,90 @@ class TestMcpToolWrappers:
                 returned = tool_fn.fn(email=TEST_EMAIL)
             assert returned == fake
             assert mock_lib.call_args.kwargs.get("identifier") == TEST_EMAIL
+            # Default api_type is graph.
+            assert mock_lib.call_args.kwargs.get("api_type") == "graph"
+        finally:
+            tools_mod.auth_method = original
+
+    def test_refresh_account_tool_both_loops_graph_then_outlook(
+        self, tmp_path, monkeypatch
+    ):
+        """api_type='both' must expand into two library calls (graph, outlook)
+        and return a list of two result dicts — mirroring the auth CLI."""
+        import microsoft_mcp.tools as tools_mod
+        from microsoft_mcp.tools import refresh_account as tool_fn
+
+        monkeypatch.setenv("MICROSOFT_MCP_TOKENS_DIR", str(tmp_path))
+        monkeypatch.setenv("MICROSOFT_MCP_CLIENT_ID", "id")
+
+        def fake_lib(identifier, api_type="graph", **_):
+            return {
+                "identifier": identifier,
+                "status": "refreshed",
+                "expires_at": None,
+                "error": None,
+                "api_type": api_type,
+            }
+
+        original = tools_mod.auth_method
+        try:
+            tools_mod.auth_method = "msal"
+            with patch(
+                "microsoft_mcp.auth_msal.refresh_account", side_effect=fake_lib
+            ) as mock_lib:
+                returned = tool_fn.fn(email=TEST_EMAIL, api_type="both")
+            assert isinstance(returned, list)
+            assert [r["api_type"] for r in returned] == ["graph", "outlook"]
+            assert mock_lib.call_count == 2
+            # Graph leg first, then outlook.
+            assert [c.kwargs.get("api_type") for c in mock_lib.call_args_list] == [
+                "graph",
+                "outlook",
+            ]
+        finally:
+            tools_mod.auth_method = original
+
+    def test_refresh_account_tool_rejects_invalid_api_type(self):
+        import microsoft_mcp.tools as tools_mod
+        from microsoft_mcp.tools import refresh_account as tool_fn
+
+        original = tools_mod.auth_method
+        try:
+            tools_mod.auth_method = "msal"
+            with pytest.raises(ValueError, match="api_type"):
+                tool_fn.fn(email=TEST_EMAIL, api_type="nonsense")
+        finally:
+            tools_mod.auth_method = original
+
+    def test_refresh_all_accounts_tool_passes_api_type(self, tmp_path, monkeypatch):
+        import microsoft_mcp.tools as tools_mod
+        from microsoft_mcp.tools import refresh_all_accounts as tool_fn
+
+        monkeypatch.setenv("MICROSOFT_MCP_TOKENS_DIR", str(tmp_path))
+        fake = [
+            {"identifier": TEST_EMAIL, "status": "valid", "api_type": "graph"},
+            {"identifier": TEST_EMAIL, "status": "valid", "api_type": "outlook"},
+        ]
+        original = tools_mod.auth_method
+        try:
+            tools_mod.auth_method = "msal"
+            with patch(
+                "microsoft_mcp.auth_msal.refresh_all_accounts", return_value=fake
+            ) as mock_lib:
+                returned = tool_fn.fn(api_type="both")
+            assert returned == fake
+            assert mock_lib.call_args.kwargs.get("api_type") == "both"
+        finally:
+            tools_mod.auth_method = original
+
+    def test_refresh_all_accounts_tool_rejects_invalid_api_type(self):
+        import microsoft_mcp.tools as tools_mod
+        from microsoft_mcp.tools import refresh_all_accounts as tool_fn
+
+        original = tools_mod.auth_method
+        try:
+            tools_mod.auth_method = "msal"
+            with pytest.raises(ValueError, match="api_type"):
+                tool_fn.fn(api_type="nonsense")
         finally:
             tools_mod.auth_method = original

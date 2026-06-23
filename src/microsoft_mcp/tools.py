@@ -598,7 +598,7 @@ def authenticate_new_account(email: str) -> dict[str, Any]:
 
 
 @_tool
-def refresh_all_accounts() -> list[dict[str, Any]]:
+def refresh_all_accounts(api_type: str = "graph") -> list[dict[str, Any]]:
     """Refresh access tokens for all saved Microsoft accounts.
 
     Iterates every account stored in MICROSOFT_MCP_TOKENS_DIR and refreshes
@@ -608,24 +608,38 @@ def refresh_all_accounts() -> list[dict[str, Any]]:
 
     Mirrors `outlook auth refresh` in the outlook-creds repo.
 
+    Args:
+        api_type: Which access token(s) to refresh: "graph" (default),
+            "outlook", or "both". "both" emits one result entry per
+            (account, api_type). The shared refresh token is only persisted
+            from the "graph" leg, so refreshing "outlook" or "both" never
+            clobbers Graph consent (see auth_msal._save_tokens).
+
     Returns:
-        A list of result dictionaries, one per account, each with:
+        A list of result dictionaries, one per (account, api_type), each with:
         - identifier: the account identifier (usually email)
         - status: "valid", "refreshed", or "failed"
         - expires_at: ISO timestamp of token expiry (or None on failure)
         - error: error message when status == "failed"
+        - api_type: the API resource this entry refreshed
 
     Raises:
-        ValueError: if auth_method is not "msal".
+        ValueError: if auth_method is not "msal" or api_type is invalid.
 
     Examples:
-        - refresh_all_accounts() - Refresh tokens for every saved account
+        - refresh_all_accounts() - Refresh Graph tokens for every account
+        - refresh_all_accounts(api_type="both") - Graph + Outlook for every account
     """
-    logger.info("refresh_all_accounts called")
+    logger.info(f"refresh_all_accounts called: api_type={api_type}")
 
     if auth_method != "msal":
         raise ValueError(
             "refresh_all_accounts is only supported with MSAL authentication method"
+        )
+
+    if api_type not in ("graph", "outlook", "both"):
+        raise ValueError(
+            f"api_type must be 'graph', 'outlook', or 'both', got {api_type!r}"
         )
 
     from .auth_msal import refresh_all_accounts as _refresh_all_accounts
@@ -634,6 +648,7 @@ def refresh_all_accounts() -> list[dict[str, Any]]:
         tokens_dir=_env_path("MICROSOFT_MCP_TOKENS_DIR"),
         client_id=os.getenv("MICROSOFT_MCP_CLIENT_ID"),
         tenant_id=os.getenv("MICROSOFT_MCP_TENANT_ID"),
+        api_type=api_type,
     )
 
     valid = sum(1 for r in results if r["status"] == "valid")
@@ -648,7 +663,9 @@ def refresh_all_accounts() -> list[dict[str, Any]]:
 
 
 @_tool
-def refresh_account(email: str) -> dict[str, Any]:
+def refresh_account(
+    email: str, api_type: str = "graph"
+) -> dict[str, Any] | list[dict[str, Any]]:
     """Refresh access token for a single Microsoft account.
 
     Single-account variant of `refresh_all_accounts`. Looks up the saved
@@ -658,15 +675,24 @@ def refresh_account(email: str) -> dict[str, Any]:
 
     Args:
         email: Account identifier (filename stem, typically the email).
+        api_type: Which access token(s) to refresh: "graph" (default),
+            "outlook", or "both". "both" refreshes Graph then Outlook in two
+            calls (mirroring `microsoft-mcp auth refresh <email> --api both`)
+            and returns a list of two result dicts. The shared refresh token
+            is only persisted from the Graph leg, so the Outlook refresh
+            never clobbers Graph consent (see auth_msal._save_tokens).
 
     Returns:
-        Dict with: identifier, status ("valid" | "refreshed" | "failed"
-        | "missing"), expires_at, error.
+        For "graph"/"outlook": a single dict with identifier, status
+        ("valid" | "refreshed" | "failed" | "missing"), expires_at, error,
+        api_type.
+        For "both": a list of two such dicts (graph first, then outlook).
 
     Raises:
-        ValueError: if auth_method is not "msal" or email is empty.
+        ValueError: if auth_method is not "msal", email is empty, or
+            api_type is invalid.
     """
-    logger.info(f"refresh_account called: email={email}")
+    logger.info(f"refresh_account called: email={email}, api_type={api_type}")
 
     if auth_method != "msal":
         raise ValueError(
@@ -676,16 +702,37 @@ def refresh_account(email: str) -> dict[str, Any]:
     if not email or not email.strip():
         raise ValueError("email must be a non-empty string")
 
+    if api_type not in ("graph", "outlook", "both"):
+        raise ValueError(
+            f"api_type must be 'graph', 'outlook', or 'both', got {api_type!r}"
+        )
+
     from .auth_msal import refresh_account as _refresh_account
 
-    result = _refresh_account(
-        identifier=email,
-        tokens_dir=_env_path("MICROSOFT_MCP_TOKENS_DIR"),
-        client_id=os.getenv("MICROSOFT_MCP_CLIENT_ID"),
-        tenant_id=os.getenv("MICROSOFT_MCP_TENANT_ID"),
-    )
+    env = {
+        "tokens_dir": _env_path("MICROSOFT_MCP_TOKENS_DIR"),
+        "client_id": os.getenv("MICROSOFT_MCP_CLIENT_ID"),
+        "tenant_id": os.getenv("MICROSOFT_MCP_TENANT_ID"),
+    }
+
+    # The underlying auth_msal.refresh_account() accepts only "graph" or
+    # "outlook"; "both" is expanded here into two calls, exactly as the auth
+    # CLI does (auth_cli._cmd_refresh), because the refresh token is shared.
+    if api_type == "both":
+        results = [
+            _refresh_account(identifier=email, api_type=api, **env)
+            for api in ("graph", "outlook")
+        ]
+        logger.info(
+            "refresh_account completed (both): "
+            + ", ".join(f"{r['api_type']}->{r['status']}" for r in results)
+        )
+        return results
+
+    result = _refresh_account(identifier=email, api_type=api_type, **env)
     logger.info(
-        f"refresh_account completed: {result['identifier']} -> {result['status']}"
+        f"refresh_account completed: {result['identifier']} "
+        f"({result['api_type']}) -> {result['status']}"
     )
     return result
 

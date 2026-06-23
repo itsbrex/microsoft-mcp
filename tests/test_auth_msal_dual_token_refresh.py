@@ -84,6 +84,68 @@ def test_refresh_all_accounts_skips_outlook_sibling_files(tmp_path):
     assert idents == [TEST_EMAIL]  # not TEST_EMAIL_outlook
 
 
+def test_classify_refresh_error_recognizes_65002():
+    hint = auth_msal.classify_refresh_error(
+        "AADSTS65002: Consent between first party application ...",
+        identifier=TEST_EMAIL,
+    )
+    assert hint is not None
+    assert hint["code"] == "AADSTS65002"
+    assert "Outlook grant" in hint["summary"]
+    # Remedy interpolates the identifier and points at the force/both recovery.
+    assert TEST_EMAIL in hint["remedy"]
+    assert "--force --api both" in hint["remedy"]
+
+
+def test_classify_refresh_error_expired_and_password_change():
+    expired = auth_msal.classify_refresh_error("... AADSTS70008 expired ...")
+    assert expired is not None and expired["code"] == "AADSTS70008"
+    pw = auth_msal.classify_refresh_error("AADSTS50173 credential changed")
+    assert pw is not None and pw["code"] == "AADSTS50173"
+
+
+def test_classify_refresh_error_unknown_and_empty_return_none():
+    assert auth_msal.classify_refresh_error("some unrelated error") is None
+    assert auth_msal.classify_refresh_error("") is None
+    assert auth_msal.classify_refresh_error(None) is None
+
+
+def test_classify_refresh_error_falls_back_to_placeholder_email():
+    hint = auth_msal.classify_refresh_error("AADSTS65002 ...")
+    assert hint is not None
+    assert "<email>" in hint["remedy"]
+
+
+def test_refresh_failure_attaches_65002_hint(tmp_path, monkeypatch):
+    # A failed refresh whose error carries AADSTS65002 must surface a
+    # structured `hint` on the result so the CLI / MCP tool can guide recovery.
+    _seed_graph_account(tmp_path, TEST_EMAIL, valid=False)
+
+    def boom(self, refresh_token):
+        raise RuntimeError(
+            "Token refresh failed: AADSTS65002: Consent between first party ..."
+        )
+
+    monkeypatch.setattr(auth_msal.MSALRefreshTokenAuth, "_refresh_access_token", boom)
+    result = auth_msal.refresh_account(TEST_EMAIL, tokens_dir=tmp_path)
+    assert result["status"] == "failed"
+    assert "AADSTS65002" in result["error"]
+    assert result["hint"]["code"] == "AADSTS65002"
+    assert TEST_EMAIL in result["hint"]["remedy"]
+
+
+def test_refresh_failure_without_known_code_has_no_hint(tmp_path, monkeypatch):
+    _seed_graph_account(tmp_path, TEST_EMAIL, valid=False)
+
+    def boom(self, refresh_token):
+        raise RuntimeError("network unreachable")
+
+    monkeypatch.setattr(auth_msal.MSALRefreshTokenAuth, "_refresh_access_token", boom)
+    result = auth_msal.refresh_account(TEST_EMAIL, tokens_dir=tmp_path)
+    assert result["status"] == "failed"
+    assert "hint" not in result
+
+
 def test_outlook_refresh_does_not_clobber_shared_refresh_token(tmp_path, monkeypatch):
     # The shared {id}_refresh_only.txt must stay Graph-consented. An Outlook
     # refresh response carries a rotated refresh token scoped to the Outlook

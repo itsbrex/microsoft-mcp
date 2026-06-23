@@ -127,6 +127,10 @@ def _print_refresh_results(
         else:  # failed / unknown
             err = r.get("error") or "unknown error"
             print(_c(f"  ✗ {api_label} refresh failed: {err}", "red"))
+            hint = r.get("hint")
+            if hint:
+                print(_c(f"    ↳ {hint.get('code')}: {hint.get('summary')}", "yellow"))
+                print(_c(f"    ↳ fix: {hint.get('remedy')}", "yellow"))
 
 
 # ---------------------------------------------------------------------------

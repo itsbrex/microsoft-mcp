@@ -290,6 +290,35 @@ def test_refresh_single_email_api_both_refreshes_both(monkeypatch, tmp_path, cap
     assert "Outlook: Refreshed" in out
 
 
+def test_refresh_failure_prints_65002_hint(monkeypatch, tmp_path, capsys):
+    """A failed refresh carrying an AADSTS65002 hint must print the
+    code/summary + a fix command, not just the raw Azure string."""
+    _msal_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        "microsoft_mcp.auth_msal.refresh_all_accounts",
+        lambda **kw: [
+            {
+                "identifier": TEST_EMAIL,
+                "status": "failed",
+                "expires_at": None,
+                "error": "Token refresh failed: AADSTS65002: Consent ...",
+                "api_type": "graph",
+                "hint": {
+                    "code": "AADSTS65002",
+                    "summary": "shared refresh token is scoped to the Outlook grant",
+                    "remedy": f"microsoft-mcp auth refresh {TEST_EMAIL} --force --api both",
+                },
+            }
+        ],
+    )
+    rc = auth_cli.main(["refresh"])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "AADSTS65002" in out
+    assert "fix:" in out
+    assert "--force --api both" in out
+
+
 def test_main_runs_without_dotenv(monkeypatch, tmp_path, capsys):
     _msal_env(monkeypatch, tmp_path)
     # no .env file in tmp; main() should not crash importing/loading dotenv

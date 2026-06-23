@@ -500,7 +500,7 @@ class MSALRefreshTokenAuth:
                 self._save_tokens(
                     access_token=result["access_token"],
                     refresh_token=result.get("refresh_token"),
-                    expires_in=result.get("expires_in", 3600),
+                    expires_in=int(result.get("expires_in", 3600)),
                     scopes=result.get("scope", " ".join(DEFAULT_SCOPES)),
                     email=cached_username,
                 )
@@ -762,6 +762,65 @@ class MSALRefreshTokenAuth:
         logger.info("Authentication cache cleared")
 
 
+def classify_refresh_error(
+    error_text: Optional[str], identifier: Optional[str] = None
+) -> Optional[dict[str, str]]:
+    """Classify a token-refresh error string into an actionable hint.
+
+    Pure helper (no I/O). Recognizes a handful of AADSTS codes that have a
+    clear remedy and returns ``{"code", "summary", "remedy"}``; returns
+    ``None`` for unrecognized errors so callers can fall back to the raw
+    string.
+
+    The headline case is **AADSTS65002**: a Graph ``.default`` refresh whose
+    shared refresh token is scoped to the Outlook grant (no Graph delegated
+    consent). This is exactly the failure mode the graph-only refresh-token
+    persist guard prevents going forward; this classifier explains how to
+    recover an already-tainted token.
+
+    Args:
+        error_text: The error message captured from a failed refresh (may be
+            ``None`` or empty).
+        identifier: Optional account email to interpolate into the remedy
+            command; falls back to ``<email>`` when not provided.
+
+    Returns:
+        A dict with ``code``/``summary``/``remedy`` keys, or ``None``.
+    """
+    if not error_text:
+        return None
+
+    who = identifier or "<email>"
+
+    if "AADSTS65002" in error_text:
+        return {
+            "code": "AADSTS65002",
+            "summary": (
+                "shared refresh token is scoped to the Outlook grant and has "
+                "no Graph delegated consent (first-party preauthorization)"
+            ),
+            "remedy": (
+                f"re-consent Graph via device-code flow: "
+                f"microsoft-mcp auth refresh {who} --force --api both"
+            ),
+        }
+    if "AADSTS70008" in error_text or "AADSTS700082" in error_text:
+        return {
+            "code": "AADSTS70008",
+            "summary": "the refresh token has expired or been revoked",
+            "remedy": (f"re-authenticate: microsoft-mcp auth refresh {who} --force"),
+        }
+    if "AADSTS50173" in error_text:
+        return {
+            "code": "AADSTS50173",
+            "summary": (
+                "the refresh token was invalidated by a password/credential change"
+            ),
+            "remedy": (f"re-authenticate: microsoft-mcp auth refresh {who} --force"),
+        }
+    return None
+
+
 def _refresh_one(
     identifier: str,
     tokens_dir: Path,
@@ -803,12 +862,16 @@ def _refresh_one(
     except Exception as e:
         stale = probe._load_access_token_data() or {}
         logger.warning(f"_refresh_one: '{identifier}' ({api_type}) refresh failed: {e}")
-        return {
+        result: dict[str, Any] = {
             "identifier": identifier,
             "status": "failed",
             "expires_at": stale.get("expires_at"),
             "error": str(e),
         }
+        hint = classify_refresh_error(str(e), identifier=identifier)
+        if hint:
+            result["hint"] = hint
+        return result
 
 
 def refresh_all_accounts(

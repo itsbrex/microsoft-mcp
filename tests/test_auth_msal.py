@@ -1,11 +1,16 @@
 """Tests for MSAL-based authentication module."""
 
+import inspect
+import io
 import json
+import json as _json
 import os
 import tempfile
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch, MagicMock
+from urllib.parse import parse_qs
 
 
 from src.microsoft_mcp.auth_msal import (
@@ -72,14 +77,14 @@ class TestMSALRefreshTokenAuthInit:
         """Test initialization prefers outlook-creds tenant metadata for known accounts."""
         with tempfile.TemporaryDirectory() as tmpdir:
             outlook_config_dir = Path(tmpdir) / "outlook-creds"
-            account_dir = outlook_config_dir / "tokens" / "broach_cresa_com"
+            account_dir = outlook_config_dir / "tokens" / "broach_cresa_email"
             account_dir.mkdir(parents=True)
             account_dir.joinpath("account_info.json").write_text(
                 json.dumps(
                     {
                         "authority": "https://login.microsoftonline.com/tenant-123",
                         "realm": "tenant-123",
-                        "login_name": "broach@cresa.com",
+                        "login_name": "broach@cresa.email",
                         "additional_properties": json.dumps(
                             {"aud": "metadata-client-id"}
                         ),
@@ -96,7 +101,7 @@ class TestMSALRefreshTokenAuthInit:
             ):
                 auth = MSALRefreshTokenAuth(
                     tokens_dir=Path(tmpdir) / "tokens",
-                    account_identifier="broach@cresa.com",
+                    account_identifier="broach@cresa.email",
                 )
 
             assert auth.tenant_id == "tenant-123"
@@ -107,14 +112,14 @@ class TestMSALRefreshTokenAuthInit:
         """Test explicit tenant configuration overrides outlook-creds metadata."""
         with tempfile.TemporaryDirectory() as tmpdir:
             outlook_config_dir = Path(tmpdir) / "outlook-creds"
-            account_dir = outlook_config_dir / "tokens" / "broach_cresa_com"
+            account_dir = outlook_config_dir / "tokens" / "broach_cresa_email"
             account_dir.mkdir(parents=True)
             account_dir.joinpath("account_info.json").write_text(
                 json.dumps(
                     {
                         "authority": "https://login.microsoftonline.com/tenant-123",
                         "realm": "tenant-123",
-                        "login_name": "broach@cresa.com",
+                        "login_name": "broach@cresa.email",
                         "additional_properties": json.dumps(
                             {"aud": "metadata-client-id"}
                         ),
@@ -133,7 +138,7 @@ class TestMSALRefreshTokenAuthInit:
                     tokens_dir=Path(tmpdir) / "tokens",
                     tenant_id="explicit-tenant",
                     client_id="explicit-client",
-                    account_identifier="broach@cresa.com",
+                    account_identifier="broach@cresa.email",
                 )
 
             assert auth.tenant_id == "explicit-tenant"
@@ -705,10 +710,6 @@ class TestMSALRefreshTokenAuthDeviceCodeFlow:
             mock_app.initiate_device_flow.assert_not_called()
 
 
-import inspect
-from microsoft_mcp.auth_msal import MSALRefreshTokenAuth
-
-
 def test_init_assigns_account_identifier_exactly_once():
     source = inspect.getsource(MSALRefreshTokenAuth.__init__)
     occurrences = source.count("self.account_identifier =")
@@ -725,11 +726,6 @@ def test_init_preserves_explicit_identifier(tmp_path):
         tokens_dir=tmp_path, client_id="test-cid", account_identifier="user@example.com"
     )
     assert auth.account_identifier == "user@example.com"
-
-
-import io
-import json as _json
-from urllib.parse import parse_qs
 
 
 def test_msal_refresh_preserves_saved_scopes(tmp_path, monkeypatch):
@@ -906,9 +902,6 @@ def test_is_token_valid_returns_false_for_unparseable(tmp_path):
     assert auth._is_token_valid() is False
 
 
-import threading
-
-
 def test_concurrent_get_token_refreshes_exactly_once(tmp_path, monkeypatch):
     from microsoft_mcp.auth_msal import MSALRefreshTokenAuth
 
@@ -954,6 +947,33 @@ def test_concurrent_get_token_refreshes_exactly_once(tmp_path, monkeypatch):
     assert calls["n"] == 1, f"expected 1 refresh, got {calls['n']}"
     assert all(t == "fresh" for t in tokens)
     assert len(tokens) == 8
+
+
+def test_secure_write_preserves_existing_file_when_replace_fails(tmp_path, monkeypatch):
+    from microsoft_mcp import auth_msal
+
+    auth = auth_msal.MSALRefreshTokenAuth(
+        tokens_dir=tmp_path,
+        account_identifier="x@y.com",
+    )
+    target = tmp_path / "x@y.com_refresh_only.txt"
+    target.write_text("existing-refresh-token")
+
+    monkeypatch.setattr(
+        auth_msal.os,
+        "replace",
+        lambda source, destination: (_ for _ in ()).throw(
+            OSError("simulated replace failure")
+        ),
+    )
+
+    import pytest
+
+    with pytest.raises(OSError, match="simulated replace failure"):
+        auth._secure_write_file(target, "replacement-refresh-token")
+
+    assert target.read_text() == "existing-refresh-token"
+    assert list(tmp_path.glob(f".{target.name}.*")) == []
 
 
 def test_serial_get_token_calls_still_work(tmp_path, monkeypatch):

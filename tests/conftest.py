@@ -2,14 +2,36 @@
 Test configuration and fixtures for Microsoft MCP tests.
 """
 
-import pytest
-import pytest_asyncio
-from unittest.mock import Mock
 import os
+import tempfile
+from pathlib import Path
+from unittest.mock import Mock
 
-from fastmcp import FastMCP
+# Install safety boundaries before importing any project module. Tests must
+# never discover real credentials or attempt authentication for cresa.com.
+_TEST_RUNTIME = tempfile.TemporaryDirectory(prefix="microsoft-mcp-tests-")
+_TEST_ROOT = Path(_TEST_RUNTIME.name)
+os.environ["MICROSOFT_MCP_ACCOUNT_ID"] = "test-user@cresa.email"
+os.environ["MICROSOFT_MCP_TOKENS_DIR"] = str(_TEST_ROOT / "tokens")
+os.environ["OUTLOOK_CREDS_CONFIG_DIR"] = str(_TEST_ROOT / "outlook-creds")
+os.environ["AZURE_CRED_CACHE_FILE"] = str(_TEST_ROOT / "azure-auth-record.json")
+os.environ["AZURE_TOKEN_CACHE_FILE"] = str(_TEST_ROOT / "azure-token-cache")
+os.environ["MICROSOFT_MCP_NONINTERACTIVE"] = "1"
 
-from microsoft_mcp.code_mode import CodeModeRuntime
+_blocked_domains = {
+    domain.strip().casefold()
+    for domain in os.getenv("MICROSOFT_MCP_BLOCKED_AUTH_DOMAINS", "").split(",")
+    if domain.strip()
+}
+_blocked_domains.add("cresa.com")
+os.environ["MICROSOFT_MCP_BLOCKED_AUTH_DOMAINS"] = ",".join(sorted(_blocked_domains))
+
+import pytest  # noqa: E402
+import pytest_asyncio  # noqa: E402
+
+from fastmcp import FastMCP  # noqa: E402
+
+from microsoft_mcp.code_mode import CodeModeRuntime  # noqa: E402
 
 
 @pytest_asyncio.fixture

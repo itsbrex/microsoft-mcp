@@ -1,6 +1,6 @@
 """Tests for refresh_all_accounts library function and MCP tool.
 
-Test fixtures use a single email (``broach@cresa.com``) intentionally.
+Test fixtures use a single non-production email (``broach@cresa.email``).
 ``refresh_all_accounts`` has known auth issues when more than one account is
 saved on disk at once, so the supported pattern — and the only pattern
 exercised here — is single-account.
@@ -15,7 +15,7 @@ import pytest
 from microsoft_mcp.auth_msal import MSALRefreshTokenAuth, refresh_all_accounts
 
 # Canonical single-account email used across all test fixtures in this file.
-TEST_EMAIL = "broach@cresa.com"
+TEST_EMAIL = "broach@cresa.email"
 
 
 # ---------------------------------------------------------------------------
@@ -165,13 +165,14 @@ class TestRefreshAllAccountsLibrary:
         )
 
     def test_acquire_token_data_clears_cache_then_reauths_on_refresh_failure(
-        self, tmp_path
+        self, tmp_path, monkeypatch
     ):
         """_acquire_token_data clears cache on refresh failure, then calls authenticate().
 
         Evicting the corrupted token ensures the interactive re-auth path starts
         clean. authenticate() is mocked here so no real device-code flow runs.
         """
+        monkeypatch.delenv("MICROSOFT_MCP_NONINTERACTIVE", raising=False)
         email = TEST_EMAIL
 
         _write_token_file(tmp_path, email, timedelta(seconds=-60))

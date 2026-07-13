@@ -148,7 +148,7 @@ def test_search_emails_resolves_custom_folder_name(mock_graph):
                     "from": {
                         "emailAddress": {
                             "name": "Cresa Communications",
-                            "address": "communications@cresa.com",
+                            "address": "communications@cresa.email",
                         }
                     },
                     "receivedDateTime": "2026-03-13T15:01:33Z",

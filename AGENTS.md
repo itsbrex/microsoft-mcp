@@ -174,6 +174,8 @@ uvx ruff check --fix --unsafe-fixes .
 - `MICROSOFT_MCP_TOKENS_DIR` (optional) - token storage directory (defaults to `~/.config/microsoft-mcp/tokens/`)
 - `MICROSOFT_MCP_ACCOUNT_ID` (optional) - account identifier for token file naming, cached-account selection, and optional `outlook-creds` authority lookup
 - `MICROSOFT_MCP_REFRESH_ON_STARTUP` (optional) - defaults to "1" (on for MSAL). Set to "0" to skip the refresh-all-accounts pass at server startup.
+- `MICROSOFT_MCP_NONINTERACTIVE` (optional) - set to `1`, `true`, `yes`, or `on` to disable interactive device-code fallback after silent refresh failure. Cached credentials are preserved for retry.
+- `MICROSOFT_MCP_BLOCKED_AUTH_DOMAINS` (optional) - comma-separated account domains that must never authenticate, refresh, or make live verification calls. Tests always include `cresa.com`.
 
 **Response Shaping:**
 - `MICROSOFT_MCP_RESPONSE_PROFILE` (optional) - `legacy` (default) or `assistant`. Controls response shaping for list/search tools.

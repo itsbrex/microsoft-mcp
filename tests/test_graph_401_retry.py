@@ -47,7 +47,7 @@ class TestForceRefresh:
         return MSALRefreshTokenAuth(
             tokens_dir=tmp_path,
             client_id="d3590ed6-52b3-4102-aeff-aad2292ab01c",
-            account_identifier="broach@cresa.com",
+            account_identifier="broach@cresa.email",
         )
 
     def test_force_refresh_clears_and_replays(self, tmp_path: Path) -> None:
@@ -55,7 +55,7 @@ class TestForceRefresh:
         auth = self._make_auth(tmp_path)
 
         # Write a fake refresh token to disk
-        refresh_token_path = tmp_path / "broach@cresa.com_refresh_only.txt"
+        refresh_token_path = tmp_path / "broach@cresa.email_refresh_only.txt"
         refresh_token_path.write_text("old-refresh-token")
 
         new_token_dict = {
@@ -73,15 +73,16 @@ class TestForceRefresh:
         mock_refresh.assert_called_once_with("old-refresh-token")
 
         # The new access token should be persisted
-        access_token_path = tmp_path / "broach@cresa.com_access_token.json"
+        access_token_path = tmp_path / "broach@cresa.email_access_token.json"
         assert access_token_path.exists()
         saved = json.loads(access_token_path.read_text())
         assert saved["access_token"] == "new-access-token"
 
     def test_force_refresh_falls_back_to_authenticate_when_no_refresh_token(
-        self, tmp_path: Path
+        self, tmp_path: Path, monkeypatch
     ) -> None:
         """force_refresh() calls authenticate() when no refresh token file exists."""
+        monkeypatch.delenv("MICROSOFT_MCP_NONINTERACTIVE", raising=False)
         auth = self._make_auth(tmp_path)
         # No refresh token file present
 
@@ -164,11 +165,13 @@ class TestRequest401Retry:
         assert mock_client.request.call_count == 1
 
     @patch("src.microsoft_mcp.graph._client")
-    def test_request_401_with_failing_force_refresh_surfaces_original_401(
+    def test_request_401_with_failing_force_refresh_surfaces_auth_cause(
         self, mock_client: MagicMock, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """If force_refresh() raises, a warning is logged and the original 401 surfaces."""
-        self.mock_auth.force_refresh.side_effect = RuntimeError("no refresh token")
+        """If force_refresh() raises, callers receive its actionable auth error."""
+        self.mock_auth.force_refresh.side_effect = RuntimeError(
+            "interactive authentication is disabled"
+        )
 
         r401 = _make_response(401)
         mock_client.request.return_value = r401
@@ -176,10 +179,8 @@ class TestRequest401Retry:
         import logging
 
         with caplog.at_level(logging.WARNING, logger="microsoft_mcp.graph"):
-            with pytest.raises(httpx.HTTPStatusError) as exc_info:
+            with pytest.raises(RuntimeError, match="interactive authentication"):
                 request("GET", "/me")
-
-        assert exc_info.value.response.status_code == 401
         assert any(
             "Force-refresh after 401 failed" in r.message for r in caplog.records
         )
@@ -218,3 +219,15 @@ class TestDownloadRaw401Retry:
         assert second_call_headers["Authorization"] == "Bearer token-new"
 
         assert result == b"file-bytes"
+
+    @patch("src.microsoft_mcp.graph._client")
+    def test_download_raw_401_with_failed_refresh_surfaces_auth_cause(
+        self, mock_client: MagicMock
+    ) -> None:
+        self.mock_auth.force_refresh.side_effect = RuntimeError(
+            "interactive authentication is disabled"
+        )
+        mock_client.get.return_value = _make_response(401)
+
+        with pytest.raises(RuntimeError, match="interactive authentication"):
+            download_raw("/drives/item/content")

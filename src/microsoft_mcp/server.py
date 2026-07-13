@@ -110,14 +110,17 @@ def main() -> None:
     # Load local development configuration before importing modules that read env.
     load_dotenv()
 
-    from microsoft_mcp.tools import auth, auth_method, mcp
-
     if not os.getenv("MICROSOFT_MCP_CLIENT_ID"):
         print(
             "Error: MICROSOFT_MCP_CLIENT_ID environment variable is required",
             file=sys.stderr,
         )
         sys.exit(1)
+
+    # Import FastMCP/auth stack only after validating required configuration.
+    # FastMCP 3 may start background resources during import; early validation
+    # keeps error exits fast and deterministic.
+    from microsoft_mcp.tools import auth, auth_method, mcp
 
     configured_auth_method = os.getenv("MICROSOFT_MCP_AUTH_METHOD", "azure").lower()
     actual_auth_method = (

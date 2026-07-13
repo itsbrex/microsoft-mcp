@@ -23,6 +23,8 @@ The authentication system supports two pluggable providers via the `AuthProvider
 - `MSALRefreshTokenAuth` uses device code flow for CLI/headless environments.
 - Token storage is file-based and account-aware.
 - `MICROSOFT_MCP_ACCOUNT_ID` drives cached-account selection and optional authority reuse.
+- Access and refresh-token files use atomic same-directory replacement with owner-only permissions.
+- `MICROSOFT_MCP_BLOCKED_AUTH_DOMAINS` rejects protected account domains before credential discovery, refresh, device-code auth, or live verification.
 
 ##### Authentication Provider Protocol (`auth_base.py`)
 ```python
@@ -44,7 +46,8 @@ class AuthProvider(Protocol):
 
 #### 3. MCP Tools (`tools.py`)
 
-- Uses `FastMCP` for tool registration and management.
+- Uses FastMCP 3 for tool registration and management while preserving the
+  direct `.fn(...)` call contract used by CLIs, tests, and internal helpers.
 - Initializes auth based on `MICROSOFT_MCP_AUTH_METHOD`.
 - Builds an internal Microsoft business-tool registry: account, email, calendar, contacts, files, Teams, search, and inbox triage.
 - Includes assistant-native inbox management helpers for email cleanup and organization:
@@ -318,6 +321,8 @@ Extracts contact information from plain-text email signatures and OOO auto-repli
 - `MICROSOFT_MCP_AUTH_METHOD`: `azure` or `msal`
 - `MICROSOFT_MCP_TOKENS_DIR`: MSAL token storage directory
 - `MICROSOFT_MCP_ACCOUNT_ID`: MSAL account selector and token-file identifier
+- `MICROSOFT_MCP_NONINTERACTIVE`: Disable device-code fallback after silent refresh failure
+- `MICROSOFT_MCP_BLOCKED_AUTH_DOMAINS`: Comma-separated domains forbidden from authentication, refresh, or live verification
 - `MICROSOFT_MCP_TOOL_MODE`: Public tool surface mode (`codemode_only` or `hybrid`)
 - `MICROSOFT_MCP_RESPONSE_PROFILE`: Response shaping profile
 

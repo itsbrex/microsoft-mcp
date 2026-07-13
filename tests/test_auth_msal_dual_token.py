@@ -1,7 +1,7 @@
 import json
 from microsoft_mcp import auth_msal
 
-TEST_EMAIL = "broach@cresa.com"
+TEST_EMAIL = "broach@cresa.email"
 
 
 def _auth(tmp_path, api_type):

@@ -74,7 +74,7 @@ def test_list_emails_resolves_custom_folder_name_before_listing_messages(mock_gr
                     "from": {
                         "emailAddress": {
                             "name": "Cresa Communications",
-                            "address": "communications@cresa.com",
+                            "address": "communications@cresa.email",
                         }
                     },
                     "receivedDateTime": "2026-03-27T21:04:56Z",

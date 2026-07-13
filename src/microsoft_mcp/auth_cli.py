@@ -145,11 +145,17 @@ def _cmd_refresh(args: argparse.Namespace) -> int:
             raise SystemExit("error: --force requires an EMAIL argument")
         from .auth_msal import force_reauthenticate
 
-        result = force_reauthenticate(identifier=args.email, **env)
+        result = force_reauthenticate(
+            identifier=args.email,
+            also_outlook=args.api in ("outlook", "both"),
+            **env,
+        )
         if args.json:
             _print_json(result)
         else:
-            _print_refresh_results([result])
+            _print_refresh_results([result], api_label="Graph")
+            if result.get("outlook"):
+                _print_refresh_results([result["outlook"]], api_label="Outlook")
             if (
                 result.get("signed_in_as")
                 and result["signed_in_as"].lower() != args.email.lower()
@@ -162,7 +168,7 @@ def _cmd_refresh(args: argparse.Namespace) -> int:
                     )
                 )
                 return 1
-        return 0
+        return 0 if result.get("status") == "reauthenticated" else 1
 
     if args.email:
         from .auth_msal import refresh_account

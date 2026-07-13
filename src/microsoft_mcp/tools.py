@@ -611,9 +611,8 @@ def refresh_all_accounts(api_type: str = "graph") -> list[dict[str, Any]]:
     Args:
         api_type: Which access token(s) to refresh: "graph" (default),
             "outlook", or "both". "both" emits one result entry per
-            (account, api_type). The shared refresh token is only persisted
-            from the "graph" leg, so refreshing "outlook" or "both" never
-            clobbers Graph consent (see auth_msal._save_tokens).
+            (account, api_type). Each successful leg persists Microsoft's
+            latest replacement refresh token for the shared user/client pair.
 
     Returns:
         A list of result dictionaries, one per (account, api_type), each with:
@@ -678,9 +677,8 @@ def refresh_account(
         api_type: Which access token(s) to refresh: "graph" (default),
             "outlook", or "both". "both" refreshes Graph then Outlook in two
             calls (mirroring `microsoft-mcp auth refresh <email> --api both`)
-            and returns a list of two result dicts. The shared refresh token
-            is only persisted from the Graph leg, so the Outlook refresh
-            never clobbers Graph consent (see auth_msal._save_tokens).
+            and returns a list of two result dicts. Each successful leg
+            persists Microsoft's latest replacement refresh token.
 
     Returns:
         For "graph"/"outlook": a single dict with identifier, status
@@ -753,15 +751,13 @@ def force_reauthenticate_account(
         also_outlook: When True, additionally mint an Outlook access token
             off the freshly-minted shared refresh token (one extra silent
             refresh, no second prompt). The result then includes an
-            ``outlook`` key with that refresh result. The Outlook leg never
-            overwrites the shared (Graph-consented) refresh token.
+            ``outlook`` key with that refresh result.
 
     Returns:
-        Dict with: identifier, status ("reauthenticated"), expires_at,
-        signed_in_as, and — when ``also_outlook`` is True — ``outlook``.
-        ``signed_in_as`` is the JWT ``upn`` claim from the newly-issued
-        token; if it does not match ``email`` the user signed into the
-        wrong account and the saved file is mislabeled.
+        Dict with: identifier, status ("reauthenticated" or "partial"),
+        expires_at, signed_in_as, and — when ``also_outlook`` is True —
+        ``outlook``. Credentials are discarded and the call fails if Azure's
+        reported identity is missing or does not match ``email``.
 
     Raises:
         ValueError: if auth_method is not "msal" or email is empty.
@@ -6273,7 +6269,7 @@ def _list_internal_business_tools() -> list[Any]:
     # (codemode_only mode and MSAL Teams gating). server.list_tools() omits
     # disabled tools, so enumerate the local provider, which includes them.
     tools: list[Any] = []
-    for tool in _run_async(mcp._local_provider.list_tools()):
+    for tool in _run_async(mcp.local_provider.list_tools()):
         if tool.name in CODE_MODE_TOOL_NAMES:
             continue
         if auth_method == "msal" and tool.name in TEAMS_TOOL_NAMES:

@@ -5,7 +5,7 @@ import pytest
 
 from microsoft_mcp import auth_cli
 
-TEST_EMAIL = "broach@cresa.com"
+TEST_EMAIL = "broach@cresa.email"
 
 
 def test_format_expiry_converts_stored_zulu_to_utc_human():
@@ -290,6 +290,66 @@ def test_refresh_single_email_api_both_refreshes_both(monkeypatch, tmp_path, cap
     assert "Outlook: Refreshed" in out
 
 
+def test_force_refresh_api_both_mints_and_reports_outlook(
+    monkeypatch, tmp_path, capsys
+):
+    _msal_env(monkeypatch, tmp_path)
+    calls = []
+
+    def fake_force_reauthenticate(identifier, also_outlook=False, **kwargs):
+        calls.append((identifier, also_outlook))
+        return {
+            "identifier": identifier,
+            "status": "reauthenticated",
+            "expires_at": "2026-06-15T22:00:00Z",
+            "signed_in_as": identifier,
+            "outlook": {
+                "identifier": identifier,
+                "status": "refreshed",
+                "expires_at": "2026-06-15T22:30:00Z",
+                "error": None,
+                "api_type": "outlook",
+            },
+        }
+
+    monkeypatch.setattr(
+        "microsoft_mcp.auth_msal.force_reauthenticate", fake_force_reauthenticate
+    )
+
+    rc = auth_cli.main(["refresh", TEST_EMAIL, "--force", "--api", "both"])
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert calls == [(TEST_EMAIL, True)]
+    assert "Graph: Re-authenticated" in out
+    assert "Outlook: Refreshed" in out
+
+
+def test_force_refresh_returns_failure_for_partial_outlook_result(
+    monkeypatch, tmp_path
+):
+    _msal_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        "microsoft_mcp.auth_msal.force_reauthenticate",
+        lambda **kwargs: {
+            "identifier": TEST_EMAIL,
+            "status": "partial",
+            "expires_at": "2026-06-15T22:00:00Z",
+            "signed_in_as": TEST_EMAIL,
+            "error": "Outlook token mint failed: unavailable",
+            "outlook": {
+                "identifier": TEST_EMAIL,
+                "status": "failed",
+                "expires_at": None,
+                "error": "unavailable",
+                "api_type": "outlook",
+            },
+        },
+    )
+
+    assert auth_cli.main(["refresh", TEST_EMAIL, "--force", "--api", "both"]) == 1
+
+
 def test_refresh_failure_prints_65002_hint(monkeypatch, tmp_path, capsys):
     """A failed refresh carrying an AADSTS65002 hint must print the
     code/summary + a fix command, not just the raw Azure string."""
@@ -305,8 +365,8 @@ def test_refresh_failure_prints_65002_hint(monkeypatch, tmp_path, capsys):
                 "api_type": "graph",
                 "hint": {
                     "code": "AADSTS65002",
-                    "summary": "shared refresh token is scoped to the Outlook grant",
-                    "remedy": f"microsoft-mcp auth refresh {TEST_EMAIL} --force --api both",
+                    "summary": "first-party client is not preauthorized",
+                    "remedy": "set MICROSOFT_MCP_CLIENT_ID to your app registration",
                 },
             }
         ],
@@ -316,7 +376,7 @@ def test_refresh_failure_prints_65002_hint(monkeypatch, tmp_path, capsys):
     assert rc == 1
     assert "AADSTS65002" in out
     assert "fix:" in out
-    assert "--force --api both" in out
+    assert "MICROSOFT_MCP_CLIENT_ID" in out
 
 
 def test_main_runs_without_dotenv(monkeypatch, tmp_path, capsys):

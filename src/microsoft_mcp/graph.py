@@ -158,10 +158,10 @@ def request(
                 did_force_refresh = True
                 continue
             except Exception as e:
-                # Force-refresh failed; let the original 401 propagate via raise_for_status.
                 logger.warning(
-                    "Force-refresh after 401 failed; surfacing original 401: %s", e
+                    "Force-refresh after 401 failed; surfacing auth cause: %s", e
                 )
+                raise
 
         response.raise_for_status()
 
@@ -238,8 +238,9 @@ def download_raw(
                     continue
                 except Exception as e:
                     logger.warning(
-                        "Force-refresh after 401 failed; surfacing original 401: %s", e
+                        "Force-refresh after 401 failed; surfacing auth cause: %s", e
                     )
+                    raise
 
             response.raise_for_status()
             return response.content

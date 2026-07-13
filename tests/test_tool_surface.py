@@ -71,7 +71,7 @@ def _registered_tool_names() -> set[str]:
     # FastMCP 3.x removed mcp._tool_manager. The local provider's list_tools()
     # returns every registered tool (including those disabled for direct MCP
     # exposure), matching the registration-coverage intent of this guard.
-    return {tool.name for tool in asyncio.run(tools.mcp._local_provider.list_tools())}
+    return {tool.name for tool in asyncio.run(tools.mcp.local_provider.list_tools())}
 
 
 def test_all_mail_port_tools_registered() -> None:

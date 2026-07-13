@@ -1,6 +1,6 @@
 """Tests for verify_account_tokens, refresh_account, and force_reauthenticate.
 
-Test fixtures use a single email (``broach@cresa.com``) intentionally.
+Test fixtures use a single non-production email (``broach@cresa.email``).
 ``refresh_all_accounts`` and related single-account flows must work under
 the supported single-account configuration. The mismatch/drift tests still
 write only one token file on disk; they vary the JWT claim inside that file
@@ -22,7 +22,7 @@ from microsoft_mcp.auth_msal import (
 )
 
 # Canonical single-account email used across all test fixtures in this file.
-TEST_EMAIL = "broach@cresa.com"
+TEST_EMAIL = "broach@cresa.email"
 
 
 # ---------------------------------------------------------------------------
@@ -116,12 +116,12 @@ class TestVerifyAccountTokens:
         Only one token file is on disk; the test simulates a wrong-account
         save by varying the JWT claim, not by adding a second file.
         """
-        _write_token_file(tmp_path, TEST_EMAIL, jwt_upn="someone-else@cresa.com")
+        _write_token_file(tmp_path, TEST_EMAIL, jwt_upn="someone-else@cresa.email")
         result = verify_account_tokens(tokens_dir=tmp_path)
         assert len(result) == 1
         entry = result[0]
         assert entry["identifier"] == TEST_EMAIL
-        assert entry["jwt_upn"] == "someone-else@cresa.com"
+        assert entry["jwt_upn"] == "someone-else@cresa.email"
         assert entry["match"] is False
 
     def test_case_insensitive_match(self, tmp_path):
@@ -198,6 +198,7 @@ class TestRefreshAccount:
         assert result["identifier"] == TEST_EMAIL
         assert result["expires_at"] is None
         assert "no token file" in result["error"]
+        assert result["api_type"] == "graph"
 
     def test_valid_token_reports_valid(self, tmp_path):
         data = _write_token_file(tmp_path, TEST_EMAIL)
@@ -284,14 +285,9 @@ class TestForceReauthenticate:
             tmp_path / f"{TEST_EMAIL}_refresh_only.txt"
         ).read_text() == "brand-new-rt"
 
-    def test_detects_drift_when_user_signs_into_wrong_account(self, tmp_path):
-        """signed_in_as should reflect the JWT upn, exposing wrong-account drift.
-
-        Only one file is on disk (labeled ``TEST_EMAIL``); the JWT inside it
-        claims a different upn, simulating a user signing in as the wrong
-        identity during the device-code flow.
-        """
-        wrong_upn = "someone-else@cresa.com"
+    def test_rejects_drift_when_user_signs_into_wrong_account(self, tmp_path):
+        """Wrong-account credentials must not remain under the requested name."""
+        wrong_upn = "someone-else@cresa.email"
         wrong_token = _fake_jwt({"upn": wrong_upn})
 
         def fake_authenticate(self):
@@ -304,11 +300,13 @@ class TestForceReauthenticate:
             )
             return {"access_token": wrong_token}
 
-        with patch.object(MSALRefreshTokenAuth, "authenticate", fake_authenticate):
-            result = force_reauthenticate(identifier=TEST_EMAIL, tokens_dir=tmp_path)
+        with (
+            patch.object(MSALRefreshTokenAuth, "authenticate", fake_authenticate),
+            pytest.raises(RuntimeError, match="does not match requested account"),
+        ):
+            force_reauthenticate(identifier=TEST_EMAIL, tokens_dir=tmp_path)
 
-        assert result["signed_in_as"] == wrong_upn
-        assert result["identifier"] == TEST_EMAIL
+        assert list(tmp_path.iterdir()) == []
 
 
 # ---------------------------------------------------------------------------
@@ -407,6 +405,20 @@ class TestMcpToolWrappers:
             assert mock_lib.call_args.kwargs.get("identifier") == TEST_EMAIL
             # Default api_type is graph.
             assert mock_lib.call_args.kwargs.get("api_type") == "graph"
+        finally:
+            tools_mod.auth_method = original
+
+    def test_refresh_account_tool_returns_missing_result(self, tmp_path, monkeypatch):
+        import microsoft_mcp.tools as tools_mod
+        from microsoft_mcp.tools import refresh_account as tool_fn
+
+        monkeypatch.setenv("MICROSOFT_MCP_TOKENS_DIR", str(tmp_path))
+        original = tools_mod.auth_method
+        try:
+            tools_mod.auth_method = "msal"
+            returned = tool_fn.fn(email=TEST_EMAIL, api_type="outlook")
+            assert returned["status"] == "missing"
+            assert returned["api_type"] == "outlook"
         finally:
             tools_mod.auth_method = original
 

@@ -5,6 +5,34 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Migrated the server and test compatibility layer to FastMCP 3 while
+  preserving the existing 109-tool hybrid surface and five-tool code-only
+  surface. The advertised server identity is now consistently `microsoft-mcp`.
+- MSAL refresh handling now stores Microsoft's latest replacement refresh
+  token for both Graph and Outlook refreshes.
+
+### Fixed
+
+- Noninteractive refresh failures preserve cached credentials instead of
+  clearing them before returning an actionable error.
+- Forced reauthentication rejects and removes credentials when Azure reports a
+  different account, and reports partial failure when a requested Outlook token
+  cannot be minted.
+- Graph 401 recovery surfaces the authentication refresh failure instead of
+  hiding it behind the original HTTP 401 response.
+- Test startup isolates all token/cache paths and blocks authentication or live
+  verification for `cresa.com`; auth fixtures use `cresa.email` instead.
+- Token files are replaced atomically, and refresh-token availability is
+  checked under the refresh lock to prevent concurrent callers from observing
+  truncated credentials and entering interactive authentication.
+- `AADSTS65002` guidance now identifies first-party client/resource
+  preauthorization failure instead of incorrectly treating refresh tokens as
+  resource-scoped.
+
 ## [0.2.0] - 2026-06-18
 
 Large "outlook-creds mail port" — ~40 new MCP tools, 3 new CLIs, and a

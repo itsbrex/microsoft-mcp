@@ -294,12 +294,12 @@ _BOUNCE_TRUE_POSITIVES = [
     {
         "id": "b-1",
         "subject": "[Postmaster] Email Delivery Failure",
-        "from": {"emailAddress": {"address": "postmaster@cresa.com"}},
+        "from": {"emailAddress": {"address": "postmaster@cresa.email"}},
     },
     {
         "id": "b-2",
-        "subject": "[Postmaster] Messages on hold for broach@cresa.com",
-        "from": {"emailAddress": {"address": "postmaster@cresa.com"}},
+        "subject": "[Postmaster] Messages on hold for broach@cresa.email",
+        "from": {"emailAddress": {"address": "postmaster@cresa.email"}},
     },
     {
         "id": "b-3",
@@ -357,7 +357,7 @@ _BOUNCE_TRUE_NEGATIVES = [
         "raw": {
             "id": "n-3",
             "subject": "Weekly DNS zone change request",
-            "from": {"emailAddress": {"address": "postmaster@cresa.com"}},
+            "from": {"emailAddress": {"address": "postmaster@cresa.email"}},
         },
     },
     {
@@ -373,7 +373,7 @@ _BOUNCE_TRUE_NEGATIVES = [
         "raw": {
             "id": "n-5",
             "subject": "Action required after our Failure Notice last quarter",
-            "from": {"emailAddress": {"address": "postmaster@cresa.com"}},
+            "from": {"emailAddress": {"address": "postmaster@cresa.email"}},
         },
     },
     {
@@ -388,7 +388,7 @@ _BOUNCE_TRUE_NEGATIVES = [
         "raw": {
             "id": "n-7",
             "subject": "",
-            "from": {"emailAddress": {"address": "postmaster@cresa.com"}},
+            "from": {"emailAddress": {"address": "postmaster@cresa.email"}},
         },
     },
 ]
@@ -427,7 +427,7 @@ def test_bounce_score_sinks_below_human_mail(monkeypatch):
         "id": "b-rank",
         "subject": "[Postmaster] Email Delivery Failure",
         "isRead": False,
-        "from": {"emailAddress": {"address": "postmaster@cresa.com"}},
+        "from": {"emailAddress": {"address": "postmaster@cresa.email"}},
         "toRecipients": [{"emailAddress": {"address": "me@example.com"}}],
         "hasAttachments": True,
     }

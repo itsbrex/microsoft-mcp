@@ -265,10 +265,12 @@ uv run authenticate.py
 - `MICROSOFT_MCP_TENANT_ID`: Optional Azure AD tenant ID override
 - `MICROSOFT_MCP_TOKENS_DIR`: Token storage directory (defaults to `~/.config/microsoft-mcp/tokens/`)
 - `MICROSOFT_MCP_ACCOUNT_ID`: Account identifier used for token files, cached-account selection, and optional authority lookup
+- `MICROSOFT_MCP_NONINTERACTIVE`: Set to `1`, `true`, `yes`, or `on` to disable device-code fallback after a silent refresh failure; cached credentials are preserved for retry
+- `MICROSOFT_MCP_BLOCKED_AUTH_DOMAINS`: Comma-separated account domains that must never authenticate, refresh, or make live verification calls
 - `MICROSOFT_MCP_TOOL_MODE`: Public tool surface mode (`codemode_only` or `hybrid`, default: `codemode_only`)
 - `MICROSOFT_MCP_RESPONSE_PROFILE`: Response shaping profile (`legacy` or `assistant`, default: `legacy`)
 
-If `MICROSOFT_MCP_TENANT_ID` is not set and `MICROSOFT_MCP_ACCOUNT_ID` matches an existing `outlook-creds` profile, the MSAL auth provider will reuse that profile's tenant-specific authority. This avoids tenant-specific device-code failures such as `AADSTS65002` on fresh login.
+If `MICROSOFT_MCP_TENANT_ID` is not set and `MICROSOFT_MCP_ACCOUNT_ID` matches an existing `outlook-creds` profile, the MSAL auth provider will reuse that profile's tenant-specific authority. `AADSTS65002` is different: it means a Microsoft-owned client is not preauthorized for the requested Microsoft resource, so use your own app registration with the required delegated API permissions.
 
 ### Auth CLI (MSAL)
 

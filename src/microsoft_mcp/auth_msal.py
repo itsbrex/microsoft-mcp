@@ -22,6 +22,8 @@ Environment Variables:
 - MICROSOFT_MCP_CLIENT_ID: Override default client ID
 - MICROSOFT_MCP_TENANT_ID: Azure AD tenant (default: "common")
 - MICROSOFT_MCP_TOKENS_DIR: Custom token storage directory
+- MICROSOFT_MCP_BLOCKED_AUTH_DOMAINS: Comma-separated account domains that
+  must never authenticate, refresh, or make live verification calls
 """
 
 import base64
@@ -30,6 +32,7 @@ import logging
 import os
 import stat
 import subprocess
+import tempfile
 import threading
 import urllib.error
 import urllib.parse
@@ -62,6 +65,36 @@ CONFIG_DIR_MODE = stat.S_IRWXU  # 0o700
 
 # Token expiry buffer (refresh if less than this many seconds remaining)
 TOKEN_EXPIRY_BUFFER_SECONDS = 60
+
+
+def _blocked_auth_domains() -> frozenset[str]:
+    """Return normalized domains forbidden from authentication or live access."""
+    return frozenset(
+        domain.strip().casefold().lstrip("@")
+        for domain in os.getenv("MICROSOFT_MCP_BLOCKED_AUTH_DOMAINS", "").split(",")
+        if domain.strip().lstrip("@")
+    )
+
+
+def _require_account_auth_allowed(identifier: str) -> None:
+    """Fail before credential access or network calls for blocked domains."""
+    _, separator, domain = identifier.strip().casefold().rpartition("@")
+    if not separator:
+        return
+
+    blocked_match = next(
+        (
+            blocked
+            for blocked in _blocked_auth_domains()
+            if domain == blocked or domain.endswith(f".{blocked}")
+        ),
+        None,
+    )
+    if blocked_match:
+        raise RuntimeError(
+            f"Authentication is blocked for account domain {blocked_match!r} "
+            "by MICROSOFT_MCP_BLOCKED_AUTH_DOMAINS"
+        )
 
 
 def _interactive_auth_allowed() -> bool:
@@ -199,6 +232,7 @@ class MSALRefreshTokenAuth:
         # Prefer tenant-specific authority metadata from outlook-creds when the
         # caller selected an account but did not explicitly set the tenant.
         self.account_identifier = account_identifier or "default"
+        _require_account_auth_allowed(self.account_identifier)
         if explicit_tenant_id is None:
             account_metadata = _load_outlook_creds_account_metadata(
                 self.account_identifier
@@ -267,41 +301,31 @@ class MSALRefreshTokenAuth:
         return self.tokens_dir / f"{self.account_identifier}{suffix}.txt"
 
     def _secure_write_file(self, path: Path, content: str) -> None:
-        """Write file with secure permissions (0o600) set at create time."""
-        fd = os.open(
-            str(path),
-            os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
-            TOKEN_FILE_MODE,
+        """Atomically replace a file with owner-only permissions."""
+        fd, temporary_name = tempfile.mkstemp(
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            text=True,
         )
+        temporary_path = Path(temporary_name)
         try:
-            with os.fdopen(fd, "w") as f:
+            os.fchmod(fd, TOKEN_FILE_MODE)
+            stream = os.fdopen(fd, "w")
+            fd = -1  # stream owns and closes the descriptor from this point.
+            with stream as f:
                 f.write(content)
-        except Exception:
-            # If anything failed, ensure the fd is closed (fdopen takes ownership).
-            # We don't unlink here — the file may already exist with valid content
-            # from a previous successful call.
-            raise
-        # If the file PRE-EXISTED with a wider mode, O_CREAT mode is ignored by the OS.
-        # Reset mode after-the-fact so overwrites tighten permissions.
-        try:
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temporary_path, path)
             path.chmod(TOKEN_FILE_MODE)
-        except Exception as e:
-            logger.warning(f"Could not set file permissions for {path}: {e}")
+        finally:
+            if fd >= 0:
+                os.close(fd)
+            temporary_path.unlink(missing_ok=True)
 
     def _secure_write_json(self, path: Path, payload: dict[str, Any]) -> None:
-        """Write JSON file with secure permissions (0o600) set at create time."""
-        fd = os.open(
-            str(path),
-            os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
-            TOKEN_FILE_MODE,
-        )
-        with os.fdopen(fd, "w") as f:
-            json.dump(payload, f, indent=2)
-        # Tighten mode in case the file pre-existed with wider permissions.
-        try:
-            path.chmod(TOKEN_FILE_MODE)
-        except Exception as e:
-            logger.warning(f"Could not set file permissions for {path}: {e}")
+        """Atomically replace a JSON file with owner-only permissions."""
+        self._secure_write_file(path, json.dumps(payload, indent=2))
 
     def _load_access_token_data(self) -> Optional[dict[str, Any]]:
         """Load structured access token data from JSON file."""
@@ -362,23 +386,12 @@ class MSALRefreshTokenAuth:
 
         logger.info(f"Access token saved, expires at: {expires_at}")
 
-        # 2. Save refresh token if provided — but ONLY from the Graph leg.
-        # The refresh token is shared across api_types ({id}_refresh_only.txt),
-        # and Azure rotates it on every refresh. An Outlook refresh response
-        # carries a refresh token scoped to the Outlook grant; persisting it
-        # would clobber the Graph-consented token and make the next Graph
-        # `.default` refresh fail with AADSTS65002 (first-party preauthorization).
-        # outlook-creds enforces the same rule (get_oauth_tokens.py: only the
-        # graph response updates the shared refresh token).
-        if refresh_token and self.api_type == "graph":
+        # 2. Save the latest replacement refresh token. Microsoft refresh
+        # tokens are bound to the user/client pair, not to one API resource,
+        # and Microsoft recommends replacing the stored token after each use.
+        if refresh_token:
             self._secure_write_file(self._refresh_token_path(), refresh_token)
             logger.info("Refresh token saved")
-        elif refresh_token:
-            logger.info(
-                "Skipping refresh-token persist for api_type=%s (shared refresh "
-                "token stays Graph-consented)",
-                self.api_type,
-            )
 
         # 3. Save raw access token for easy extraction
         self._secure_write_file(self._access_token_raw_path(), access_token)
@@ -427,6 +440,7 @@ class MSALRefreshTokenAuth:
         Raises:
             Exception: If token refresh fails.
         """
+        _require_account_auth_allowed(self.account_identifier)
         logger.info("Refreshing access token using refresh token")
 
         token_endpoint = TOKEN_ENDPOINT_TEMPLATE.format(tenant=self.tenant_id)
@@ -510,6 +524,7 @@ class MSALRefreshTokenAuth:
         Raises:
             Exception: If authentication fails.
         """
+        _require_account_auth_allowed(self.account_identifier)
         logger.info("Starting device code flow authentication")
 
         app = self._get_msal_app()
@@ -534,8 +549,11 @@ class MSALRefreshTokenAuth:
                     scopes=result.get("scope", " ".join(DEFAULT_SCOPES)),
                     email=cached_username,
                 )
-                # Add username to result for easy access
-                result["username"] = cached_username or self.account_identifier
+                # Preserve only an identity reported by MSAL. Falling back to
+                # the requested filename would make wrong-account detection
+                # impossible when Azure omits identity claims.
+                if cached_username:
+                    result["username"] = cached_username
                 return result
 
         # Initiate device code flow
@@ -617,8 +635,10 @@ class MSALRefreshTokenAuth:
         logger.info("Authentication completed successfully")
         print("\n  Authentication successful!")
 
-        # Add username to result for easy access
-        result["username"] = email or self.account_identifier
+        # Add only the identity Azure reported. The force-reauthentication path
+        # rejects responses whose identity cannot be verified.
+        if email:
+            result["username"] = email
 
         return result
 
@@ -675,27 +695,29 @@ class MSALRefreshTokenAuth:
         available or when the refresh token itself is expired/revoked, making
         re-authentication invisible to the user as long as a browser is reachable.
         """
+        _require_account_auth_allowed(self.account_identifier)
+
         # Fast path: no lock needed if token is already valid.
         if self._is_token_valid():
             token_data = self._load_access_token_data()
             if token_data and token_data.get("access_token"):
                 return token_data
 
-        if self._load_refresh_token():
-            try:
-                return self._do_refresh_locked()
-            except Exception as e:
-                logger.warning(
-                    f"Silent token refresh failed ({e}); falling back to interactive auth"
-                )
-                self.clear_cache()
-        else:
+        # Check refresh-token availability under the same lock used to write
+        # rotated tokens. An unlocked pre-check can observe another thread's
+        # replacement in progress and incorrectly start interactive auth.
+        try:
+            return self._do_refresh_locked()
+        except Exception as e:
             logger.warning(
-                "No refresh token found; initiating interactive authentication"
+                f"Silent token refresh failed ({e}); falling back to interactive auth"
             )
+            _require_interactive_or_raise(self.account_identifier)
+            self.clear_cache()
 
-        # Silent refresh unavailable — prompt the user via device code flow,
-        # unless interactive auth is disabled (headless guard).
+        # Silent refresh unavailable — prompt the user via device code flow.
+        # The guard is repeated for the no-refresh-token path; failed-refresh
+        # paths already checked it before clearing cached credentials.
         _require_interactive_or_raise(self.account_identifier)
         self.authenticate()
         token_data = self._load_access_token_data()
@@ -718,6 +740,7 @@ class MSALRefreshTokenAuth:
         itself expired or revoked, so the 401-retry path in graph.request can
         succeed without the user having to run a separate script.
         """
+        _require_account_auth_allowed(self.account_identifier)
         logger.info(f"Force-refreshing access token for {self.account_identifier}")
         try:
             self._do_refresh_locked()
@@ -805,11 +828,10 @@ def classify_refresh_error(
     ``None`` for unrecognized errors so callers can fall back to the raw
     string.
 
-    The headline case is **AADSTS65002**: a Graph ``.default`` refresh whose
-    shared refresh token is scoped to the Outlook grant (no Graph delegated
-    consent). This is exactly the failure mode the graph-only refresh-token
-    persist guard prevents going forward; this classifier explains how to
-    recover an already-tainted token.
+    ``AADSTS65002`` means a Microsoft-owned first-party client is not
+    preauthorized for the requested Microsoft-owned resource. Repeating
+    interactive consent with that same client cannot grant preauthorization;
+    callers need an app registration authorized for the requested API.
 
     Args:
         error_text: The error message captured from a failed refresh (may be
@@ -829,12 +851,13 @@ def classify_refresh_error(
         return {
             "code": "AADSTS65002",
             "summary": (
-                "shared refresh token is scoped to the Outlook grant and has "
-                "no Graph delegated consent (first-party preauthorization)"
+                "Microsoft first-party client is not preauthorized for the "
+                "requested first-party resource"
             ),
             "remedy": (
-                f"re-consent Graph via device-code flow: "
-                f"microsoft-mcp auth refresh {who} --force --api both"
+                "set MICROSOFT_MCP_CLIENT_ID to your own app registration with "
+                "delegated permission for the requested API, then run: "
+                f"microsoft-mcp auth refresh {who} --force"
             ),
         }
     if "AADSTS70008" in error_text or "AADSTS700082" in error_text:
@@ -869,6 +892,7 @@ def _refresh_one(
     for later retry. The caller is responsible for tagging the returned dict
     with the ``api_type`` key.
     """
+    _require_account_auth_allowed(identifier)
     probe = MSALRefreshTokenAuth(
         tokens_dir=tokens_dir,
         client_id=client_id,
@@ -1085,6 +1109,8 @@ def verify_account_tokens(
 
     for token_file in token_files:
         identifier = token_file.stem[: -len("_access_token")]
+        if live:
+            _require_account_auth_allowed(identifier)
         entry: dict[str, Any] = {
             "identifier": identifier,
             "jwt_upn": None,
@@ -1196,6 +1222,7 @@ def refresh_account(
     """
     if not identifier or not identifier.strip():
         raise ValueError("identifier must be a non-empty string")
+    _require_account_auth_allowed(identifier)
 
     resolved_dir = _resolve_tokens_dir(tokens_dir)
     token_file = resolved_dir / f"{identifier}_access_token.json"
@@ -1209,6 +1236,7 @@ def refresh_account(
             "status": "missing",
             "expires_at": None,
             "error": f"no token file at {token_file}",
+            "api_type": api_type,
         }
 
     result = _refresh_one(
@@ -1242,15 +1270,16 @@ def force_reauthenticate(
         tenant_id: MSAL tenant ID. Defaults to env var or "common".
         also_outlook: When True, after the Graph re-auth, mint an Outlook
             access token off the freshly-minted shared refresh token (one
-            extra silent refresh, no second prompt). The Outlook leg never
-            overwrites the shared refresh token (see _save_tokens), so this
-            is safe. Mirrors ``auth refresh --api both`` but for the re-auth
-            path.
+            extra silent refresh, no second prompt). Each successful refresh
+            persists Microsoft's latest replacement token for the shared
+            user/client pair. Mirrors ``auth refresh --api both`` but for the
+            re-auth path.
 
     Returns:
         Dict with keys:
         - identifier (str)
-        - status (str): "reauthenticated" on success
+        - status (str): "reauthenticated" on full success, or "partial" when
+          Graph succeeds but a requested Outlook token cannot be minted
         - expires_at (str | None)
         - signed_in_as (str | None): identifier reported by the new token
           (from JWT claims), useful for detecting drift between
@@ -1265,6 +1294,7 @@ def force_reauthenticate(
     """
     if not identifier or not identifier.strip():
         raise ValueError("identifier must be a non-empty string")
+    _require_account_auth_allowed(identifier)
 
     resolved_dir = _resolve_tokens_dir(tokens_dir)
 
@@ -1283,12 +1313,33 @@ def force_reauthenticate(
 
     token_data = auth._load_access_token_data() or {}
     expires_at = token_data.get("expires_at")
-    claims = _decode_jwt_claims(result.get("access_token", ""))
+    access_claims = _decode_jwt_claims(result.get("access_token", ""))
+    id_claims = result.get("id_token_claims")
+    if not isinstance(id_claims, dict):
+        id_claims = {}
     signed_in_as = (
-        claims.get("upn")
-        or claims.get("preferred_username")
-        or claims.get("unique_name")
+        result.get("username")
+        or id_claims.get("preferred_username")
+        or id_claims.get("email")
+        or id_claims.get("upn")
+        or access_claims.get("upn")
+        or access_claims.get("preferred_username")
+        or access_claims.get("unique_name")
     )
+
+    if not signed_in_as:
+        auth.clear_cache()
+        raise RuntimeError(
+            "could not verify the signed-in account identity; discarded "
+            f"credentials requested for {identifier!r}"
+        )
+
+    if signed_in_as.casefold() != identifier.casefold():
+        auth.clear_cache()
+        raise RuntimeError(
+            f"signed-in account {signed_in_as!r} does not match requested "
+            f"account {identifier!r}; discarded mislabeled credentials"
+        )
 
     out: dict[str, Any] = {
         "identifier": identifier,
@@ -1305,5 +1356,10 @@ def force_reauthenticate(
             identifier, resolved_dir, client_id, tenant_id, api_type="outlook"
         )
         out["outlook"]["api_type"] = "outlook"
+
+        if out["outlook"].get("status") == "failed":
+            outlook_error = out["outlook"].get("error") or "unknown error"
+            out["status"] = "partial"
+            out["error"] = f"Outlook token mint failed: {outlook_error}"
 
     return out

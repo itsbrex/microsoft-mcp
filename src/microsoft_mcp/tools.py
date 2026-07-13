@@ -66,7 +66,7 @@ if not logging.getLogger().hasHandlers():
     root_logger.setLevel(logging.INFO)
     root_logger.addHandler(console_handler)
 
-mcp = FastMCP("microsoft-graph-mcp")
+mcp = FastMCP("microsoft-mcp")
 
 
 # FastMCP 3.x compatibility shim.

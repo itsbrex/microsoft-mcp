@@ -10,7 +10,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
-DEFAULT_BRIDGE_NAME = "code-mode-mcp"
+DEFAULT_BRIDGE_NAME = "code-mode"
+LEGACY_BRIDGE_NAME = "code-mode-mcp"
+BRIDGE_SERVER_NAMES = (DEFAULT_BRIDGE_NAME, LEGACY_BRIDGE_NAME)
+UPSTREAM_BRIDGE_PACKAGE = "@utcp/code-mode-mcp@1.2.1"
+
+_CANONICAL_CONFIG_ENV = "UTCP_CONFIG_FILE"
+_LEGACY_CONFIG_ENV = "UTCP_CONFIG_PATH"
+_BRIDGE_EXTENSION_CONFIG_KEYS = frozenset(
+    {"exclude_tools", "include_tools", "default_disabled"}
+)
 
 # Relative path from a code-mode repo root to the compiled MCP entry point.
 _CODE_MODE_DIST_REL = Path("code-mode-mcp") / "dist" / "index.js"
@@ -48,22 +57,41 @@ def _resolve_default_bridge_command() -> str:
     return "npx"
 
 
-def _resolve_default_bridge_args() -> list[str]:
-    """Resolve the default args list for the UTCP bridge command.
+def _is_npx_command(command: str) -> bool:
+    return Path(command).name.lower() in {"npx", "npx.cmd"}
+
+
+def _resolve_bridge_args(
+    command: str,
+    *,
+    explicit_command: bool,
+    bridge_args: Sequence[str] | None = None,
+) -> list[str]:
+    """Resolve args for an explicit or automatically selected bridge command.
 
     When MICROSOFT_MCP_CODE_MODE_DIR points to a local code-mode checkout
     whose dist/index.js exists, the args contain that path so the bridge
-    is launched without a network round-trip to npm.  Otherwise fall back
-    to the published npm package name.
+    is launched without a network round-trip to npm. An explicit bridge
+    command is treated as a self-contained launcher. Otherwise fall back
+    to the exact upstream package release matching the canonical seven tools.
     """
-    if os.getenv("MICROSOFT_MCP_UTCP_BRIDGE_COMMAND"):
-        # Custom command supplied — keep the npm package name as the default arg
-        # so callers can still override via bridge_args when needed.
-        return ["@utcp/code-mode-mcp"]
+    if bridge_args is not None:
+        return list(bridge_args)
+    if explicit_command:
+        return [UPSTREAM_BRIDGE_PACKAGE] if _is_npx_command(command) else []
     dist = _local_code_mode_dist()
     if dist is not None:
         return [str(dist)]
-    return ["@utcp/code-mode-mcp"]
+    return [UPSTREAM_BRIDGE_PACKAGE]
+
+
+def _resolve_default_bridge_args() -> list[str]:
+    command_override = os.getenv("MICROSOFT_MCP_UTCP_BRIDGE_COMMAND")
+    command = command_override or _resolve_default_bridge_command()
+    return _resolve_bridge_args(
+        command,
+        explicit_command=command_override is not None,
+    )
 
 
 DEFAULT_BRIDGE_COMMAND = _resolve_default_bridge_command()
@@ -94,6 +122,107 @@ def list_server_names(claude_config: dict[str, Any]) -> list[str]:
             "Expected a non-empty 'mcpServers' object in the Claude config"
         )
     return list(mcp_servers)
+
+
+def _normalized_config_path(value: Any, *, bridge_name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(
+            f"Expected UTCP config path for bridge '{bridge_name}' to be "
+            "a non-empty string"
+        )
+    return str(Path(value).expanduser().resolve())
+
+
+def _normalize_bridge_registration(
+    bridge_name: str,
+    server_config: Any,
+) -> dict[str, Any]:
+    if not isinstance(server_config, dict):
+        raise ValueError(
+            f"Expected bridge registration '{bridge_name}' to be an object"
+        )
+
+    normalized = copy.deepcopy(server_config)
+    env = normalized.get("env")
+    if env is None:
+        return normalized
+    if not isinstance(env, dict):
+        raise ValueError(f"Expected 'env' for bridge '{bridge_name}' to be an object")
+
+    canonical_value = env.get(_CANONICAL_CONFIG_ENV)
+    legacy_value = env.get(_LEGACY_CONFIG_ENV)
+    canonical_path = (
+        _normalized_config_path(canonical_value, bridge_name=bridge_name)
+        if canonical_value is not None
+        else None
+    )
+    legacy_path = (
+        _normalized_config_path(legacy_value, bridge_name=bridge_name)
+        if legacy_value is not None
+        else None
+    )
+    if (
+        canonical_path is not None
+        and legacy_path is not None
+        and canonical_path != legacy_path
+    ):
+        raise ValueError(
+            f"Conflicting UTCP config paths for bridge '{bridge_name}': "
+            f"{_CANONICAL_CONFIG_ENV} and {_LEGACY_CONFIG_ENV} differ"
+        )
+
+    selected_path = canonical_path or legacy_path
+    if selected_path is not None:
+        env[_CANONICAL_CONFIG_ENV] = selected_path
+    env.pop(_LEGACY_CONFIG_ENV, None)
+    return normalized
+
+
+def _validate_bridge_registrations(claude_config: dict[str, Any]) -> None:
+    mcp_servers = claude_config.get("mcpServers")
+    if not isinstance(mcp_servers, dict):
+        return
+
+    normalized: dict[str, dict[str, Any]] = {}
+    for bridge_name in BRIDGE_SERVER_NAMES:
+        if bridge_name in mcp_servers:
+            normalized[bridge_name] = _normalize_bridge_registration(
+                bridge_name,
+                mcp_servers[bridge_name],
+            )
+
+    if len(normalized) == 2:
+        canonical = normalized[DEFAULT_BRIDGE_NAME]
+        legacy = normalized[LEGACY_BRIDGE_NAME]
+        if canonical != legacy:
+            raise ValueError(
+                "Divergent bridge registrations found for "
+                f"'{DEFAULT_BRIDGE_NAME}' and '{LEGACY_BRIDGE_NAME}'"
+            )
+
+
+def _canonical_bridge_name(bridge_name: str) -> str:
+    if bridge_name not in BRIDGE_SERVER_NAMES:
+        raise ValueError(
+            f"Unsupported bridge name '{bridge_name}'; expected "
+            f"'{DEFAULT_BRIDGE_NAME}' or legacy '{LEGACY_BRIDGE_NAME}'"
+        )
+    return DEFAULT_BRIDGE_NAME
+
+
+def _utcp_config_requires_bridge_extensions(utcp_config_path: Path) -> bool:
+    if not utcp_config_path.exists():
+        return False
+
+    config = load_json(utcp_config_path)
+    templates = config.get("manual_call_templates")
+    if not isinstance(templates, list):
+        return False
+    return any(
+        isinstance(template, dict)
+        and bool(_BRIDGE_EXTENSION_CONFIG_KEYS.intersection(template))
+        for template in templates
+    )
 
 
 def sanitize_manual_name(name: str) -> str:
@@ -138,6 +267,7 @@ def _select_server_names(
     bridge_servers_to_skip: Sequence[str] | None = None,
 ) -> list[str]:
     available_names = list_server_names(claude_config)
+    _validate_bridge_registrations(claude_config)
     available_lookup = set(available_names)
     skip_set = {
         name
@@ -164,7 +294,7 @@ def _select_server_names(
         exclude_lookup = set(exclude_servers)
         selected_names = [name for name in selected_names if name not in exclude_lookup]
 
-    if include_servers is None and skip_set:
+    if skip_set:
         selected_names = [name for name in selected_names if name not in skip_set]
 
     if not selected_names:
@@ -215,7 +345,7 @@ def build_utcp_config(
     exclude_servers: list[str] | None = None,
     env_file_path: str | None = None,
     server_env_overrides: dict[str, dict[str, str]] | None = None,
-    bridge_servers_to_skip: Sequence[str] | None = (DEFAULT_BRIDGE_NAME,),
+    bridge_servers_to_skip: Sequence[str] | None = BRIDGE_SERVER_NAMES,
 ) -> tuple[dict[str, Any], list[ManualMapping]]:
     mcp_servers = claude_config.get("mcpServers")
     if not isinstance(mcp_servers, dict) or not mcp_servers:
@@ -285,17 +415,46 @@ def build_bridge_claude_config(
     utcp_config_path: Path,
     *,
     bridge_name: str = DEFAULT_BRIDGE_NAME,
-    bridge_command: str = DEFAULT_BRIDGE_COMMAND,
+    bridge_command: str | None = None,
     bridge_args: list[str] | None = None,
 ) -> dict[str, Any]:
-    args = bridge_args or DEFAULT_BRIDGE_ARGS
+    canonical_bridge_name = _canonical_bridge_name(bridge_name)
+    environment_command = os.getenv("MICROSOFT_MCP_UTCP_BRIDGE_COMMAND")
+    explicit_command = bridge_command or environment_command
+    command = explicit_command or _resolve_default_bridge_command()
+    args = _resolve_bridge_args(
+        command,
+        explicit_command=explicit_command is not None,
+        bridge_args=bridge_args,
+    )
+
+    uses_upstream_fallback = _is_npx_command(command) and args == [
+        UPSTREAM_BRIDGE_PACKAGE
+    ]
+    uses_automatic_local_dist = (
+        explicit_command is None
+        and bridge_args is None
+        and _local_code_mode_dist() is not None
+    )
+    uses_explicit_extension_bridge = (
+        explicit_command is not None and not uses_upstream_fallback
+    )
+    if _utcp_config_requires_bridge_extensions(utcp_config_path) and not (
+        uses_automatic_local_dist or uses_explicit_extension_bridge
+    ):
+        raise ValueError(
+            "UTCP config requires Local Bridge Extensions; set "
+            "MICROSOFT_MCP_CODE_MODE_DIR or "
+            "an explicit bridge command (and arguments when needed)"
+        )
+
     return {
         "mcpServers": {
-            bridge_name: {
-                "command": bridge_command,
+            canonical_bridge_name: {
+                "command": command,
                 "args": args,
                 "env": {
-                    "UTCP_CONFIG_FILE": str(utcp_config_path.resolve()),
+                    _CANONICAL_CONFIG_ENV: str(utcp_config_path.resolve()),
                 },
             }
         }
@@ -314,7 +473,7 @@ def convert_claude_config(
     bridge_config_name: str = "claude_desktop_config.utcp.json",
     manual_map_name: str = "manual_map.json",
     bridge_name: str = DEFAULT_BRIDGE_NAME,
-    bridge_command: str = DEFAULT_BRIDGE_COMMAND,
+    bridge_command: str | None = None,
     bridge_args: list[str] | None = None,
 ) -> dict[str, Path]:
     claude_config = load_json(source_path)
@@ -324,7 +483,7 @@ def convert_claude_config(
         exclude_servers=exclude_servers,
         env_file_path=env_file_path,
         server_env_overrides=server_env_overrides,
-        bridge_servers_to_skip=(bridge_name,),
+        bridge_servers_to_skip=BRIDGE_SERVER_NAMES,
     )
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -386,12 +545,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--bridge-name",
         default=DEFAULT_BRIDGE_NAME,
-        help="Name of the single bridge server entry in the generated Claude config.",
+        help=(
+            "Bridge host name to accept. Both code-mode and legacy code-mode-mcp "
+            "emit the canonical code-mode key."
+        ),
     )
     parser.add_argument(
         "--bridge-command",
-        default=DEFAULT_BRIDGE_COMMAND,
-        help="Command used to launch the UTCP code-mode bridge.",
+        default=None,
+        help=(
+            "Explicit command used to launch the UTCP code-mode bridge. "
+            "Defaults to a local dist when configured, then the pinned upstream release."
+        ),
     )
     parser.add_argument(
         "--bridge-arg",
@@ -400,7 +565,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Argument passed to the bridge command. Repeat for multiple args. "
-            f"Defaults to {DEFAULT_BRIDGE_ARGS[0]}."
+            f"Automatic upstream fallback is {UPSTREAM_BRIDGE_PACKAGE}."
         ),
     )
     parser.add_argument(

@@ -431,6 +431,9 @@ The original Claude Desktop config is only read, never modified.
 
 The generated bridge config defaults to:
 
-- server name: `code-mode-mcp`
-- command: resolved via `shutil.which("npx")`, with `MICROSOFT_MCP_UTCP_BRIDGE_COMMAND` env var as override (falls back to literal `"npx"` for PATH lookup at exec time)
-- args: `["@utcp/code-mode-mcp"]`
+- server name: `code-mode` (legacy `code-mode-mcp` input is accepted but never emitted)
+- config path environment key: `UTCP_CONFIG_FILE` (legacy `UTCP_CONFIG_PATH` input is accepted when equal)
+- command: a configured local Code-Mode `dist`, then `shutil.which("npx")`/`"npx"`; `MICROSOFT_MCP_UTCP_BRIDGE_COMMAND` overrides it
+- upstream fallback args: `["@utcp/code-mode-mcp@1.2.1"]`
+
+Configs using Local Bridge extension keys (`exclude_tools`, `include_tools`, or `default_disabled`) require `MICROSOFT_MCP_CODE_MODE_DIR` or an explicit Local Bridge command and arguments. They never fall back to the canonical-only upstream package.

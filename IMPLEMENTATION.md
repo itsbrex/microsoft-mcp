@@ -81,6 +81,20 @@ The runtime should:
 - Generate stable interface text from live tool schemas.
 - Return `result` and captured `logs` from code execution.
 
+#### 5. Generated UTCP Bridge Config (`utcp_bridge_config.py`)
+
+The config generator emits one canonical `code-mode` registration using
+`UTCP_CONFIG_FILE`. Readers also accept legacy `code-mode-mcp` and
+`UTCP_CONFIG_PATH` inputs, accept equivalent duplicates, and reject divergent
+duplicates instead of guessing which registration owns runtime selection.
+
+Bridge launch resolution prefers a configured local Code-Mode build. Without
+one, canonical seven-tool configs use exact fallback
+`@utcp/code-mode-mcp@1.2.1`. Extension keys (`exclude_tools`, `include_tools`,
+or `default_disabled`) require automatic local bridge selection or an explicit
+bridge command; bridge arguments alone do not opt into extension behavior.
+Conversion writes new output files and leaves source host config unchanged.
+
 ## Implementation Patterns
 
 ### Delegated Access Model

@@ -67,3 +67,8 @@ outputs/
 codedb.snapshot
 TODO.md
 
+
+# Personal inbox content — never commit
+inbox-triage-*.md
+mcp.log
+mcp-tool-responses/

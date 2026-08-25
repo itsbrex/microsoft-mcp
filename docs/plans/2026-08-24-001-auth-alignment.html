@@ -444,8 +444,11 @@ html[data-motion=reduced] *{transition:none!important;animation:none!important;s
     (<code>d3590ed6-…</code>) with device-code sign-in and file tokens; no new registrations, no new consent
     surface. outlook-creds contributes the working EWS inbox-rules path; microsoft-mcp contributes its
     hardened refresh layer (rotation invariants, AADSTS hints, headless guard, 401 recovery). Each decision
-    states what it enables, its trade-offs, and exactly how it appears to IT (Entra sign-in logs, unified
-    audit log, Microsoft Sentinel, endpoint EDR).</p>
+    states what it enables, its pros/cons and trade-offs, a fallback alternative if you take neither the
+    suggestion nor the status quo, and exactly how it appears to IT (Entra sign-in logs, unified audit log,
+    Microsoft Sentinel, endpoint EDR). <b>Rev 2:</b> my recommended decision is pre-selected on each card
+    (13 approve, 2 reject — d08, d11); anything you already decided or edited is untouched, and every
+    pre-selection is one keypress to flip.</p>
     <div class="howto">
       <span><b>Keyboard-first:</b> press <kbd>↵ Enter</kbd> to review one decision at a
       time — <kbd>A</kbd> approve · <kbd>R</kbd> reject (both auto-advance) ·
@@ -613,97 +616,97 @@ var ACCENT_HUE = 245;
 var PLAN_ITEMS = [
 
   /* ---------------- outlook-creds ---------------- */
-  {id:"d01",group:"outlook-creds",kind:"edit",
+  {id:"d01",group:"outlook-creds",kind:"edit",dflt:"approved",
    title:"Persist the rotated refresh token on every successful exchange",
    current:"Device-flow save path discards the rotated refresh token returned by the Outlook leg (oauth.py:318-325); token_manager always overwrites the shared _refresh_only.txt, including patterns that can clobber a good token after a failed leg.",
    suggested:"Adopt microsoft-mcp's invariant: after every SUCCESSFUL token exchange (either resource), persist Microsoft's replacement refresh token; never write on a failed leg. Add regression tests mirroring microsoft-mcp's dual-token suite.",
-   why:"Enables: immunity to the lockout class where a stale/clobbered refresh token silently kills BOTH APIs at once (the exact AADSTS65002-adjacent bug already fixed in microsoft-mcp). Trade-off: touches the most sensitive save path — small diff, must ship with tests. IT view: fewer failed non-interactive sign-ins in Entra logs (refresh failures log AADSTS codes); successful refreshes are indistinguishable from normal Office desktop traffic."},
+   why:"Pre-selected APPROVE — highest-leverage correctness fix on the board. Pros: immunity to the lockout class where a clobbered refresh token silently kills BOTH APIs at once (the AADSTS65002-adjacent bug already fixed in microsoft-mcp); small diff; invariant already proven in the sibling repo. Cons / trade-offs: touches the most sensitive save path, so it must ship with regression tests. If neither: detection-only fallback — log a loud warning whenever an exchange returns a replacement refresh token that is not persisted, so silent decay at least becomes visible. IT view: fewer failed non-interactive sign-ins in Entra logs (refresh failures log AADSTS codes); successful refreshes are indistinguishable from stock Office traffic."},
 
-  {id:"d02",group:"outlook-creds",kind:"edit",
+  {id:"d02",group:"outlook-creds",kind:"edit",dflt:"approved",
    title:"Use the tenant authority consistently for refresh",
    current:"Device flow authenticates against the tenant-specific authority (oauth.py:130) but programmatic refresh posts to /common (token_manager.py:44); acquire_outlook_token_via_refresh uses tenant (oauth.py:222) — three behaviors.",
    suggested:"Thread realm/tenant from account metadata into TokenManager and refresh against the tenant endpoint everywhere, falling back to /common only when metadata is absent.",
-   why:"Enables: consistent token audience and correct behavior for guest/multi-tenant accounts; removes a whole category of confusing auth edge cases. Trade-off: plumbing change through TokenManager constructor. IT view: token requests hit the tenant endpoint exactly like stock Office traffic — no new signal, marginally cleaner logs (no /common ambiguity)."},
+   why:"Pre-selected APPROVE. Pros: consistent token audience; correct behavior for guest/multi-tenant accounts; removes a whole category of confusing auth edge cases. Cons / trade-offs: plumbing change through the TokenManager constructor; /common fallback still needed when metadata is absent. If neither: keep /common but log a tenant-mismatch warning whenever the metadata realm differs from the token's tid claim — visibility without the plumbing. IT view: token requests hit the tenant endpoint exactly like stock Office traffic — no new signal, marginally cleaner logs."},
 
-  {id:"d03",group:"outlook-creds",kind:"edit",
+  {id:"d03",group:"outlook-creds",kind:"edit",dflt:"approved",
    title:"Port classify_refresh_error() AADSTS hints from microsoft-mcp",
    current:"Two typed exceptions only (TokenRefreshError / AuthenticationRequiredError); no AADSTS branching — users get Microsoft's raw error_description.",
    suggested:"Port the pure classifier mapping AADSTS 65002 / 70008 / 50173 to {code, summary, remedy}, attach as a hint on failed-refresh results and CLI output.",
-   why:"Enables: actionable recovery guidance at the exact moment refresh fails, instead of a raw AADSTS string to google. Trade-off: none — pure function plus tests, already proven in microsoft-mcp. IT view: invisible (local string mapping); indirectly reduces blind re-auth retry storms that show up as repeated failure entries in sign-in logs."},
+   why:"Pre-selected APPROVE. Pros: actionable recovery guidance at the exact moment refresh fails instead of a raw AADSTS string to google; pure function plus tests, already proven in microsoft-mcp. Cons / trade-offs: essentially none — one small fixture to keep in sync as codes are added. If neither: docs-only fallback — a README table mapping the three AADSTS codes to remedies (weaker: nobody reads docs mid-failure). IT view: invisible (local string mapping); indirectly reduces blind re-auth retry storms that show up as repeated failure entries in sign-in logs."},
 
-  {id:"d04",group:"outlook-creds",kind:"edit",
+  {id:"d04",group:"outlook-creds",kind:"edit",dflt:"approved",
    title:"Add headless guard + 401 auto-recovery",
    current:"A failed silent refresh falls through toward interactive device flow — in cron that hangs forever; HTTP 401s propagate raw to the caller.",
    suggested:"Port MICROSOFT_MCP_NONINTERACTIVE semantics (raise a clear error instead of prompting when headless) and the 401 pattern: force one refresh, replay the request once, surface the original 401 if it repeats.",
-   why:"Enables: safe unattended operation (cron/CI) and self-healing after idle-session token revocation. Trade-off: one extra token request per 401; automation must set the guard env var. IT view: each forced refresh is one ordinary non-interactive sign-in entry; the guard REDUCES abandoned device-code authorizations — every initiated device flow is an auth event IT can observe sitting pending until it completes or expires."},
+   why:"Pre-selected APPROVE. Pros: safe unattended operation (cron/CI); self-heals the idle-session/revoked-token case automatically. Cons / trade-offs: one extra token request per 401; automation has to set the guard env var. If neither: split it — adopt only the headless guard (cheap, kills the hangs) and skip the 401 replay, or wrap cron invocations in an external timeout. IT view: each forced refresh is one ordinary non-interactive sign-in entry; the guard REDUCES abandoned device-code authorizations — every initiated device flow is an auth event IT can observe sitting pending until it completes or expires."},
 
-  {id:"d05",group:"outlook-creds",kind:"edit",
+  {id:"d05",group:"outlook-creds",kind:"edit",dflt:"approved",
    title:"Centralize the client ID with an env override",
    current:"The Office client GUID is hardcoded in three places (config.py:173, oauth.py:104, refresh_access_token.sh:16) with no environment override.",
    suggested:"Single constant in config.py plus an OUTLOOK_CREDS_CLIENT_ID env override, mirroring MICROSOFT_MCP_CLIENT_ID.",
-   why:"Enables: one source of truth and painless client swaps if ever needed. Trade-off: none. IT view: no change — the same client is presented; sign-in log rows are identical."},
+   why:"Pre-selected APPROVE. Pros: one source of truth; painless swaps if ever needed; config parity with microsoft-mcp. Cons / trade-offs: none of substance. If neither: consolidate to one constant WITHOUT the env override — still kills the triplication, loses the flexibility. IT view: no change — the same client is presented; sign-in log rows are identical."},
 
-  {id:"d06",group:"outlook-creds",kind:"structural",
+  {id:"d06",group:"outlook-creds",kind:"structural",dflt:"approved",
    title:"Migrate Outlook REST v2.0 consumers to Graph",
    current:"Send mail, contacts CRUD, and calendar events still POST to outlook.office365.com/api/v2.0 (api/messages.py, contacts.py, events.py) — an endpoint Microsoft has decommissioned; it answers today on borrowed time.",
    suggested:"Move those three consumers onto Graph (the Graph token is already in hand; microsoft-mcp proves coverage). The Outlook-resource token then serves exactly one purpose: EWS rules.",
-   why:"Enables: getting off a dead API before it gets turned off mid-workday, and converging both repos on one Graph-first surface. Trade-off: payload rewrite (PascalCase to camelCase) and a retest pass. IT view: the workload's resource audience shifts from 'Office 365 Exchange Online' to 'Microsoft Graph' in token logs; the mailbox actions themselves generate the SAME unified-audit-log records either way (MailItemsAccessed, Send) — net visibility unchanged, API surface more standard."},
+   why:"Pre-selected APPROVE. Pros: off a decommissioned API before it gets turned off mid-workday; converges both repos on one Graph-first surface; the Graph token is already minted, so no auth change at all. Cons / trade-offs: payload rewrite (PascalCase to camelCase) and a retest pass across three modules. If neither: keep REST but add fail-fast detection — a clear error on 404/410 naming the Graph replacement — which accepts abrupt breakage later in exchange for zero work now. IT view: the workload's resource audience shifts from 'Office 365 Exchange Online' to 'Microsoft Graph' in token logs; the mailbox actions generate the SAME unified-audit-log records either way (MailItemsAccessed, Send) — net visibility unchanged, API surface more standard."},
 
-  {id:"d07",group:"outlook-creds",kind:"edit",
+  {id:"d07",group:"outlook-creds",kind:"edit",dflt:"approved",
    title:"Retire or align the legacy shell scripts",
    current:"refresh_access_token.sh defaults to the OUTLOOK scope while the Python path defaults to Graph — silent drift; the client ID is duplicated there too.",
    suggested:"Either delete the legacy scripts or reduce them to documented thin wrappers around the Python CLI so scope defaults cannot diverge.",
-   why:"Enables: one code path, no drift-by-forgotten-script. Trade-off: loses a standalone emergency fallback unless kept as a wrapper. IT view: none."},
+   why:"Pre-selected APPROVE. Pros: one code path; no drift-by-forgotten-script; one fewer place carrying the client ID. Cons / trade-offs: loses a standalone emergency fallback unless kept as a thin wrapper. If neither: keep the scripts but fix the scope default and source the client ID from config — drift narrowed, duplication remains. IT view: none."},
 
   /* ---------------- microsoft-mcp ---------------- */
-  {id:"d08",group:"microsoft-mcp",kind:"structural",
+  {id:"d08",group:"microsoft-mcp",kind:"structural",dflt:"rejected",
    title:"Port a minimal EWS rules backend (the parked June plan)",
    current:"All 9 inbox-rule tools are registered but WRITES return 403 under the Office client — its Graph token lacks MailboxSettings.ReadWrite. outlook-creds proves the same client's Outlook-resource token authenticates EWS rule CRUD today.",
    suggested:"Port ews.py minimally: SOAP transport, FindFolder name-to-EWS-folder-ID resolution (Graph folder IDs are invalid as MoveToFolder targets), and list/create/update/delete/toggle. Gate to MSAL mode; keep Graph read path as-is.",
-   why:"Enables: the one capability outlook-creds has that microsoft-mcp lacks — working rule management with zero extra setup. Trade-offs: SOAP/XML maintenance enters a deliberately Graph-only codebase, and the EWS retirement on 2026-10-01 caps the runway at roughly five weeks, so port minimal and treat it as a bridge (see d14). IT view: HIGHEST-SIGNAL item on this board. EWS mailbox access is visible per protocol in Exchange audit data, and rule creation/modification writes New-InboxRule / Set-InboxRule events to the unified audit log — inbox-rule changes are among the most-watched signals in Sentinel and Defender (business-email-compromise detections specifically alert on rules that forward externally or move/delete security mail). Benign self-managed rules are normal, but expect this activity to be fully logged and potentially reviewed."},
+   why:"Pre-selected REJECT — poor return on a five-week runway. Pros of porting: rule management inside microsoft-mcp with zero extra setup; the one capability gap this plan set out to close. Cons / trade-offs: SOAP/XML maintenance enters a deliberately Graph-only codebase for a protocol Microsoft starts blocking on 2026-10-01; the build-and-test burden lands weeks before the capability dies. If neither: middle path — have microsoft-mcp's rule-write tools DELEGATE to outlook-creds' already-working rules CLI (subprocess bridge): same sunset applies, but zero new SOAP code and one deletion later. After retirement, rule writes under this client have no API path regardless (d14). IT view: any EWS path — ported or delegated — is the highest-signal item on this board. EWS mailbox access is visible per protocol in Exchange audit data, and rule creation/modification writes New-InboxRule / Set-InboxRule events to the unified audit log, which Sentinel and Defender BEC detections specifically watch (external forwarding, moving/deleting security mail). Benign self-managed rules are normal, but fully logged and potentially reviewed."},
 
-  {id:"d09",group:"microsoft-mcp",kind:"edit",
+  {id:"d09",group:"microsoft-mcp",kind:"edit",dflt:"approved",
    title:"authenticate.py mints Graph + Outlook tokens in one run",
    current:"authenticate.py requests Graph only (DEFAULT_SCOPES, auth_msal.py:57); getting the Outlook token requires a second step (auth refresh --api both).",
    suggested:"After the device flow succeeds, immediately replay the fresh refresh token for the Outlook resource and write both token files — parity with outlook-creds' setup-both behavior, honoring the existing Graph-leg refresh-token persist invariant.",
-   why:"Enables: one-command setup; no half-configured accounts where EWS later fails for want of an Outlook token. Trade-off: authenticate now performs a second token exchange — must not violate the rotation invariant (already enforced in auth_msal). IT view: one interactive device-code sign-in plus one additional non-interactive refresh grant with resource 'Office 365 Exchange Online' — the identical dual-resource pattern Office desktop itself produces."},
+   why:"Pre-selected APPROVE. Pros: one-command setup; no half-configured accounts that fail later for want of an Outlook token. Cons / trade-offs: authenticate performs a second token exchange and must honor the rotation invariant (already enforced in auth_msal); slightly slower first run. If neither: keep the two-step but have authenticate print the exact follow-up command (auth refresh --api both) on completion — zero code risk, still discoverable. IT view: one interactive device-code sign-in plus one additional non-interactive refresh grant with resource 'Office 365 Exchange Online' — the identical dual-resource pattern Office desktop itself produces."},
 
-  {id:"d10",group:"microsoft-mcp",kind:"edit",
+  {id:"d10",group:"microsoft-mcp",kind:"edit",dflt:"approved",
    title:"Tenant-aware refresh (store realm at authenticate time)",
    current:"All refreshes post to /common regardless of the account's home tenant.",
    suggested:"Capture the tenant/realm claim from the initial token, store it in the token JSON (backward-compatible extra field), and refresh against the tenant endpoint when known.",
-   why:"Enables: mirror of d02 — consistent audience, correct guest-account behavior. Trade-off: token JSON schema grows one optional field; old files keep working via /common fallback. IT view: cleaner tenant-scoped sign-in entries; no new signal."},
+   why:"Pre-selected APPROVE. Pros: mirror of d02 — consistent audience, correct guest-account behavior, and it quietly enables d11's better alternative (login/tenant prefill with no keychain reads). Cons / trade-offs: token JSON grows one optional field; old files keep working via /common fallback. If neither: /common plus a logged tenant-mismatch warning, same as d02's fallback. IT view: cleaner tenant-scoped sign-in entries; no new signal."},
 
-  {id:"d11",group:"microsoft-mcp",kind:"edit",
+  {id:"d11",group:"microsoft-mcp",kind:"edit",dflt:"rejected",
    title:"Flag-gated macOS keychain bootstrap (OneAuth metadata)",
    current:"No autodiscovery: users supply the email by env var; tenant defaults to /common.",
    suggested:"Optional, OFF by default: read Microsoft OneAuth keychain METADATA (tenant/realm, login name — never token secrets, which stay encrypted) to prefill tenant authority and login hint, with silent fallback when unavailable.",
-   why:"Enables: fewer device-code prompts and correct tenant from the first sign-in, borrowing outlook-creds' best onboarding trick. Trade-offs: reverse-engineered keychain layout can shift with any Office update; macOS-only; hence flag-gated. IT view: nothing server-side. On managed endpoints, EDR (e.g. Defender for Endpoint) treats 'security find-generic-password' reads of another app's keychain items as credential-access telemetry (MITRE T1555.001) and may flag it even though only metadata is read — on a corporate-managed Mac this is the one item with meaningful ENDPOINT visibility, which is exactly why it defaults off."},
+   why:"Pre-selected REJECT — the convenience is not worth the endpoint-telemetry footprint on a managed Mac, and d10 delivers the same benefit cleanly. Pros: tenant + login hint autodiscovery; fewer device-code prompts; borrows outlook-creds' onboarding trick. Cons / trade-offs: reverse-engineered OneAuth keychain layout can shift with any Office update; macOS-only; and on managed endpoints EDR (e.g. Defender for Endpoint) treats 'security find-generic-password' reads of another app's keychain items as credential-access telemetry (MITRE T1555.001) — the one item in this plan with real ENDPOINT visibility, even though only metadata is read. If neither: capture tenant and login hint ONCE from the token response at authenticate time (d10 already stores realm) and prefill from there — same convenience, zero keychain reads. That alternative is why the reject costs nothing."},
 
-  {id:"d12",group:"microsoft-mcp",kind:"edit",
-   title:"Honest errors on rule-write tools until the EWS backend lands",
+  {id:"d12",group:"microsoft-mcp",kind:"edit",dflt:"approved",
+   title:"Honest errors on rule-write tools until a write path exists",
    current:"Rule-write tools surface a raw Graph 403 with no remedy.",
-   suggested:"Detect the MailboxSettings 403 under MSAL and return an actionable message naming the limitation and the working path, instead of the bare status code.",
-   why:"Enables: agents and users stop hitting dead ends and retry loops. Trade-off: none. IT view: fewer repeated 403 Graph calls — every failed attempt is an API call logged under the client app ID, and bursts of 403s are the kind of pattern that reads as probing in access logs."},
+   suggested:"Detect the MailboxSettings 403 under MSAL and return an actionable message naming the limitation and the working alternative (outlook-creds rules CLI today; see d08/d14), instead of the bare status code.",
+   why:"Pre-selected APPROVE. Pros: agents and users stop hitting dead ends and retry loops; costs an afternoon. Cons / trade-offs: none of substance; message must be updated when the rules story changes (d08/d14). If neither: docs-only fallback — a note in the tool descriptions (weaker: agents rarely read docs mid-call, so retry loops continue). IT view: fewer repeated 403 Graph calls — every failed attempt is an API call logged under the client app ID, and bursts of 403s are the kind of pattern that reads as probing in access logs."},
 
   /* ---------------- Cross-cutting ---------------- */
-  {id:"d13",group:"Cross-cutting",kind:"verify",
+  {id:"d13",group:"Cross-cutting",kind:"verify",dflt:"approved",
    title:"Token-store contract test shared by both repos",
    current:"File-format compatibility (suffix map, JSON shape, shared _refresh_only.txt) holds by convention only; microsoft-mcp actually reads outlook-creds tokens via OUTLOOK_CREDS_CONFIG_DIR, so silent drift means silent auth breakage.",
    suggested:"Add a small contract test to EACH repo asserting the canonical filenames and token-JSON keys, from one shared fixture spec committed to both.",
-   why:"Enables: the alignment this whole plan builds stays true as either repo evolves. Trade-off: a duplicated fixture to keep in sync — cheap insurance. IT view: none."},
+   why:"Pre-selected APPROVE. Pros: the alignment this whole plan builds stays true as either repo evolves; drift surfaces as a red test instead of a broken login. Cons / trade-offs: a duplicated fixture to keep in sync — cheap insurance. If neither: a single spec markdown committed to both repos as the human-readable source of truth (weaker: nothing executable enforces it). IT view: none."},
 
-  {id:"d14",group:"Cross-cutting",kind:"note",
+  {id:"d14",group:"Cross-cutting",kind:"note",dflt:"approved",
    title:"Acknowledge the EWS retirement clock (2026-10-01)",
    current:"EWS for Exchange Online starts being blocked October 1, 2026 — about five weeks from this plan's date.",
-   suggested:"Treat every EWS deliverable (d08) as a bridge with a named sunset; calendar a re-evaluation for late September 2026, at which point rule WRITES under this client have no remaining API path and the approach must be revisited.",
-   why:"Keeps the plan honest about shelf life so nobody mistakes the bridge for a destination. IT view: Microsoft surfaces remaining EWS usage to tenant admins in deprecation reports ahead of the cutoff, so lingering EWS traffic gets progressively more conspicuous."},
+   suggested:"Treat every EWS-dependent path (ported OR delegated, see d08) as a bridge with a named sunset; calendar a re-evaluation for late September 2026, at which point rule WRITES under this client have no remaining API path and the approach must be revisited.",
+   why:"Pre-selected APPROVE (acknowledgment). Pros: keeps the plan honest about shelf life so nobody mistakes a bridge for a destination. Cons / trade-offs: none — it is a calendar fact. If neither: the only alternative to acknowledging a date is being surprised by it. IT view: Microsoft surfaces remaining EWS usage to tenant admins in deprecation reports ahead of the cutoff, so lingering EWS traffic gets progressively more conspicuous."},
 
-  {id:"d15",group:"Cross-cutting",kind:"note",
+  {id:"d15",group:"Cross-cutting",kind:"note",dflt:"approved",
    title:"Operate on the assumption of full IT visibility",
    current:"Every sign-in these tools perform is logged: interactive device-code entries (client 'Microsoft Office', both legs' IP/location), non-interactive refresh grants per resource, and unified-audit-log records for every mailbox read/write. Sentinel has stock detections for device-code sign-ins, and Conditional Access can block the flow tenant-wide at any time.",
    suggested:"Acknowledge the baseline and prefer proactive transparency: if IT asks, this is self-service mail tooling on the user's own mailbox via standard Microsoft auth flows — nothing in this plan attempts to reduce visibility, and no change here should be designed to.",
-   why:"A Conditional Access policy change can end device-code sign-in for the whole toolchain overnight — knowing the footprint is operational realism, not paranoia."}
+   why:"Pre-selected APPROVE (acknowledgment). Pros: no surprises; a defensible posture if anything is ever reviewed. Cons / trade-offs: none. If neither: not really optional — a Conditional Access policy change can end device-code sign-in for the whole toolchain overnight, so knowing the footprint is operational realism, not paranoia."}
 
 ];
 
@@ -714,9 +717,12 @@ var state = {};
 try{ state = JSON.parse(localStorage.getItem(LS_KEY) || "{}"); }catch(e){ state = {}; }
 function saveState(){ localStorage.setItem(LS_KEY, JSON.stringify(state)); }
 function st(id){ if(!state[id]) state[id] = {status:"pending", text:null}; return state[id]; }
-/* Seed author defaults exactly once; saved decisions always win. */
+/* Seed author defaults; an explicit saved decision or edit always wins, but an
+   untouched "pending" entry (auto-created by rendering) does not block seeding. */
 PLAN_ITEMS.forEach(function(f){
-  if(f.dflt && f.dflt !== "pending" && !state[f.id]) state[f.id] = {status:f.dflt, text:null};
+  var s = state[f.id];
+  if(f.dflt && f.dflt !== "pending" && (!s || (s.status === "pending" && !s.text)))
+    state[f.id] = {status:f.dflt, text:null};
 });
 saveState();
 

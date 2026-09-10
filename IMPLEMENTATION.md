@@ -84,9 +84,10 @@ The runtime should:
 #### 5. Generated UTCP Bridge Config (`utcp_bridge_config.py`)
 
 The config generator emits one canonical `code-mode` registration using
-`UTCP_CONFIG_FILE`. Readers also accept legacy `code-mode-mcp` and
-`UTCP_CONFIG_PATH` inputs, accept equivalent duplicates, and reject divergent
-duplicates instead of guessing which registration owns runtime selection.
+`UTCP_CONFIG_FILE`. Retired `code-mode-mcp` host registrations and
+`UTCP_CONFIG_PATH` keys are rejected with migration messages, even when
+duplicated with canonical settings. This prevents accidental self-import
+or silently selecting a different config.
 
 Bridge launch resolution prefers a configured local Code-Mode build. Without
 one, canonical seven-tool configs use exact fallback

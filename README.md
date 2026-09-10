@@ -431,8 +431,8 @@ The original Claude Desktop config is only read, never modified.
 
 The generated bridge config defaults to:
 
-- server name: `code-mode` (legacy `code-mode-mcp` input is accepted but never emitted)
-- config path environment key: `UTCP_CONFIG_FILE` (legacy `UTCP_CONFIG_PATH` input is accepted when equal)
+- server name: `code-mode` (retired `code-mode-mcp` host names are rejected)
+- config path environment key: `UTCP_CONFIG_FILE` (retired `UTCP_CONFIG_PATH` keys are rejected)
 - command: a configured local Code-Mode `dist`, then `shutil.which("npx")`/`"npx"`; `MICROSOFT_MCP_UTCP_BRIDGE_COMMAND` overrides it
 - upstream fallback args: `["@utcp/code-mode-mcp@1.2.1"]`
 

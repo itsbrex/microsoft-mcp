@@ -32,9 +32,9 @@ def sample_claude_config():
 
 
 def sample_claude_config_with_bridge(
-    bridge_name: str = "code-mode-mcp",
+    bridge_name: str = "code-mode",
     *,
-    config_env_name: str = "UTCP_CONFIG_PATH",
+    config_env_name: str = "UTCP_CONFIG_FILE",
     config_path: str = "/tmp/selected.utcp.json",
 ):
     payload = sample_claude_config()
@@ -94,90 +94,48 @@ def test_build_utcp_config_skips_existing_bridge_server_by_default():
     assert "code_mode_mcp" not in manual_names
 
 
-@pytest.mark.parametrize("bridge_name", ["code-mode", "code-mode-mcp"])
-def test_build_utcp_config_skips_canonical_and_legacy_bridge_inputs(bridge_name):
-    _, mappings = build_utcp_config(
-        sample_claude_config_with_bridge(bridge_name),
-    )
-
-    assert bridge_name not in {mapping.source_server_name for mapping in mappings}
-
-
-@pytest.mark.parametrize("bridge_name", ["code-mode", "code-mode-mcp"])
-def test_build_utcp_config_does_not_explicitly_import_bridge_server(bridge_name):
+def test_build_utcp_config_does_not_explicitly_import_bridge_server():
     with pytest.raises(ValueError, match="No MCP servers remain"):
         build_utcp_config(
-            {
-                "mcpServers": {
-                    bridge_name: sample_claude_config_with_bridge(bridge_name)[
-                        "mcpServers"
-                    ][bridge_name]
-                }
-            },
-            include_servers=[bridge_name],
+            sample_claude_config_with_bridge(), include_servers=["code-mode"]
         )
 
 
-def test_build_utcp_config_accepts_equivalent_canonical_and_legacy_registrations():
-    payload = sample_claude_config_with_bridge(
-        "code-mode",
-        config_env_name="UTCP_CONFIG_FILE",
-    )
-    payload["mcpServers"]["code-mode-mcp"] = {
-        "command": "npx",
-        "args": ["@utcp/code-mode-mcp@1.2.1"],
-        "env": {"UTCP_CONFIG_PATH": "/tmp/selected.utcp.json"},
-    }
-
-    _, mappings = build_utcp_config(payload)
-
-    assert {mapping.source_server_name for mapping in mappings} == {
-        "microsoft-mcp",
-        "github",
-        "notion-mcp",
-    }
-
-
-def test_build_utcp_config_rejects_divergent_duplicate_bridge_registrations():
-    payload = sample_claude_config_with_bridge(
-        "code-mode",
-        config_env_name="UTCP_CONFIG_FILE",
-    )
-    payload["mcpServers"]["code-mode-mcp"] = {
-        "command": "node",
-        "args": ["/different/local/bridge.js"],
-        "env": {"UTCP_CONFIG_PATH": "/tmp/selected.utcp.json"},
-    }
-
-    with pytest.raises(ValueError, match="Divergent bridge registrations"):
+@pytest.mark.parametrize("duplicate", [False, True])
+def test_build_utcp_config_rejects_retired_bridge_name(duplicate):
+    payload = sample_claude_config_with_bridge("code-mode-mcp")
+    if duplicate:
+        payload["mcpServers"]["code-mode"] = payload["mcpServers"][
+            "code-mode-mcp"
+        ].copy()
+    with pytest.raises(
+        ValueError, match="code-mode-mcp is no longer supported; use code-mode"
+    ):
         build_utcp_config(payload)
 
 
-def test_build_utcp_config_accepts_equal_config_path_aliases():
-    payload = sample_claude_config_with_bridge(
-        "code-mode",
-        config_env_name="UTCP_CONFIG_FILE",
-    )
-    payload["mcpServers"]["code-mode"]["env"][
-        "UTCP_CONFIG_PATH"
-    ] = "/tmp/selected.utcp.json"
-
-    _, mappings = build_utcp_config(payload)
-
-    assert len(mappings) == 3
-
-
-def test_build_utcp_config_rejects_conflicting_config_path_aliases():
-    payload = sample_claude_config_with_bridge(
-        "code-mode",
-        config_env_name="UTCP_CONFIG_FILE",
-    )
-    payload["mcpServers"]["code-mode"]["env"][
-        "UTCP_CONFIG_PATH"
-    ] = "/tmp/different.utcp.json"
-
-    with pytest.raises(ValueError, match="Conflicting UTCP config paths"):
+@pytest.mark.parametrize(
+    "value", ["/tmp/selected.utcp.json", "/tmp/other.utcp.json", "", None]
+)
+@pytest.mark.parametrize("canonical", [False, True])
+def test_build_utcp_config_rejects_retired_path_key(value, canonical):
+    payload = sample_claude_config_with_bridge()
+    env = payload["mcpServers"]["code-mode"]["env"]
+    if not canonical:
+        env.clear()
+    env["UTCP_CONFIG_PATH"] = value
+    with pytest.raises(
+        ValueError,
+        match="UTCP_CONFIG_PATH is no longer supported; use UTCP_CONFIG_FILE",
+    ):
         build_utcp_config(payload)
+
+
+def test_build_bridge_config_rejects_retired_output_name(tmp_path):
+    with pytest.raises(ValueError, match="Unsupported bridge name"):
+        build_bridge_claude_config(
+            tmp_path / "config.json", bridge_name="code-mode-mcp"
+        )
 
 
 def test_derive_manual_name_prefers_concise_names():
@@ -191,13 +149,12 @@ def test_build_bridge_config_points_to_generated_utcp_file(tmp_path: Path):
 
     bridge_config = build_bridge_claude_config(
         utcp_config_path,
-        bridge_name="code-mode-mcp",
+        bridge_name="code-mode",
+        bridge_command="/test/bin/bridge",
     )
 
-    from microsoft_mcp.utcp_bridge_config import DEFAULT_BRIDGE_COMMAND
-
     assert list(bridge_config["mcpServers"]) == ["code-mode"]
-    assert bridge_config["mcpServers"]["code-mode"]["command"] == DEFAULT_BRIDGE_COMMAND
+    assert bridge_config["mcpServers"]["code-mode"]["command"] == "/test/bin/bridge"
     assert bridge_config["mcpServers"]["code-mode"]["env"]["UTCP_CONFIG_FILE"] == str(
         utcp_config_path.resolve()
     )

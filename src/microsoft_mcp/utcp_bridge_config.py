@@ -11,12 +11,12 @@ from pathlib import Path
 from typing import Any, Sequence
 
 DEFAULT_BRIDGE_NAME = "code-mode"
-LEGACY_BRIDGE_NAME = "code-mode-mcp"
-BRIDGE_SERVER_NAMES = (DEFAULT_BRIDGE_NAME, LEGACY_BRIDGE_NAME)
+RETIRED_BRIDGE_NAME = "code-mode-mcp"
+BRIDGE_SERVER_NAMES = (DEFAULT_BRIDGE_NAME,)
 UPSTREAM_BRIDGE_PACKAGE = "@utcp/code-mode-mcp@1.2.1"
 
 _CANONICAL_CONFIG_ENV = "UTCP_CONFIG_FILE"
-_LEGACY_CONFIG_ENV = "UTCP_CONFIG_PATH"
+_RETIRED_CONFIG_ENV = "UTCP_CONFIG_PATH"
 _BRIDGE_EXTENSION_CONFIG_KEYS = frozenset(
     {"exclude_tools", "include_tools", "default_disabled"}
 )
@@ -149,32 +149,15 @@ def _normalize_bridge_registration(
     if not isinstance(env, dict):
         raise ValueError(f"Expected 'env' for bridge '{bridge_name}' to be an object")
 
-    canonical_value = env.get(_CANONICAL_CONFIG_ENV)
-    legacy_value = env.get(_LEGACY_CONFIG_ENV)
-    canonical_path = (
-        _normalized_config_path(canonical_value, bridge_name=bridge_name)
-        if canonical_value is not None
-        else None
-    )
-    legacy_path = (
-        _normalized_config_path(legacy_value, bridge_name=bridge_name)
-        if legacy_value is not None
-        else None
-    )
-    if (
-        canonical_path is not None
-        and legacy_path is not None
-        and canonical_path != legacy_path
-    ):
+    if _RETIRED_CONFIG_ENV in env:
         raise ValueError(
-            f"Conflicting UTCP config paths for bridge '{bridge_name}': "
-            f"{_CANONICAL_CONFIG_ENV} and {_LEGACY_CONFIG_ENV} differ"
+            f"{_RETIRED_CONFIG_ENV} is no longer supported; use {_CANONICAL_CONFIG_ENV}"
         )
-
-    selected_path = canonical_path or legacy_path
-    if selected_path is not None:
-        env[_CANONICAL_CONFIG_ENV] = selected_path
-    env.pop(_LEGACY_CONFIG_ENV, None)
+    canonical_value = env.get(_CANONICAL_CONFIG_ENV)
+    if canonical_value is not None:
+        env[_CANONICAL_CONFIG_ENV] = _normalized_config_path(
+            canonical_value, bridge_name=bridge_name
+        )
     return normalized
 
 
@@ -183,29 +166,21 @@ def _validate_bridge_registrations(claude_config: dict[str, Any]) -> None:
     if not isinstance(mcp_servers, dict):
         return
 
-    normalized: dict[str, dict[str, Any]] = {}
-    for bridge_name in BRIDGE_SERVER_NAMES:
-        if bridge_name in mcp_servers:
-            normalized[bridge_name] = _normalize_bridge_registration(
-                bridge_name,
-                mcp_servers[bridge_name],
-            )
-
-    if len(normalized) == 2:
-        canonical = normalized[DEFAULT_BRIDGE_NAME]
-        legacy = normalized[LEGACY_BRIDGE_NAME]
-        if canonical != legacy:
-            raise ValueError(
-                "Divergent bridge registrations found for "
-                f"'{DEFAULT_BRIDGE_NAME}' and '{LEGACY_BRIDGE_NAME}'"
-            )
+    if RETIRED_BRIDGE_NAME in mcp_servers:
+        raise ValueError(
+            f"{RETIRED_BRIDGE_NAME} is no longer supported; use {DEFAULT_BRIDGE_NAME}"
+        )
+    if DEFAULT_BRIDGE_NAME in mcp_servers:
+        _normalize_bridge_registration(
+            DEFAULT_BRIDGE_NAME, mcp_servers[DEFAULT_BRIDGE_NAME]
+        )
 
 
 def _canonical_bridge_name(bridge_name: str) -> str:
     if bridge_name not in BRIDGE_SERVER_NAMES:
         raise ValueError(
             f"Unsupported bridge name '{bridge_name}'; expected "
-            f"'{DEFAULT_BRIDGE_NAME}' or legacy '{LEGACY_BRIDGE_NAME}'"
+            f"'{DEFAULT_BRIDGE_NAME}'"
         )
     return DEFAULT_BRIDGE_NAME
 
@@ -545,10 +520,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--bridge-name",
         default=DEFAULT_BRIDGE_NAME,
-        help=(
-            "Bridge host name to accept. Both code-mode and legacy code-mode-mcp "
-            "emit the canonical code-mode key."
-        ),
+        help=("Bridge host name. Only code-mode is supported."),
     )
     parser.add_argument(
         "--bridge-command",

@@ -441,3 +441,21 @@ def test_npx_bridge_command_override_keeps_pinned_upstream_arg(monkeypatch):
     finally:
         monkeypatch.delenv("MICROSOFT_MCP_UTCP_BRIDGE_COMMAND", raising=False)
         importlib.reload(mod)
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_retired_output_bridge_name_leaves_output_untouched(tmp_path, existing):
+    source = tmp_path / "source.json"
+    source.write_text(json.dumps(sample_claude_config()))
+    output = tmp_path / "output"
+    original = b"saved config must survive\n"
+    if existing:
+        output.mkdir()
+        (output / ".utcp_config.json").write_bytes(original)
+    with pytest.raises(ValueError, match="Unsupported bridge name"):
+        convert_claude_config(source, output_dir=output, bridge_name="code-mode-mcp")
+    if existing:
+        assert list(output.iterdir()) == [output / ".utcp_config.json"]
+        assert (output / ".utcp_config.json").read_bytes() == original
+    else:
+        assert not output.exists()

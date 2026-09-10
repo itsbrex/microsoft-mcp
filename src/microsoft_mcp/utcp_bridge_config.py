@@ -451,6 +451,8 @@ def convert_claude_config(
     bridge_command: str | None = None,
     bridge_args: list[str] | None = None,
 ) -> dict[str, Path]:
+    # Reject retired output names before creating or overwriting any files.
+    _canonical_bridge_name(bridge_name)
     claude_config = load_json(source_path)
     utcp_config, mappings = build_utcp_config(
         claude_config,

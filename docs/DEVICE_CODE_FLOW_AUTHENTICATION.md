@@ -68,7 +68,7 @@ That lets the auth layer prefer silent auth for one specific account.
 If `MICROSOFT_MCP_TENANT_ID` is unset, `microsoft-mcp` checks for:
 
 ```text
-~/config/outlook-creds/tokens/<normalized-account>/account_info.json
+~/.config/outlook-creds/tokens/<normalized-account>/account_info.json
 ```
 
 When that file exists, it reuses the stored:

@@ -139,14 +139,14 @@ def _load_outlook_creds_account_metadata(
 
     outlook-creds stores per-account metadata under:
     - $OUTLOOK_CREDS_CONFIG_DIR/tokens/<normalized>/account_info.json
-    - ~/config/outlook-creds/tokens/<normalized>/account_info.json
+    - ~/.config/outlook-creds/tokens/<normalized>/account_info.json
     """
     if not account_identifier or account_identifier == "default":
         return None
 
     config_root = Path(
         os.getenv(
-            "OUTLOOK_CREDS_CONFIG_DIR", str(Path.home() / "config" / "outlook-creds")
+            "OUTLOOK_CREDS_CONFIG_DIR", str(Path.home() / ".config" / "outlook-creds")
         )
     )
     account_info_path = (

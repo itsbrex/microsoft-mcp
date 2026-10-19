@@ -9,7 +9,9 @@ Supports two authentication methods:
 Set MICROSOFT_MCP_AUTH_METHOD=msal to use device code flow.
 """
 
+import datetime
 import os
+import select
 import sys
 from pathlib import Path
 
@@ -44,6 +46,61 @@ def get_auth_provider() -> AuthProvider:
             auth_record_file=os.getenv("AZURE_CRED_CACHE_FILE"),
             token_cache_file=os.getenv("AZURE_TOKEN_CACHE_FILE"),
         )
+
+
+def _format_remaining(delta: datetime.timedelta) -> str:
+    """Render a timedelta as e.g. '1h 01m 32s'."""
+    total = int(delta.total_seconds())
+    if total <= 0:
+        return "expired"
+    hours, rem = divmod(total, 3600)
+    minutes, seconds = divmod(rem, 60)
+    return f"{hours}h {minutes:02d}m {seconds:02d}s"
+
+
+def _live_countdown(expires_dt: datetime.datetime) -> None:
+    """Tick the remaining token lifetime once per second on a single line.
+
+    Press Enter (or Ctrl+C) to stop the countdown and continue.
+    """
+    try:
+        while True:
+            remaining = expires_dt - datetime.datetime.now()
+            if remaining.total_seconds() <= 0:
+                sys.stdout.write(f"\r   Expires in: expired{' ' * 40}")
+                break
+            sys.stdout.write(
+                f"\r   Expires in: {_format_remaining(remaining)}"
+                "  (press Enter to continue) "
+            )
+            sys.stdout.flush()
+            ready, _, _ = select.select([sys.stdin], [], [], 1)
+            if ready:
+                sys.stdin.readline()
+                break
+    except (KeyboardInterrupt, EOFError):
+        pass
+    sys.stdout.write("\n")
+    sys.stdout.flush()
+
+
+def _show_token_info(auth: AuthProvider, header: str) -> None:
+    """Print token details with a 12-hour expiry time and live countdown."""
+    try:
+        token, expires_on = auth.get_token_with_details()
+        expires_dt = datetime.datetime.fromtimestamp(expires_on)
+
+        print(f"\n{header}")
+        print(f"   Token (first 20 chars): {token[:20]}...")
+        print(f"   Expires on: {expires_dt.strftime('%Y-%m-%d %I:%M:%S %p')}")
+
+        if sys.stdin.isatty() and sys.stdout.isatty():
+            _live_countdown(expires_dt)
+        else:
+            remaining = expires_dt - datetime.datetime.now()
+            print(f"   Expires in: {_format_remaining(remaining)}")
+    except Exception as e:
+        print(f"   ⚠ Could not retrieve token details: {e}")
 
 
 def main():
@@ -127,18 +184,7 @@ def main():
             print(f"  User ID: {user_info['id']}")
 
             # Display current token information
-            try:
-                import datetime
-
-                token, expires_on = auth.get_token_with_details()
-                expires_dt = datetime.datetime.fromtimestamp(expires_on)
-
-                print("\n📋 Current Token Information:")
-                print(f"   Token (first 20 chars): {token[:20]}...")
-                print(f"   Expires on: {expires_dt.strftime('%Y-%m-%d %H:%M:%S')}")
-                print(f"   Expires in: {expires_dt - datetime.datetime.now()}")
-            except Exception as e:
-                print(f"   ⚠ Could not retrieve token details: {e}")
+            _show_token_info(auth, "📋 Current Token Information:")
 
             choice = input("\nDo you want to re-authenticate? (y/n): ").lower()
             if choice != "y":
@@ -202,18 +248,7 @@ def main():
         print("✓ Authentication verified")
 
         # Get and display token information
-        try:
-            import datetime
-
-            token, expires_on = auth.get_token_with_details()
-            expires_dt = datetime.datetime.fromtimestamp(expires_on)
-
-            print("\n📋 Token Information:")
-            print(f"   Token (first 20 chars): {token[:20]}...")
-            print(f"   Expires on: {expires_dt.strftime('%Y-%m-%d %H:%M:%S')}")
-            print(f"   Expires in: {expires_dt - datetime.datetime.now()}")
-        except Exception as e:
-            print(f"⚠ Could not retrieve token details: {e}")
+        _show_token_info(auth, "📋 Token Information:")
 
     except Exception as e:
         print(f"\n✗ Authentication failed: {e}")

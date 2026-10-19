@@ -36,7 +36,7 @@ Default: the unstaged diff (`git diff` + `git diff --staged`). If the caller spe
 
 1. `git diff` to see the scope.
 2. Pass over each changed file, applying the list above.
-3. Run `/test` (or `uv run pytest tests/ -v`) — must stay green.
+3. Run `/microsoft-mcp:test` (or `uv run pytest tests/ -v`) — must stay green.
 4. Run `uvx ruff check .` — must stay green.
 5. Report the edits made and anything NOT changed that a human should look at.
 

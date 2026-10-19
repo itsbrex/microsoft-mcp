@@ -302,11 +302,11 @@ This repo ships a shared `.claude/` so every collaborator gets the same tooling:
 
 - `.claude/settings.json` — permissions allowlist, PostToolUse ruff hook, status line, PostCompact reminder. Committed.
 - `.claude/settings.local.json` — per-user overrides. Gitignored.
-- `.claude/commands/` — `/test`, `/lint`, `/format`, `/run`, `/auth`, `/auth-refresh`, `/auth-verify`, `/auth-status`, `/rules`, `/intel`, `/bounces`, `/commit-push-pr`, `/techdebt`, `/bridge-regen`, `/weekly-audit`, `/triage-inbox`, `/declutter-inbox`.
+- `.claude/commands/microsoft-mcp/` — all commands are namespaced `/microsoft-mcp:<name>` (the subdirectory provides the prefix) so they're instantly distinguishable from global/plugin commands: `/microsoft-mcp:test`, `:lint`, `:format`, `:typecheck`, `:run`, `:server`, `:auth`, `:auth-refresh`, `:auth-verify`, `:auth-status`, `:auth-doctor`, `:auth-test`, `:rules`, `:intel`, `:bounces`, `:signatures`, `:templates`, `:tool-surface`, `:commit-push-pr`, `:techdebt`, `:bridge-regen`, `:weekly-audit`, `:triage-inbox`, `:declutter-inbox`.
 - `.claude/agents/` — `test-writer` (haiku), `code-simplifier` (haiku), `doc-sync` (haiku), `graph-reviewer` (sonnet).
 - `.claude/scripts/` — hook and statusline helpers (bash + jq).
 
-Run `/weekly-audit` monthly (or after a sweep of new tools) to guard against regression of the 2026-04-23 audit findings.
+Run `/microsoft-mcp:weekly-audit` monthly (or after a sweep of new tools) to guard against regression of the 2026-04-23 audit findings.
 
 ## Self-correcting learning loop
 
@@ -340,4 +340,4 @@ nit: don't construct `httpx.AsyncClient` directly, use graph.request
   - **Dunder attribute access is banned** (`x.__name__`, `type(x).__name__` → `invalid attribute name` error). Use `isinstance()`.
   - **Email `body` is a dict** `{"contentType": ..., "content": ...}` — unwrap `body.get("content")` before running regex/text logic.
   - **No raw `conversationId` is exposed.** Derive a thread token from `conversation_url`: `url.split("readconv/")[1].split("?")[0]`. Same token across inbox/sent/drafts = same thread → use it for reply/draft de-duplication.
-  - **The harness renders `[REDACTED_EMAIL]` in tool output**, but matching runs server-side on the real values, so address comparisons inside the sandbox are accurate despite the redaction. Reusable triage/declutter pipelines built on these facts live in `.claude/commands/triage-inbox.md` and `declutter-inbox.md`.
+  - **The harness renders `[REDACTED_EMAIL]` in tool output**, but matching runs server-side on the real values, so address comparisons inside the sandbox are accurate despite the redaction. Reusable triage/declutter pipelines built on these facts live in `.claude/commands/microsoft-mcp/triage-inbox.md` and `declutter-inbox.md`.
